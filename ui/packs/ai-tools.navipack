@@ -1,0 +1,152 @@
+{
+  "format": "navi-pack/1",
+  "id": "ai-tools",
+  "name": "AI tools starter",
+  "author": "GoodLad",
+  "description": "The names of the AI tools people talk about every day, spelt the way they should be.",
+  "version": "1.0",
+  "words": [
+    {
+      "id": "",
+      "term": "Claude Code",
+      "soundsLike": [
+        "cloud code",
+        "clawed code"
+      ],
+      "note": "",
+      "source": "ai-tools",
+      "createdAt": "",
+      "uses": 0
+    },
+    {
+      "id": "",
+      "term": "Claude",
+      "soundsLike": [],
+      "note": "",
+      "source": "ai-tools",
+      "createdAt": "",
+      "uses": 0
+    },
+    {
+      "id": "",
+      "term": "Anthropic",
+      "soundsLike": [],
+      "note": "",
+      "source": "ai-tools",
+      "createdAt": "",
+      "uses": 0
+    },
+    {
+      "id": "",
+      "term": "Codex",
+      "soundsLike": [],
+      "note": "",
+      "source": "ai-tools",
+      "createdAt": "",
+      "uses": 0
+    },
+    {
+      "id": "",
+      "term": "Cursor",
+      "soundsLike": [],
+      "note": "",
+      "source": "ai-tools",
+      "createdAt": "",
+      "uses": 0
+    },
+    {
+      "id": "",
+      "term": "Opus",
+      "soundsLike": [],
+      "note": "",
+      "source": "ai-tools",
+      "createdAt": "",
+      "uses": 0
+    },
+    {
+      "id": "",
+      "term": "Sonnet",
+      "soundsLike": [],
+      "note": "",
+      "source": "ai-tools",
+      "createdAt": "",
+      "uses": 0
+    },
+    {
+      "id": "",
+      "term": "Haiku",
+      "soundsLike": [],
+      "note": "",
+      "source": "ai-tools",
+      "createdAt": "",
+      "uses": 0
+    },
+    {
+      "id": "",
+      "term": "ElevenLabs",
+      "soundsLike": [
+        "eleven labs",
+        "11 labs",
+        "11labs"
+      ],
+      "note": "",
+      "source": "ai-tools",
+      "createdAt": "",
+      "uses": 0
+    },
+    {
+      "id": "",
+      "term": "ClickUp",
+      "soundsLike": [
+        "click up"
+      ],
+      "note": "",
+      "source": "ai-tools",
+      "createdAt": "",
+      "uses": 0
+    },
+    {
+      "id": "",
+      "term": "Notion",
+      "soundsLike": [],
+      "note": "",
+      "source": "ai-tools",
+      "createdAt": "",
+      "uses": 0
+    },
+    {
+      "id": "",
+      "term": "Vercel",
+      "soundsLike": [
+        "versel"
+      ],
+      "note": "",
+      "source": "ai-tools",
+      "createdAt": "",
+      "uses": 0
+    },
+    {
+      "id": "",
+      "term": "GitHub",
+      "soundsLike": [
+        "git hub"
+      ],
+      "note": "",
+      "source": "ai-tools",
+      "createdAt": "",
+      "uses": 0
+    },
+    {
+      "id": "",
+      "term": "Navi",
+      "soundsLike": [],
+      "note": "",
+      "source": "ai-tools",
+      "createdAt": "",
+      "uses": 0
+    }
+  ],
+  "snippets": [],
+  "modes": [],
+  "sourceUrl": null
+}

@@ -1,0 +1,27 @@
+node_modules/
+src-tauri/target/
+src-tauri/gen/
+*.part
+.env*
+
+# Keys, signatures and credentials: never commit them, wherever they end up.
+*.key
+*.pem
+*.pfx
+*.p12
+.npmrc
+*.sig
+latest.json
+
+# Editor, OS and Python clutter.
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.log
+__pycache__/
+.venv/
+
+# The landing page is out of date and being rebuilt; it goes back in when it matches the app.
+site/

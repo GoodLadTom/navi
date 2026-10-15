@@ -1,0 +1,128 @@
+/* The Navi bubble: the recording pill. Used by the overlay window and the home-page demo.
+   One element changes shape between states; widths are set from JS so they can spring. */
+
+.bubble {
+  --h: 44px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  height: var(--h);
+  width: 236px;
+  border-radius: 22px;
+  background: var(--paper);
+  border: 1px solid color-mix(in oklab, var(--ink) 9%, transparent);
+  box-shadow: 0 1px 2px rgba(36, 31, 51, .07), 0 8px 22px rgba(36, 31, 51, .12);
+  overflow: hidden;
+  font-family: var(--font);
+  color: var(--ink);
+  transition: width .42s var(--spring), height .42s var(--spring), border-radius .42s var(--spring), opacity .2s ease, transform .2s ease;
+  will-change: width, height, transform;
+}
+.bubble.hidden { opacity: 0; transform: scale(.6); pointer-events: none; transition: opacity .18s ease, transform .22s ease; }
+.bubble[data-state="listening"],
+.bubble[data-state="handsFree"],
+.bubble[data-state="ramble"] { --accent: #8A6CD6; --accent-ink: #4E3391; --accent-wash: #F1EBFD; }
+.bubble.enter { animation: bubbleIn .46s var(--spring) both; }
+.bubble.popout { animation: bubblePop .34s cubic-bezier(.2, .9, .3, 1.2) both; }
+@keyframes bubbleIn { 0% { opacity: 0; transform: scale(.5); } 55% { opacity: 1; transform: scale(1.05); } 100% { transform: scale(1); } }
+@keyframes bubblePop { 0% { transform: scale(1); opacity: 1; } 45% { transform: scale(1.16); opacity: 1; } 100% { transform: scale(1.32); opacity: 0; } }
+
+/* Navi's firefly keeps the small 78px footprint chosen for the screen corner. */
+.navi-firefly { position: absolute; z-index: 2; left: 50%; bottom: 52px; width: 78px; height: 78px; margin-left: -39px; pointer-events: none; opacity: 0; visibility: hidden; }
+.navi-firefly.ramble { bottom: 96px; }
+.navi-firefly.active, .navi-firefly.departing { opacity: 1; visibility: visible; }
+.navi-firefly .ff-flight, .navi-firefly .ff-hover, .navi-firefly svg { width: 100%; height: 100%; }
+.navi-firefly.active .ff-flight { animation: fireflyArrive 1.05s cubic-bezier(.18, .72, .24, 1) both; }
+.navi-firefly.departing .ff-flight { animation: fireflyLeave .9s cubic-bezier(.48, .02, .9, .5) both; }
+/* In the overlay it hovers about the top right of the screen instead: FireflyRoam (firefly.js)
+   moves it frame by frame. */
+.navi-firefly.roam { left: 0; top: 0; bottom: auto; margin: 0; will-change: transform; }
+.navi-firefly.roam .ff-flight { animation: none; }
+.navi-firefly:is(.active, .departing) .ff-hover { animation: fireflyHover 3.6s ease-in-out 1.05s infinite; }
+.navi-firefly:is(.active, .departing) .ff-glow { transform-origin: 134px 122px; animation: fireflyGlow 3.2s ease-in-out infinite; }
+/* Both wings beat together, from where they meet the body. */
+.navi-firefly:is(.active, .departing) .ff-wing { transform-box: view-box; transform-origin: 124px 116px; animation: fireflyFlap .14s ease-in-out infinite alternate; }
+@keyframes fireflyArrive { 0% { transform: translate(calc(-50vw - 180px), 38px) scale(.82) rotate(-10deg); } 64% { transform: translate(-28px, -9px) scale(.96) rotate(3deg); } 100% { transform: translate(0, 0) scale(1) rotate(0); } }
+@keyframes fireflyLeave { from { transform: translate(0, 0) scale(1) rotate(0); } to { transform: translate(calc(50vw + 180px), -95px) scale(.8) rotate(12deg); } }
+@keyframes fireflyHover { 0%, 100% { transform: translate(0, 1px) rotate(-1deg); } 50% { transform: translate(2px, -5px) rotate(1deg); } }
+@keyframes fireflyGlow { 0%, 100% { opacity: .75; transform: scale(.91); } 50% { opacity: 1; transform: scale(1.15); } }
+@keyframes fireflyFlap { from { transform: rotate(-11deg) scaleX(.78); filter: blur(.7px); opacity: .78; } to { transform: rotate(8deg) scaleX(1.04); filter: blur(.1px); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .navi-firefly.active .ff-flight { animation: none; }
+  .navi-firefly.departing { opacity: 0; visibility: hidden; }
+  .navi-firefly.departing .ff-flight { animation: none; }
+  .navi-firefly:is(.active, .departing) .ff-hover, .navi-firefly:is(.active, .departing) .ff-glow, .navi-firefly:is(.active, .departing) .ff-wing { animation: none; }
+}
+
+.b-row { display: flex; align-items: center; gap: 10px; height: 42px; padding: 0 9px 0 15px; flex: none; min-width: 0; }
+
+.b-dot { position: relative; width: 9px; height: 9px; border-radius: 50%; background: var(--accent); flex: none; transform: scale(var(--lvl-scale, 1)); transition: transform .08s linear, background .2s; }
+.b-dot::after { content: ""; position: absolute; inset: -5px; border-radius: 50%; border: 1.5px solid var(--accent); opacity: var(--lvl-ring, 0); transform: scale(var(--lvl-ring-scale, 1)); transition: opacity .1s linear, transform .1s linear; }
+.b-lock { display: none; width: 14px; height: 14px; color: var(--accent-ink); flex: none; }
+.b-wave { width: 112px; height: 26px; flex: none; display: block; }
+.b-time { font-size: 12.5px; font-weight: 600; color: var(--ink-quiet); min-width: 30px; text-align: right; font-feature-settings: "tnum" 1, "lnum" 1; letter-spacing: -.01em; }
+.b-chip { margin-left: auto; height: 26px; padding: 0 10px; border-radius: 13px; background: var(--accent-wash); color: var(--accent-ink); font-size: 11.5px; font-weight: 600; display: inline-flex; align-items: center; white-space: nowrap; max-width: 150px; overflow: hidden; text-overflow: ellipsis; flex: none; }
+.b-think { display: none; gap: 5px; align-items: center; padding-left: 4px; }
+.b-think i { width: 6px; height: 6px; border-radius: 50%; background: var(--ink-faint); animation: think 1s var(--in-out) infinite; }
+.b-think i:nth-child(2) { animation-delay: .14s; }
+.b-think i:nth-child(3) { animation-delay: .28s; }
+@keyframes think { 0%, 60%, 100% { transform: translateY(0); opacity: .45; } 30% { transform: translateY(-4px); opacity: 1; } }
+.b-label { font-size: 12.5px; font-weight: 600; color: var(--ink-quiet); white-space: nowrap; display: none; }
+.b-msg { display: none; font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.b-msg b { font-weight: 600; }
+.b-msg s { color: var(--ink-faint); text-decoration-color: var(--blue); }
+.b-check { display: none; width: 20px; height: 20px; color: var(--accent); margin: 0 auto; }
+.b-check path { stroke-dasharray: 24; stroke-dashoffset: 24; }
+.b-spark { display: none; width: 15px; height: 15px; color: var(--accent); flex: none; }
+.b-live { display: none; padding: 0 16px 14px; font-size: 13px; line-height: 1.45; color: var(--ink-quiet); height: 40px; overflow: hidden; -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 22px); mask-image: linear-gradient(90deg, transparent 0, #000 22px); white-space: nowrap; direction: rtl; text-align: left; }
+.b-live span { direction: ltr; unicode-bidi: bidi-override; }
+
+/* ---- states ---- */
+.bubble[data-state="listening"] .b-wave,
+.bubble[data-state="handsFree"] .b-wave { display: block; }
+
+.bubble[data-state="handsFree"] .b-dot { display: none; }
+.bubble[data-state="handsFree"] .b-lock { display: block; }
+.bubble[data-state="handsFree"] .b-label { display: block; }
+
+.bubble[data-state="processing"] .b-wave,
+.bubble[data-state="processing"] .b-time,
+.bubble[data-state="processing"] .b-dot { display: none; }
+.bubble[data-state="processing"] .b-think { display: inline-flex; }
+.bubble[data-state="processing"] .b-label { display: block; }
+
+.bubble[data-state="done"] { border-radius: 22px; }
+.bubble[data-state="done"] .b-row > * { display: none; }
+.bubble[data-state="done"] .b-row { padding: 0; justify-content: center; }
+.bubble[data-state="done"] .b-row .b-check { display: block; }
+.bubble[data-state="done"] .b-check path { animation: draw .38s var(--out) .06s forwards; }
+@keyframes draw { to { stroke-dashoffset: 0; } }
+
+.bubble[data-state="error"] .b-row > *:not(.b-dot):not(.b-msg) { display: none; }
+.bubble[data-state="error"] .b-dot { background: var(--blue-ink); transform: none; }
+.bubble[data-state="error"] .b-dot::after { display: none; }
+.bubble[data-state="error"] .b-msg { display: block; }
+.bubble[data-state="error"] { animation: shake .42s ease both; }
+@keyframes shake { 20% { transform: translateX(-4px); } 40% { transform: translateX(4px); } 60% { transform: translateX(-2px); } 80% { transform: translateX(2px); } }
+
+.bubble[data-state="learned"] .b-row > *:not(.b-spark):not(.b-msg),
+.bubble[data-state="notice"] .b-row > *:not(.b-dot):not(.b-msg) { display: none; }
+.bubble[data-state="learned"] .b-spark,
+.bubble[data-state="learned"] .b-msg,
+.bubble[data-state="notice"] .b-msg { display: block; }
+.bubble[data-state="notice"] .b-dot { transform: none; }
+.bubble[data-state="notice"] .b-dot::after { display: none; }
+
+/* Errors and notices run onto a second line rather than lose their ending. bubble.js fixes the
+   text's width (so it doesn't reflow while the bubble springs open) and adds .two-line when the
+   second line is needed. */
+.bubble:is([data-state="error"], [data-state="notice"]) .b-msg { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; text-wrap: pretty; overflow-wrap: break-word; line-height: 1.35; flex: none; }
+.bubble.two-line { --h: 62px; }
+.bubble.two-line .b-row { height: 60px; }
+
+.bubble[data-state="ramble"] { --h: 88px; border-radius: 24px; }
+.bubble[data-state="ramble"] .b-wave { display: block; width: 92px; }
+.bubble[data-state="ramble"] .b-label { display: block; }
+.bubble[data-state="ramble"] .b-live { display: block; }
+.bubble[data-state="ramble"] .b-row { height: 46px; }

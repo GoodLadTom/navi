@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Navi</title>
+  <link rel="icon" href="img/navi-logo.png">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <div class="app" id="app">
+    <aside class="side" data-tauri-drag-region>
+      <div class="brand" data-tauri-drag-region>
+        <img class="logo" src="img/navi-logo.png" alt="">
+        <span class="wordmark">Navi</span>
+      </div>
+      <nav class="nav" id="nav"></nav>
+      <div class="spacer" data-tauri-drag-region></div>
+      <div id="updateSlot"></div>
+      <div class="shortcut-card" id="shortcutCard"></div>
+      <button class="status-row" id="statusRow"><span class="status-dot" id="statusDot"></span><span class="status-txt"><b id="statusText">Starting…</b><small id="statusSub"></small></span></button>
+    </aside>
+    <main class="main" id="main"></main>
+  </div>
+  <div class="titlebar">
+    <div class="drag" data-tauri-drag-region></div>
+    <button class="winbtn" id="winMin" title="Minimise"></button>
+    <button class="winbtn" id="winMax" title="Maximise"></button>
+    <button class="winbtn close" id="winClose" title="Close to the tray"></button>
+  </div>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

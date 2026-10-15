@@ -1,0 +1,60 @@
+{
+  "default": "hush",
+  "sets": [
+    {
+      "id": "hush",
+      "name": "Hush",
+      "description": "A pure, rounded hum. The quietest."
+    },
+    {
+      "id": "felt",
+      "name": "Felt",
+      "description": "A muted piano note, felt on wood."
+    },
+    {
+      "id": "oak",
+      "name": "Oak",
+      "description": "A soft wooden marimba."
+    },
+    {
+      "id": "kalimba",
+      "name": "Kalimba",
+      "description": "A gentle thumb piano."
+    },
+    {
+      "id": "bubble",
+      "name": "Bubble",
+      "description": "A low, round bloop."
+    },
+    {
+      "id": "bowl",
+      "name": "Bowl",
+      "description": "A small singing bowl."
+    },
+    {
+      "id": "dusk",
+      "name": "Dusk",
+      "description": "Two warm notes together, like a soft pad."
+    },
+    {
+      "id": "thock",
+      "name": "Thock",
+      "description": "A deep, quiet keyboard thock."
+    },
+    {
+      "id": "pebble",
+      "name": "Pebble",
+      "description": "A small stone on wood. Very short."
+    },
+    {
+      "id": "deep",
+      "name": "Deep",
+      "description": "A low hum, best on good speakers or headphones."
+    },
+    {
+      "id": "lull",
+      "name": "Lull",
+      "description": "A slow, soft swell. The calmest start."
+    }
+  ]
+}
