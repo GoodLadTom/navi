@@ -191,7 +191,13 @@ export function shortcutPicker({ store, mode = 'auto' }) {
       const words = t.finalText.length > 90 ? `${t.finalText.slice(0, 90)}…` : t.finalText;
       showResult(`Navi heard: “${words}”`, 'ok');
     }));
-    unsubs.push(await listen('pill', (p) => { if (p?.state === 'error' && heardOnce) showResult(`${p.message}. Hold the key down while you talk.`, 'warn'); }));
+    // Only "Didn't catch that" can mean the keys were let go too soon; other errors (the engine,
+    // the microphone, a take still finishing) already say what to do.
+    unsubs.push(await listen('pill', (p) => {
+      if (p?.state !== 'error' || !heardOnce) return;
+      const msg = String(p.message || '').trim();
+      showResult(/^didn.t catch/i.test(msg) ? `${msg.replace(/[.!]+$/, '')}. Hold the shortcut down while you talk.` : msg, 'warn');
+    }));
     // Left already (a very quick Continue): undo the listeners and never turn the display on.
     if (disposed) { unsubs.splice(0).forEach((f) => { try { f(); } catch {} }); return; }
     // The keys only light up while you are in this window.

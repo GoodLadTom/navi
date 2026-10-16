@@ -68,7 +68,7 @@ pub fn strip_wake_phrase(transcript: &str) -> Option<String> {
 }
 
 /// True when `transcript` opens with the wake phrase: a greeting and the name ("Hey Navi", "OK Navy",
-/// "Hi Navi"). With `name_only` (Settings > Hey Navi > Wake word: Navi) the name on its own counts
+/// "Hi Navi"). With `name_only` (Settings > Wake word > Which word: Navi) the name on its own counts
 /// too, but only with a pause after it ("Navi, email Sam", "Navi."), so "Navi is our new app" or
 /// "Navy blue" said in passing never wake it. The always-on listener and call jobs use this.
 pub fn is_wake_phrase(transcript: &str, name_only: bool) -> bool {

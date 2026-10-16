@@ -122,8 +122,9 @@ pub async fn install(app: &Arc<App>) -> Result<()> {
     // On Windows a successful install exits Navi before this point.
     if let Err(e) = result {
         log::warn!("update failed: {e}");
-        set(app, UpdateStatus { state: "error".into(), current: current_version(app), version: update.version.clone(), message: explain(&e.to_string()), ..Default::default() });
-        bail!(explain(&e.to_string()));
+        let why = explain_install(&e.to_string());
+        set(app, UpdateStatus { state: "error".into(), current: current_version(app), version: update.version.clone(), message: why.clone(), ..Default::default() });
+        bail!(why);
     }
     Ok(())
 }
@@ -156,7 +157,20 @@ pub fn spawn_auto_check(app: Arc<App>) {
     });
 }
 
-/// Plain words for what went wrong.
+/// Plain words for an update that was found and offered but couldn't be downloaded or installed.
+/// (`explain` is for the check, so it talks about checking and about nothing being published.)
+fn explain_install(error: &str) -> String {
+    let lower = error.to_lowercase();
+    if lower.contains("signature") {
+        "The download didn't match Navi's signature, so it wasn't installed.".into()
+    } else if lower.contains("dns") || lower.contains("connect") || lower.contains("timed out") || lower.contains("network") || lower.contains("request") {
+        "Navi couldn't download the update. Check your connection and try again.".into()
+    } else {
+        format!("The update couldn't be installed ({error}). Try again later.")
+    }
+}
+
+/// Plain words for what went wrong while checking.
 fn explain(error: &str) -> String {
     let lower = error.to_lowercase();
     if lower.contains("404") || lower.contains("valid release json") || lower.contains("not found") {
@@ -179,5 +193,14 @@ mod tests {
         assert_eq!(explain("Could not fetch a valid release JSON from the remote"), "No updates have been published yet.");
         assert_eq!(explain("error sending request for url: dns error"), "Navi couldn't reach GitHub. Check your connection and try again.");
         assert_eq!(explain("signature verification failed"), "The download didn't match Navi's signature, so it wasn't installed.");
+    }
+
+    #[test]
+    fn a_failed_install_is_not_called_a_failed_check() {
+        assert_eq!(explain_install("signature verification failed"), "The download didn't match Navi's signature, so it wasn't installed.");
+        assert_eq!(explain_install("error sending request for url: dns error"), "Navi couldn't download the update. Check your connection and try again.");
+        let other = explain_install("the installer exited with code 2");
+        assert_eq!(other, "The update couldn't be installed (the installer exited with code 2). Try again later.");
+        assert!(!other.contains("check for updates") && !other.contains("published"));
     }
 }

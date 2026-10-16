@@ -16,7 +16,7 @@
 //!   index) without stopping, so long rambles can be transcribed in chunks while they happen.
 //! * `cancel()` stops and discards. `is_recording()` is cheap.
 //! * Errors are readable for the UI: "No microphone found", "Microphone access is off in Windows
-//!   Settings > Privacy > Microphone", "The microphone 'X' is not connected".
+//!   Settings > Privacy & security > Microphone", "The microphone 'X' is not connected".
 //!
 //! Implementation notes:
 //! * The cpal callback only downmixes, removes DC offset, meters and appends to a raw buffer at the
@@ -53,7 +53,7 @@ const START_TIMEOUT: Duration = Duration::from_secs(5);
 const STOP_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub(crate) const NO_MICROPHONE: &str = "No microphone found";
-const PRIVACY_BLOCKED: &str = "Microphone access is off in Windows Settings > Privacy > Microphone";
+const PRIVACY_BLOCKED: &str = "Microphone access is off in Windows Settings > Privacy & security > Microphone";
 
 pub struct Recording {
     /// 16 kHz mono, -1..1.

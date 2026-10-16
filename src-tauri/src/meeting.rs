@@ -21,8 +21,8 @@
 //!   unfinished are closed at the next start (`recover`).
 //! * Along the way, if switched on in Settings > Meeting notes:
 //!   - Short ideas (ideas.rs): a pass every few minutes, and a final one when the call ends.
-//!   - Jobs (jobs.rs): "Hey Navi, ..." from your side of the call goes to the AI straight away and
-//!     the answer is kept with the note.
+//!   - Jobs (jobs.rs): "Navi, ..." (or "Hey Navi, ...", as Settings > Wake word says) from your side
+//!     of the call goes to the AI straight away and the answer is kept with the note.
 //!   - Screenshots (screen.rs): a look at the screen every 15 seconds, kept when it has changed,
 //!     its text read on this computer and given to the AI writing the notes.
 //!   - Actions: the Actions in the finished notes go to ClickUp or Notion.
@@ -1394,10 +1394,10 @@ fn still_there(app: &App, id: &str) -> bool {
 async fn write_with_ai(note: &MeetingNote, settings: &Settings) -> Result<Option<String>> {
     let Some(llm) = crate::controller::make_llm_long(settings) else { return Ok(None) };
     let (system, user) = notes_messages(note, settings);
-    let md = tokio::time::timeout(AI_DEADLINE, llm.complete(&system, &user, 3000, 0.2)).await.map_err(|_| anyhow!("{} took too long", llm.label()))??;
+    let md = tokio::time::timeout(AI_DEADLINE, llm.complete(&system, &user, 3000, 0.2)).await.map_err(|_| anyhow!("{} took too long", llm.display_name()))??;
     let md = tidy_ai_markdown(&md, settings);
     if md.is_empty() {
-        bail!("{} sent back nothing", llm.label());
+        bail!("{} sent back nothing", llm.display_name());
     }
     Ok(Some(md))
 }

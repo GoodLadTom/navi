@@ -3,10 +3,11 @@ import { h, ico, btn, chip, keycaps, keyLabel, chordLabel, countUp, fmtNum, relT
 import { BubbleView } from '../bubble.js';
 import { refreshSuggestions } from '../app.js';
 
+// Each result keeps to what was said: the AI is told never to add facts (text/modes.rs).
 const DEMO = [
-  { app: 'Outlook', mode: 'Email', said: 'hi priya just to say the slides are done', text: 'Hi Priya, just to say the slides are done and in the shared folder.' },
-  { app: 'Slack', mode: 'Message', said: 'can we do thursday instead', text: 'Can we do Thursday afternoon instead?' },
-  { app: 'Terminal', mode: 'Prompt', said: 'fix the history player so i can scrub', text: 'Goal: let me scrub through a take from its waveform in @ui/js/views/history.js.' },
+  { app: 'Outlook', mode: 'Email', said: 'hi priya just to say the slides are done and in the shared folder', text: 'Hi Priya, just to say the slides are done and in the shared folder.' },
+  { app: 'Slack', mode: 'Message', said: 'can we do thursday afternoon instead', text: 'Can we do Thursday afternoon instead?' },
+  { app: 'Terminal', mode: 'Prompt', said: 'fix the history player so i can scrub through a take from its waveform', text: 'Goal: let me scrub through a take from its waveform in @ui/js/views/history.js.' },
 ];
 
 export async function render(root, { store, go }) {
@@ -61,8 +62,11 @@ export async function render(root, { store, go }) {
     return card;
   };
   const hoursSaved = st.minutesSaved >= 90;
+  // Typing time only (40 wpm, as history.rs TYPING_WPM). Time saved also takes off the speaking time.
+  const typeMin = st.wordsToday / 40;
+  const todayFoot = !st.wordsToday ? 'Nothing yet today' : typeMin < 1 ? 'Under a minute to type at 40 wpm' : `${fmtNum(typeMin)} min to type at 40 wpm`;
   root.append(h('div', { class: 'grid cols-4', style: { marginTop: '14px' } },
-    statCard('Today', 'words', st.wordsToday, 'words', st.wordsToday ? `${fmtNum(st.wordsToday / 40)} min of typing saved` : 'Nothing yet today'),
+    statCard('Today', 'words', st.wordsToday, 'words', todayFoot),
     statCard('This week', 'history', st.wordsWeek, 'words', null, sparkline(st.daily)),
     statCard('Time saved', 'clock', hoursSaved ? st.minutesSaved / 60 : st.minutesSaved, hoursSaved ? 'hours' : 'min', 'vs typing at 40 wpm'),
     statCard('Pace', 'speed', st.avgWpm, 'wpm', st.streakDays ? `${st.streakDays}-day streak` : 'Speak most days for a streak'),
@@ -95,7 +99,14 @@ export async function render(root, { store, go }) {
   const drawLearned = (items) => {
     learnBody.innerHTML = '';
     if (!items.length) {
-      learnBody.append(h('p', { class: 'small quiet' }, 'When you fix a word after Navi pastes it, it shows up here. Fix the same word twice and Navi learns it for good.'));
+      // Learning needs its switch and "Read the text near my cursor" (controller.rs). A fix where
+      // every misheard word is everyday English is only ever suggested (learn.rs can_auto_add).
+      const n = Math.max(1, s.learning?.autoAddAfter || 2);
+      const times = n === 1 ? 'once' : n === 2 ? 'twice' : `${n} times`;
+      const hint = !s.learning?.enabled || s.context?.readField === false
+        ? 'Navi can learn the words you fix after it pastes. Turn on “Learn from my corrections” in Dictionary, and “Read the text near my cursor” in Settings > Context and privacy.'
+        : `When you fix a word after Navi pastes it, it shows up here. Fix a name or term ${times} and Navi adds it to your words. Everyday words wait here for your yes.`;
+      learnBody.append(h('p', { class: 'small quiet' }, hint));
       return;
     }
     for (const sgg of items.slice(0, 3)) {

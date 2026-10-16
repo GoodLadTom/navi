@@ -2,7 +2,7 @@ import { invoke, listen, fileSrc, copyText } from '../bridge.js';
 import { h, ico, btn, chip, select, relTime, dayLabel, clock, fmtDuration, appInitial, toast, confirmDialog, debounce, errText } from '../ui.js';
 import { icon } from '../icons.js';
 
-export async function render(root, { arg, go }) {
+export async function render(root, { arg, store, go }) {
   let modes = await invoke('list_modes').catch(() => []);
   let apps = await invoke('app_names').catch(() => []);
   const modeName = (id) => modes.find((m) => m.id === id)?.name || id;
@@ -11,9 +11,18 @@ export async function render(root, { arg, go }) {
   let selected = arg || null;
   let audio = null;
 
+  // What is kept follows Settings > Context and privacy: recordings go after 30 days by default
+  // (lib.rs purge_old_audio) and the text stays; with Save history off nothing is kept.
+  const privacy = store?.settings?.privacy || {};
+  const keepDays = privacy.keepAudioDays ?? 30;
+  const kept = privacy.saveHistory === false
+    ? 'Save history is off in Settings > Context and privacy, so new takes are not kept.'
+    : keepDays
+      ? `Everything you have said, kept on this computer. Recordings are deleted after ${keepDays} days and the text stays (Settings > Context and privacy).`
+      : 'Everything you have said, kept on this computer with its recording.';
   root.append(h('div', { class: 'page-head' },
     h('div', {}, h('div', { class: 'eyebrow' }, 'Every take, kept'), h('h1', { class: 'h1' }, 'History'),
-      h('p', { class: 'lead' }, 'Everything you have said, with the recording, so nothing is ever lost. Re-run a take with a different mode, or copy it again.'))));
+      h('p', { class: 'lead' }, `${kept} Copy a take again, or re-run its recording in a different mode.`))));
 
   const searchInput = h('input', { class: 'input', placeholder: 'Search what you said' });
   const appOptions = () => [{ value: '', label: 'All apps' }, ...apps.map((a) => ({ value: a, label: a }))];
@@ -46,9 +55,11 @@ export async function render(root, { arg, go }) {
 
   searchInput.addEventListener('input', debounce(() => { q.search = searchInput.value.trim(); load(); }, 220));
 
+  // Kinds as they are saved (types.rs Take.kind). Hands-free takes, and every take the wake word
+  // starts, are "handsFree", so they get their own filter rather than hiding under Talk.
   function kindSeg() {
     const wrap = h('div', { class: 'seg' });
-    [['', 'All'], ['talk', 'Talk'], ['ramble', 'Rambles'], ['command', 'Commands']].forEach(([v, l]) => {
+    [['', 'All'], ['talk', 'Talk'], ['handsFree', 'Hands-free'], ['ramble', 'Rambles'], ['command', 'Commands']].forEach(([v, l]) => {
       const b = h('button', { class: v === '' ? 'on' : '' }, l);
       b.onclick = () => { wrap.querySelectorAll('button').forEach((x) => x.classList.remove('on')); b.classList.add('on'); q.kind = v; load(); };
       wrap.append(b);
@@ -125,7 +136,7 @@ export async function render(root, { arg, go }) {
     detail.append(tabs, body);
     show(views[0][0]);
 
-    const statusLabel = { pasted: 'Pasted', typed: 'Typed', clipboard: 'On the clipboard', notes: 'Saved as notes', command: 'Voice edit', cancelled: 'Cancelled', error: 'Failed', rerun: 'Re-run from History' };
+    const statusLabel = { pasted: 'Pasted', typed: 'Typed', clipboard: 'On the clipboard', notes: 'Saved as notes', command: 'Voice edit', spoken: 'Read aloud', cancelled: 'Cancelled', error: 'Failed', rerun: 'Re-run from History' };
     detail.append(h('div', { class: 'kv' },
       h('div', {}, h('span', { class: 'eyebrow' }, 'Mode'), h('b', {}, t.kind === 'ramble' ? 'Notes' : modeName(t.modeId))),
       h('div', {}, h('span', { class: 'eyebrow' }, 'Length'), h('b', {}, `${fmtDuration(t.durationMs)} · ${t.words} words`)),
@@ -143,7 +154,8 @@ export async function render(root, { arg, go }) {
         audio?.pause();
         audio = new Audio(url);
         audio.play().catch(() => {});
-        // ElevenLabs reads 5,000 characters at most (speak.rs fit), counted as Rust counts them.
+        // Navi sends ElevenLabs 5,000 characters at most (speak.rs MAX_CHARS and fit), counted as
+        // Rust counts them.
         if (Array.from((t.finalText || '').trim()).length > 5000) toast('Playing the first part only. Navi reads up to 5,000 characters.');
       } catch (e) {
         toast(errText(e), { error: true });

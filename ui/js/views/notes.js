@@ -1,7 +1,8 @@
-// Notes: calls written up, Granola style. Navi records both sides of a call, writes down who said
-// what, and turns it into notes built on whatever you typed while it listened (meeting.rs). Along
-// the way it can find ideas for Shorts (ideas.rs), do jobs you give it with "Hey Navi, ..."
-// (jobs.rs) and keep screenshots (screen.rs). Screen watches (watch.rs) end up here too.
+// Notes: calls written up, Granola style. Navi records both sides of a call, writes down what was
+// said with each line marked You or Them and, with an AI set up, turns it into notes built on whatever you typed while it listened
+// (meeting.rs); without one the note keeps the transcript and your own notes. Along the way it can
+// find ideas for Shorts (ideas.rs), do jobs you give it with "Navi, ..." (or "Hey Navi, ...",
+// jobs.rs) and keep screenshots (screen.rs). Screen watches (watch.rs) end up here too.
 import { invoke, listen, copyText, fileSrc } from '../bridge.js';
 import { h, btn, chip, dayLabel, clock, toast, confirmDialog, errText } from '../ui.js';
 
@@ -24,7 +25,7 @@ export async function render(root, { arg, store }) {
   const headBtn = h('span', { class: 'row', style: { gap: '8px' } });
   root.append(h('div', { class: 'page-head' },
     h('div', {}, h('div', { class: 'eyebrow' }, 'Calls, written up'), h('h1', { class: 'h1' }, 'Notes'),
-      h('p', { class: 'lead' }, 'Navi listens to both sides of a call, writes down who said what, and turns it into notes. Type your own as you go and Navi builds on them.')),
+      h('p', { class: 'lead' }, 'Navi listens to both sides of a call and writes down what was said, each line marked You or Them. With an AI set up in Settings > AI, it turns that into notes built around whatever you type as you go.')),
     headBtn));
 
   const listCard = h('div', { class: 'card h-list' });
@@ -271,8 +272,12 @@ export async function render(root, { arg, store }) {
       return;
     }
     if (!done) {
+      // Written by the AI for longer jobs (Settings > AI). Without one, Navi keeps the transcript
+      // and your notes (meeting.rs offline_notes), or lists a watch's screenshots by time.
+      const waitNote = isWatch ? 'Your AI is writing it up. Without one, Navi lists the screenshots by time.'
+        : 'Your AI is writing them up. Without one, Navi keeps the transcript and your own notes.';
       detail.replaceChildren(head, h('div', { class: 'n-wait' }, h('span', { class: 'n-spin' }),
-        h('div', {}, h('b', {}, isWatch ? 'Writing up what you did' : 'Writing up the notes'), h('p', { class: 'small quiet' }, 'A few seconds with an API key, a little longer through Claude Code or Codex.'))));
+        h('div', {}, h('b', {}, isWatch ? 'Writing up what you did' : 'Writing up the notes'), h('p', { class: 'small quiet' }, waitNote))));
       return;
     }
     const actionsTo = store?.settings?.notes?.actionsTo || 'none';
@@ -282,7 +287,10 @@ export async function render(root, { arg, store }) {
       !isWatch && n.transcript.length && !n.ideas.length ? ideasButton(n, 'Find Short ideas') : null,
       !isWatch && actionsTo !== 'none' && hasActions(n.notesMd) ? sendButton(n, actionsTo) : null,
       btn('', { size: 'sm', variant: 'ghost', icon: 'trash', title: 'Delete this note', onClick: async () => {
-        if (!(await confirmDialog('Delete this note?', 'It is removed from Navi, with its screenshots. The Markdown copy in your notes folder stays.', { ok: 'Delete', danger: true }))) return;
+        // A watch's Markdown copy links to the screenshots in Navi's data folder, which go too.
+        const gone = isWatch ? 'It is removed from Navi, with its screenshots. The Markdown copy in your notes folder stays, but without its pictures.'
+          : 'It is removed from Navi, with its screenshots. The Markdown copy in your notes folder stays.';
+        if (!(await confirmDialog('Delete this note?', gone, { ok: 'Delete', danger: true }))) return;
         try { await invoke('delete_note', { id: n.id }); toast('Deleted'); selected = null; load(); } catch (e) { toast(errText(e), { error: true }); }
       } }),
     ].filter(Boolean)));
@@ -472,7 +480,7 @@ function ideaText(idea) {
   ].filter(Boolean).join('\n');
 }
 
-// Jobs given with "Hey Navi, ..." on the call, and what the AI made of them.
+// Jobs given with "Navi, ..." (or "Hey Navi, ...") on the call, and what the AI made of them.
 function jobList(jobs) {
   return h('div', { class: 'jobs' }, jobs.map((job) => {
     const state = job.status === 'working'
@@ -520,8 +528,9 @@ function viewShot(path, caption) {
   document.addEventListener('keydown', onKey, true);
 }
 
+// The same headings, at any level, as meeting.rs actions_from (which sends the actions).
 function hasActions(md) {
-  return /^#{2,3}\s+(actions|action items|action points|next steps)\s*$/im.test(String(md || ''));
+  return /^[ \t]*#+[ \t]*\**(actions|action items|action points|next steps|to do|to-do)\**[ \t]*$/im.test(String(md || ''));
 }
 
 function stamp(ms) {

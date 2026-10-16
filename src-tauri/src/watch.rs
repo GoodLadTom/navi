@@ -1,9 +1,11 @@
-//! "Hey Navi, watch": screenshots while you work, written up as a note when you stop.
+//! "Navi, watch": screenshots while you work, written up as a note when you stop.
 //!
-//! * Started by "Hey Navi, watch" (or "Navi, watch" with the shortcut), the tray menu or the Notes
-//!   page; stopped by "Hey Navi, stop watching", the same buttons, or after an hour.
-//! * Every few seconds (Settings > Hey Navi) Navi looks at the screen and keeps the picture only
-//!   when enough of it has changed (screen.rs), with the text on it read on this computer.
+//! * Started by "Navi, watch" said in a shortcut take (or to the wake word listener, when it is on),
+//!   the tray menu or the Notes page; stopped by "Navi, stop watching", the same buttons, or after
+//!   an hour.
+//! * Every few seconds (Settings > Wake word > How often to look, 10 by default) Navi looks at the
+//!   screen and keeps the picture only when enough of it has changed (screen.rs), with the text on
+//!   it read on this computer.
 //! * When it stops, the AI for longer jobs is given each screenshot's time, window and text (never
 //!   the picture), picks the ones that matter with a caption each, and writes a short account. The
 //!   rest are deleted. Without an AI every screenshot stays, listed by time and window.
@@ -95,7 +97,7 @@ pub fn start(app: &Arc<App>) -> Result<()> {
     log::info!("watching the screen");
     changed(app);
     app.emit("note", note);
-    notice(app, "Watching your screen. Say “Hey Navi, stop watching” when you’re done.", 3800);
+    notice(app, &watching_notice(&app.settings()), 4000);
     spawn_loop(app.clone(), id);
     Ok(())
 }
@@ -113,6 +115,19 @@ pub fn stop(app: &Arc<App>) -> Result<()> {
         drop(writing);
     });
     Ok(())
+}
+
+/// The bubble as watching starts: how to stop it by voice with today's settings. "Navi, stop
+/// watching" said in a shortcut take always works (voice::parse); said out loud on its own only
+/// while the wake word listener is on, with the phrase it listens for. The tray and the Notes page
+/// stop it too, and it stops by itself after MAX_LENGTH.
+fn watching_notice(settings: &Settings) -> String {
+    if settings.hey_navi.enabled {
+        format!("Watching your screen. Say \u{201c}{}, stop watching\u{201d} when you\u{2019}re done.", settings.hey_navi.label())
+    } else {
+        let keys = crate::hotkey::display_chord_label(&settings.hotkeys.talk);
+        format!("Watching your screen. To stop, hold {keys} and say \u{201c}Navi, stop watching\u{201d}.")
+    }
 }
 
 /// Tells the interface and the tray.
@@ -490,5 +505,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let mut none = vec![shot(9, "Gone", "b")];
         assert!(closed_markdown("Watch", &mut none).contains("No screenshots were kept"));
+    }
+
+    #[test]
+    fn the_start_notice_names_a_way_to_stop_that_works() {
+        let mut settings = Settings::default();
+        assert!(!settings.hey_navi.enabled, "the listener is off by default");
+        let keys = crate::hotkey::display_chord_label(&settings.hotkeys.talk);
+        assert_eq!(watching_notice(&settings), format!("Watching your screen. To stop, hold {keys} and say \u{201c}Navi, stop watching\u{201d}."));
+        settings.hey_navi.enabled = true;
+        assert_eq!(watching_notice(&settings), "Watching your screen. Say \u{201c}Navi, stop watching\u{201d} when you\u{2019}re done.");
+        settings.hey_navi.phrase = "hey-navi".into();
+        assert!(watching_notice(&settings).contains("\u{201c}Hey Navi, stop watching\u{201d}"));
     }
 }

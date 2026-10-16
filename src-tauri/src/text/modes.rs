@@ -9,7 +9,10 @@
 //!   "email" (Rewrite, "mail", apps: outlook.exe, olk.exe, thunderbird.exe; browsers titled Gmail),
 //!   "prompt" (Prompt, "terminal", apps: windowsterminal.exe, code.exe, cursor.exe, windsurf.exe,
 //!   bb.exe, claude.exe, powershell.exe, pwsh.exe, cmd.exe), "interview" (Rewrite, "bubble", picked by
-//!   hand: a prompt that has the AI question you first), "notes" (Notes, "notes", ramble only).
+//!   hand: a prompt that has the AI question you first), "speak" (Clean, "volume", picked by hand:
+//!   read aloud in the ElevenLabs voice instead of typed), "notes" (Notes, "notes", ramble only).
+//! * Without an AI (Settings > AI is off by default) Message, Email, Prompt and Interview me give
+//!   back the offline tidy (pipeline.rs); the Modes page says so.
 //! * `pick_mode`: `forced` id wins; then (if auto_by_app) a mode whose apps contain the process name,
 //!   or whose category matches (email category -> email, chat -> message, terminal -> prompt);
 //!   else settings.modes.default_mode; else "clean". Ramble always uses "notes".
@@ -40,7 +43,7 @@ pub fn builtin_modes() -> Vec<Mode> {
             id: "raw".into(),
             name: "Raw".into(),
             icon: "pen".into(),
-            description: "Exactly what you said. Only your word list and snippets apply.".into(),
+            description: "Exactly what you said. Only spoken punctuation, your word list and snippets apply.".into(),
             kind: ModeKind::Raw,
             instructions: String::new(),
             apps: Vec::new(),

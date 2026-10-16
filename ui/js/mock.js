@@ -8,25 +8,31 @@ export function listen(event, cb) {
 
 const now = Date.now();
 const iso = (minsAgo) => new Date(now - minsAgo * 60000).toISOString();
+// A time as a default note title gives it ("14 October, 10:30", meeting.rs default_title).
+const titleWhen = (minsAgo) => {
+  const d = new Date(now - minsAgo * 60000);
+  return `${d.getDate()} ${d.toLocaleString('en-GB', { month: 'long' })}, ${d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`;
+};
 
+// The built-in modes exactly as src-tauri/src/text/modes.rs builtin_modes() ships them.
 const modes = [
-  { id: 'raw', name: 'Raw', icon: 'pen', kind: 'raw', description: 'Exactly what you said. Only your word list and snippets apply.', instructions: '', apps: [], useAi: false, builtin: true },
-  { id: 'clean', name: 'Clean', icon: 'clean', kind: 'clean', description: 'Your words, tidied: punctuation, capitals, no ums, British spelling.', instructions: '', apps: [], useAi: true, builtin: true },
-  { id: 'message', name: 'Message', icon: 'chat', kind: 'rewrite', description: 'Short and natural for chat. No sign-offs.', instructions: 'Keep it conversational and brief.', apps: ['slack.exe', 'ms-teams.exe', 'whatsapp.exe', 'discord.exe'], useAi: true, builtin: true },
-  { id: 'email', name: 'Email', icon: 'mail', kind: 'rewrite', description: 'Paragraphs, a clear ask, greeting and sign-off only if you said them.', instructions: 'Warm, direct, British.', apps: ['outlook.exe', 'olk.exe'], useAi: true, builtin: true },
-  { id: 'prompt', name: 'Prompt', icon: 'terminal', kind: 'prompt', description: 'A clear brief for Claude Code or Cursor, with the right file references.', instructions: '', apps: ['windowsterminal.exe', 'code.exe', 'cursor.exe', 'bb.exe'], useAi: true, builtin: true },
+  { id: 'raw', name: 'Raw', icon: 'pen', kind: 'raw', description: 'Exactly what you said. Only spoken punctuation, your word list and snippets apply.', instructions: '', apps: [], useAi: false, builtin: true },
+  { id: 'clean', name: 'Clean', icon: 'clean', kind: 'clean', description: 'Your words, tidied: punctuation, capitals, no fillers.', instructions: '', apps: [], useAi: false, builtin: true },
+  { id: 'message', name: 'Message', icon: 'chat', kind: 'rewrite', description: 'Short and natural, ready for Slack, Teams or WhatsApp.', instructions: '', apps: ['slack.exe', 'teams.exe', 'ms-teams.exe', 'discord.exe', 'whatsapp.exe', 'telegram.exe', 'signal.exe'], useAi: true, builtin: true },
+  { id: 'email', name: 'Email', icon: 'mail', kind: 'rewrite', description: 'Clear paragraphs, ready to send. Greetings and sign-offs only if you say them.', instructions: '', apps: ['outlook.exe', 'olk.exe', 'thunderbird.exe'], useAi: true, builtin: true },
+  { id: 'prompt', name: 'Prompt', icon: 'terminal', kind: 'prompt', description: "A clear brief for a coding agent, with references to your project's files.", instructions: '', apps: ['windowsterminal.exe', 'code.exe', 'cursor.exe', 'windsurf.exe', 'bb.exe', 'claude.exe', 'powershell.exe', 'pwsh.exe', 'cmd.exe'], useAi: true, builtin: true },
   { id: 'interview', name: 'Interview me', icon: 'bubble', kind: 'rewrite', description: 'Turns what you want into a prompt that has the AI ask you questions before it starts.', instructions: '', apps: [], useAi: true, builtin: true },
   { id: 'speak', name: 'Speak', icon: 'volume', kind: 'clean', description: 'Plays what you said back in your ElevenLabs voice instead of typing it.', instructions: '', apps: [], useAi: false, builtin: true },
-  { id: 'notes', name: 'Notes', icon: 'notes', kind: 'notes', description: 'Ramble mode: a long talk becomes a summary, key points and tasks.', instructions: '', apps: [], useAi: true, builtin: true },
+  { id: 'notes', name: 'Notes', icon: 'notes', kind: 'notes', description: 'Ramble freely, get tidy notes and tasks.', instructions: '', apps: [], useAi: true, builtin: true },
 ];
 
 const takes = [
-  { id: 't1', createdAt: iso(4), durationMs: 14200, appName: 'Outlook', windowTitle: 'RE: Slides for the Acme Studio pitch', modeId: 'email', rawText: "hi priya um just to say the slides are done and uploaded to the shared folder er I went with the warmer colours because they read better on a projector let me know if you want the other version instead cheers alex", finalText: "Hi Priya,\n\nJust to say the slides are done and uploaded to the shared folder. I went with the warmer colours because they read better on a projector. Let me know if you'd rather have the other version.\n\nCheers,\nAlex", words: 40, audioPath: null, model: 'large-v3-turbo', latencyMs: 840, status: 'pasted', kind: 'talk', meta: {} },
-  { id: 't2', createdAt: iso(26), durationMs: 6100, appName: 'Slack', windowTitle: '#content', modeId: 'message', rawText: "yeah that works for me can we do thursday afternoon instead though", finalText: 'Yeah, that works for me. Can we do Thursday afternoon instead though?', words: 13, audioPath: null, model: 'large-v3-turbo', latencyMs: 610, status: 'pasted', kind: 'talk', meta: {} },
-  { id: 't3', createdAt: iso(48), durationMs: 21800, appName: 'Windows Terminal', windowTitle: 'claude ~ navi', modeId: 'prompt', rawText: "so in the history page when you click a take the audio player should show the waveform and let me scrub through it at the moment it only plays from the start can you fix that and keep the styling the same", finalText: "Goal: let me scrub through a take's audio from its waveform in the history page.\n\nContext: clicking a take opens the detail panel (@ui/js/views/history.js), but the player only plays from the start. The waveform is drawn in @ui/js/waveform.js.\n\nConstraints: keep the current styling.\n\nDone when: clicking or dragging on the waveform seeks the audio and the playhead follows.", words: 61, audioPath: null, model: 'large-v3-turbo', latencyMs: 1420, status: 'pasted', kind: 'talk', meta: {} },
-  { id: 't4', createdAt: iso(95), durationMs: 184000, appName: 'Notion', windowTitle: 'Navi launch', modeId: 'notes', rawText: 'okay so for the launch we need the website live first then the video ...', finalText: "Navi launch plan\n\nSummary: get the website live first, then the film, then send the spring newsletter and post to Hacker News on the same morning.", words: 412, audioPath: null, model: 'large-v3-turbo', latencyMs: 3900, status: 'notes', kind: 'ramble', meta: { notes: { title: 'Navi launch plan', summary: 'Get the website live first, then the 80-second film, then send the spring newsletter and post to Hacker News on the same morning.', points: ['The film has no talking: just music and chapters.', 'Keep the download on GitHub releases for now.', 'Windows first, Mac once the core is settled.'], decisions: ['No code signing for the first release.'], tasks: [{ text: 'Finish the landing page copy', owner: 'Alex', due: 'Friday' }, { text: 'Record the screen captures for the film', owner: null, due: null }, { text: 'Ask Priya for the launch post wording', owner: 'Alex', due: null }] } } },
-  { id: 't5', createdAt: iso(60 * 20), durationMs: 3200, appName: 'Outlook', windowTitle: 'RE: Slides', modeId: 'email', rawText: 'Navi, make that shorter', finalText: 'Hi Priya, the slides are in the shared folder. I went with the warmer colours. Shout if you want the other version.', words: 22, audioPath: null, model: 'large-v3-turbo', latencyMs: 1100, status: 'command', kind: 'command', meta: { command: { type: 'rewrite', instruction: 'make that shorter' } } },
-  { id: 't6', createdAt: iso(60 * 26), durationMs: 9400, appName: 'Chrome', windowTitle: 'Acme Studio - Templates', modeId: 'clean', rawText: 'the template library is live now and you can duplicate any of the layouts from the gallery', finalText: 'The template library is live now, and you can duplicate any of the layouts from the gallery.', words: 17, audioPath: null, model: 'large-v3-turbo', latencyMs: 520, status: 'pasted', kind: 'talk', meta: {} },
+  { id: 't1', createdAt: iso(4), durationMs: 14200, appName: 'Outlook', windowTitle: 'RE: Slides for the Acme Studio pitch', modeId: 'email', rawText: "hi priya um just to say the slides are done and uploaded to the shared folder er I went with the warmer colours because they read better on a projector let me know if you want the other version instead cheers alex", finalText: "Hi Priya,\n\nJust to say the slides are done and uploaded to the shared folder. I went with the warmer colours because they read better on a projector. Let me know if you'd rather have the other version.\n\nCheers,\nAlex", words: 40, audioPath: 'sounds/warmup.wav', model: 'large-v3-turbo', latencyMs: 3100, status: 'pasted', kind: 'talk', meta: {} },
+  { id: 't2', createdAt: iso(26), durationMs: 6100, appName: 'Slack', windowTitle: '#content', modeId: 'message', rawText: "yeah that works for me can we do thursday afternoon instead though", finalText: 'Yeah, that works for me. Can we do Thursday afternoon instead though?', words: 13, audioPath: 'sounds/warmup.wav', model: 'large-v3-turbo', latencyMs: 2800, status: 'pasted', kind: 'talk', meta: {} },
+  { id: 't3', createdAt: iso(48), durationMs: 21800, appName: 'Windows Terminal', windowTitle: 'claude ~ navi', modeId: 'prompt', rawText: "so in the history page when you click a take the audio player should show the waveform and let me scrub through it at the moment it only plays from the start can you fix that and keep the styling the same", finalText: "Goal: let me scrub through a take's audio from its waveform in the history page.\n\nContext: clicking a take opens the detail panel (@ui/js/views/history.js), where the player draws the waveform but only plays from the start.\n\nConstraints: keep the current styling.\n\nDone when: clicking or dragging on the waveform seeks the audio and the playhead follows.", words: 61, audioPath: 'sounds/warmup.wav', model: 'large-v3-turbo', latencyMs: 4300, status: 'pasted', kind: 'talk', meta: {} },
+  { id: 't4', createdAt: iso(95), durationMs: 184000, appName: 'Notion', windowTitle: 'Navi launch', modeId: 'notes', rawText: 'okay so for the launch we need the website live first then the video ...', finalText: "Navi launch plan\n\nSummary: get the website live first, then the film, then send the spring newsletter and post to Hacker News on the same morning.", words: 412, audioPath: 'sounds/warmup.wav', model: 'large-v3-turbo', latencyMs: 11800, status: 'notes', kind: 'ramble', meta: { notes: { title: 'Navi launch plan', summary: 'Get the website live first, then the 80-second film, then send the spring newsletter and post to Hacker News on the same morning.', points: ['The film has no talking: just music and chapters.', 'Keep the download on GitHub releases for now.', 'Windows first, Mac once the core is settled.'], decisions: ['No code signing for the first release.'], tasks: [{ text: 'Finish the landing page copy', owner: 'Alex', due: 'Friday' }, { text: 'Record the screen captures for the film', owner: null, due: null }, { text: 'Ask Priya for the launch post wording', owner: 'Alex', due: null }] } } },
+  { id: 't5', createdAt: iso(60 * 20), durationMs: 3200, appName: 'Outlook', windowTitle: 'RE: Slides', modeId: 'email', rawText: 'Navi, make that shorter', finalText: 'Hi Priya, the slides are in the shared folder. I went with the warmer colours. Shout if you want the other version.', words: 22, audioPath: 'sounds/warmup.wav', model: 'large-v3-turbo', latencyMs: 3300, status: 'command', kind: 'command', meta: { command: { type: 'rewrite', instruction: 'make that shorter' } } },
+  { id: 't6', createdAt: iso(60 * 26), durationMs: 9400, appName: 'Chrome', windowTitle: 'Acme Studio - Templates', modeId: 'clean', rawText: 'the template library is live now and you can duplicate any of the layouts from the gallery', finalText: 'The template library is live now, and you can duplicate any of the layouts from the gallery.', words: 17, audioPath: 'sounds/warmup.wav', model: 'large-v3-turbo', latencyMs: 520, status: 'pasted', kind: 'talk', meta: {} },
 ];
 
 // A made-up screenshot for the preview: a plain drawn window with a title and a few bars.
@@ -93,9 +99,9 @@ Gaps: the new date.` },
     ],
   },
   {
-    id: 'n2', createdAt: iso(60 * 27), title: 'Zoom call, 13 October, 10:30', app: 'Zoom', durationMs: 18 * 60000, status: 'done', filePath: null,
+    id: 'n2', createdAt: iso(60 * 27), title: `Zoom call, ${titleWhen(60 * 27)}`, app: 'Zoom', durationMs: 18 * 60000, status: 'done', filePath: null,
     myNotes: '',
-    notesMd: `# Zoom call, 13 October, 10:30
+    notesMd: `# Zoom call, ${titleWhen(60 * 27)}
 
 Navi kept the full transcript. To have it written up with a summary, decisions and actions, turn on an AI in Settings > AI and press Write again.
 `,
@@ -123,6 +129,8 @@ You drafted three plans in Notion, created the Pro plan in Stripe and checked th
 
 ![The Pro plan created in Stripe at £19 a month](<${sampleShot('Products - Stripe', '#A9A2E6')}>)`,
 });
+// Newest first, the order store/notes.rs lists notes in, so each day heading shows once.
+sampleNotes.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 const mockLive = { session: null, timer: null, script: [
   ['them', 'Right, shall we get going?'], ['you', 'Yes. First thing, the menu for the new site.'],
   ['them', 'We want the specials on the home page, changed every Friday.'], ['you', 'That is easy. Who will update them?'],
@@ -146,9 +154,10 @@ const state = {
     sounds: { enabled: true, set: 'hush', volume: 0.7, custom: {} },
     mic: { device: null, trimCue: true },
     engine: { model: 'large-v3-turbo', language: 'en', useGpu: true, serverPath: null, modelPath: null, vad: true },
-    ai: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001', baseUrl: null, longModel: '' },
+    // Claude Code on the Claude plan the sample user already has: no API key (text/cli_ai.rs).
+    ai: { provider: 'claude-code', model: 'haiku', baseUrl: null, longModel: '' },
     writing: { british: true, noEmDashes: true, removeFillers: true, styleNotes: 'Short, warm, direct. British spelling. No em dashes. Sign off with "Cheers, Alex" on email.', styleSamples: [] },
-    context: { readApp: true, readField: true, ocr: false, excludedApps: ['1Password.exe', 'KeePass.exe'] },
+    context: { readApp: true, readField: true, ocr: false, excludedApps: ['1Password.exe', 'KeePass.exe', 'Bitwarden.exe'] },
     modes: { defaultMode: 'clean', autoByApp: true, active: '' },
     learning: { enabled: true, autoAddAfter: 2, checkAfterSecs: 25 },
     agent: { projects: [{ id: 'p1', name: 'navi', path: 'C:\\Users\\you\\Projects\\Navi' }], activeProject: 'p1', mentionStyle: 'at' },
@@ -290,7 +299,10 @@ const handlers = {
     if (id === 'next') { const i = choosable.indexOf(cur); next = i < 0 ? choosable[0] : (choosable[i + 1] || ''); }
     state.settings.modes.active = next;
     const name = modes.find((m) => m.id === next)?.name || 'Auto';
-    emit('pill', { state: 'notice', message: next ? `Mode: ${name}` : 'Mode: Auto, picked from the app' });
+    // As controller.rs switch_mode: with "Pick the mode from the app" off, Auto is the default mode.
+    const fallback = modes.find((m) => m.id === state.settings.modes.defaultMode && m.kind !== 'notes')?.name || 'Clean';
+    const auto = state.settings.modes.autoByApp ? 'Mode: Auto, picked from the app' : `Mode: Auto (your default, ${fallback})`;
+    emit('pill', { state: 'notice', message: next ? `Mode: ${name}` : auto });
     setTimeout(() => emit('pill', { state: 'hidden' }), 1500);
     emit('settings-changed', null);
   },
@@ -340,7 +352,7 @@ const handlers = {
   detect_setup: () => ({ gpu: 'NVIDIA GeForce RTX 4060 (8 GB)', serverFound: true, modelFound: 'C:\\Users\\you\\.local\\share\\whisper\\ggml-large-v3-turbo.bin', modelId: 'large-v3-turbo' }),
   play_cue: () => null,
   set_secret: () => null,
-  has_secret: ({ name }) => name === 'anthropic' || name === 'elevenlabs',
+  has_secret: ({ name }) => name === 'elevenlabs',
   eleven_voices: async () => { await wait(300); return [
     { voiceId: 'v1', name: 'Alice', category: 'premade', description: 'british, female, middle-aged, confident' },
     { voiceId: 'v2', name: 'George', category: 'premade', description: 'british, male, warm' },
@@ -353,7 +365,10 @@ const handlers = {
   reveal_file: () => null,
   open_link: () => null,
   test_ai: async () => { await wait(700); return 'ready'; },
-  test_integration: async ({ name }) => { await wait(600); return name === 'clickup' ? 'Connected as Alex' : 'Connected to Navi notes'; },
+  test_integration: async ({ name }) => {
+    // As commands.rs test_integration_blocked: Local only keeps the Test buttons offline too.
+    if (state.settings.privacy.localOnly) throw `Local only is on, so Navi won't contact ${name === 'clickup' ? 'ClickUp' : 'Notion'}. Turn it off in Settings > Context and privacy.`;
+    await wait(600); return name === 'clickup' ? 'Connected as Alex' : 'Connected to Navi notes'; },
   generate_style_notes: async () => { await wait(1200); return 'Short, warm, direct. British spelling. Uses "cheers" to sign off. Prefers plain words over jargon.'; },
   add_project: ({ path }) => ({ id: 'p' + Math.random().toString(36).slice(2, 6), name: path.split(/[\\/]/).pop(), path }),
   finish_onboarding: () => { state.settings.onboarded = true; },

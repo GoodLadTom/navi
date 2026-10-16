@@ -13,10 +13,11 @@ starting point and check them on the machine.
   Dictionary, Modes, Packs, the floating bubble and firefly, the corner card and the menu bar item.
 - **Built from source.** People clone the repo and build it on their own Mac. An app you compile
   yourself is not quarantined, so Gatekeeper does not block it and no Apple Developer account is
-  needed. A signed, notarised download can come later.
+  needed. A signed, notarised download can come later. While the repo is private, cloning it needs
+  access to GoodLadTom/navi and a signed-in git or GitHub CLI (`gh auth login`).
 - **Windows must keep working exactly as it does.** Add Mac code beside the Windows code; don't
-  rewrite shared logic unless it truly has to change. The Windows build and its 500 tests are the
-  reference.
+  rewrite shared logic unless it truly has to change. The Windows build and its 500 or so tests are
+  the reference.
 - **Bundle identifier: `com.goodlad.navi`** (already set in `src-tauri/tauri.conf.json`). Mac
   privacy permissions attach to it, so don't change it.
 
@@ -34,11 +35,14 @@ npm run dev                                 # runs the app with live reload
 
 Check the Mac first: Apple menu > About This Mac. Apple silicon (M1 or later) runs the speech engine
 on the GPU through Metal and is the main target. Some features need macOS 14.2 or later (system audio
-capture, process objects). Intel Macs work on the CPU only, with a smaller default model.
+capture, process objects). Intel Macs would run the engine on the CPU only, with a smaller default
+model, as Windows PCs without an NVIDIA card get Base (English) today.
 
 **Permissions attach to the process that launched the app.** Under `npm run dev` the app is started
 from Terminal, so macOS may give Terminal (not Navi) the Accessibility and Microphone grants. Test
-permission flows with a built `.app` (`npm run build`), not only with `npm run dev`.
+permission flows with a built `.app`, not only with `npm run dev`. Today `tauri.conf.json` bundles
+only the Windows `nsis` target, so `npm run build` makes a `.app` only once
+`src-tauri/tauri.macos.conf.json` sets the `app` and `dmg` targets (see Files to add).
 
 ## A stable signature (do this before testing permissions)
 
@@ -60,7 +64,8 @@ developers rather than documented by Tauri.
 
 Every Windows-only piece sits in a `#[cfg(windows)]` block or a `mod win`, with a
 `#[cfg(not(windows))]` stub beside it. Today those stubs return errors or nothing, so a Mac build
-compiles but can't hear the shortcut or type. The work is to replace each stub with a real
+should compile (untested: nothing has been built for macOS yet) but can't hear the shortcut or
+type. The work is to replace each stub with a real
 `#[cfg(target_os = "macos")]` implementation, keeping the same function signatures so the rest of
 the app doesn't change.
 

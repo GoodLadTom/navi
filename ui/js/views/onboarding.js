@@ -38,8 +38,8 @@ export function run({ store }) {
         h('img', { class: 'welcome-mark', src: markSrc(), alt: '' }),
         h('div', { class: 'eyebrow' }, 'Welcome'),
         h('h1', {}, 'Meet Navi.'),
-        h('p', { class: 'lead' }, 'Hold a shortcut, talk, and let go. Your words appear wherever you were typing, tidied up and spelt the British way. It all runs on this computer.'),
-        h('div', { class: 'row', style: { gap: '8px', marginTop: '20px', flexWrap: 'wrap' } }, chip('Private by default', 'line'), chip('Works in every app', 'line'), chip('Learns your words', 'line'))),
+        h('p', { class: 'lead' }, 'Hold a shortcut, talk, and let go. Your words appear wherever you were typing, tidied up and spelt the British way. It runs on this computer, and AI only comes in if you turn it on.'),
+        h('div', { class: 'row', style: { gap: '8px', marginTop: '20px', flexWrap: 'wrap' } }, chip('Private by default', 'line'), chip('Works in almost every app', 'line'), chip('Learns your words', 'line'))),
         { next: 'Get started', back: false });
       setTimeout(() => playCue(store, s().sounds.set || 'hush', 'start'), 450);
     }
@@ -93,7 +93,7 @@ export function run({ store }) {
       frame(h('div', {},
         h('div', { class: 'eyebrow' }, 'Your shortcut'),
         h('h1', {}, 'Hold to talk. Let go to finish.'),
-        h('p', { class: 'lead' }, 'Pick the key you’ll hold while you speak. One key is easiest. It works in every app.'),
+        h('p', { class: 'lead' }, 'Pick the key you’ll hold while you speak. One key is easiest. It works in almost every app: one running as administrator gets your words on the clipboard to paste instead.'),
         h('div', { style: { marginTop: '22px' } }, picker.el)));
     }
 
@@ -125,10 +125,10 @@ export function run({ store }) {
       }
       const prog = h('div', { class: 'progress', style: { marginTop: '14px' } }, h('i'));
       const label = h('p', { class: 'small faint', style: { marginTop: '8px' } }, '');
-      const gpuNote = setup.gpu ? `Your ${setup.gpu} will make it fast.` : 'No NVIDIA graphics card found, so Navi will use a lighter model on the processor.';
+      const gpuNote = setup.gpu ? `Your ${setup.gpu} will make it fast.` : 'No NVIDIA graphics card found, so Navi will use a lighter, English-only model on the processor. Settings > Speech engine has models for other languages.';
       const modelId = setup.gpu ? 'large-v3-turbo' : 'base.en';
       body.append(h('div', { class: 'card flat', style: { marginTop: '18px', background: 'var(--well)', border: 0 } },
-        h('div', { class: 'h3' }, setup.gpu ? 'Whisper Large v3 Turbo · 1.6 GB' : 'Whisper Base · 150 MB'),
+        h('div', { class: 'h3' }, setup.gpu ? 'Whisper Large v3 Turbo · 1.6 GB' : 'Whisper Base (English) · 148 MB'),
         h('p', { class: 'small quiet', style: { marginTop: '3px' } }, gpuNote),
         prog, label));
       unsubs.push(await listen('download', (p) => {
@@ -175,7 +175,7 @@ export function run({ store }) {
       setTimeout(() => area.focus(), 100);
       const say = (text, tone = '') => { status.textContent = text; status.className = `try-status ${tone}`; };
       let heard = false;
-      const nudge = setTimeout(() => { if (!heard) say(`Nothing yet? Go back a step and check Navi can hear ${keys}, or pick a one-key shortcut.`, 'warn'); }, 15000);
+      const nudge = setTimeout(() => { if (!heard) say(`Nothing yet? Go back two steps, to Your shortcut, and check Navi can hear ${keys}, or pick a one-key shortcut.`, 'warn'); }, 15000);
       unsubs.push(() => clearTimeout(nudge));
       unsubs.push(await listen('shortcut', (state) => { if (state === 'down') { heard = true; say('Navi heard your shortcut. Keep holding it while you talk…', 'on'); } }));
       unsubs.push(await listen('pill', (p) => {
@@ -189,16 +189,23 @@ export function run({ store }) {
     }
 
     function done() {
+      // The tips name the keys set now: "Run set-up again" can come after they were changed.
+      const hk = s().hotkeys;
+      // Learning needs its switch and "Read the text near my cursor" (controller.rs). A fix where
+      // every misheard word is everyday English is only ever suggested (learn.rs can_auto_add).
+      const learns = s().learning?.enabled !== false && s().context?.readField !== false;
+      const n = Math.max(1, s().learning?.autoAddAfter || 2);
+      const times = n === 1 ? 'once' : n === 2 ? 'twice' : `${n} times`;
       frame(h('div', {},
         h('img', { class: 'welcome-mark', src: markSrc(), alt: '', style: { width: '64px', height: '64px' } }),
         h('div', { class: 'eyebrow' }, 'All set'),
         h('h1', {}, 'You’re ready.'),
         h('p', { class: 'lead' }, 'A few things worth knowing:'),
         h('div', { class: 'stack', style: { marginTop: '14px', gap: '10px' } },
-          tip('Double-tap', 'your shortcut for hands-free.'),
-          tip('Hold + Space', 'to ramble. Press Enter when you’re done and Navi turns it into notes.'),
+          hk.doubleTapHandsFree !== false ? tip('Double-tap', 'your shortcut for hands-free.') : null,
+          tip(`Hold ${chordLabel(hk.talk)}, tap ${chordLabel([hk.rambleKey || 'Space'])}`, 'to ramble. Press Enter when you’re done and Navi turns it into notes.'),
           tip('“Navi, scratch that”', 'undoes the last thing you said.'),
-          tip('Fix a word twice', 'and Navi learns it for good.'))),
+          learns ? tip(`Fix a name ${times}`, 'and Navi adds it to your words. Everyday words wait on the Dictionary page for your yes.') : null)),
         { next: 'Start using Navi' });
     }
 

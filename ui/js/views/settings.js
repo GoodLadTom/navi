@@ -5,7 +5,7 @@ import { shortcutPicker } from '../shortcut.js';
 import { soundPicker, playCue } from '../soundpicker.js';
 
 const SECTIONS = [
-  ['general', 'General'], ['shortcuts', 'Shortcuts'], ['heynavi', 'Hey Navi'], ['sound', 'Sound'], ['mic', 'Microphone'], ['engine', 'Speech engine'],
+  ['general', 'General'], ['shortcuts', 'Shortcuts'], ['heynavi', 'Wake word'], ['sound', 'Sound'], ['mic', 'Microphone'], ['engine', 'Speech engine'],
   ['ai', 'AI'], ['voice', 'Voice'], ['writing', 'Writing'], ['privacy', 'Context and privacy'], ['meetings', 'Meeting notes'], ['integrations', 'Notes and tasks'], ['about', 'About'],
 ];
 
@@ -57,9 +57,9 @@ export async function render(root, { store, arg }) {
   nameInput.addEventListener('change', () => save((n) => { n.userName = nameInput.value.trim(); }));
   section('general', 'General', null,
     setRow('Appearance', 'Light, dark, or the same as Windows.', seg([{ value: 'light', label: 'Light' }, { value: 'dark', label: 'Dark' }, { value: 'system', label: 'Match Windows' }], S().general.theme || 'light', (v) => save((n) => { n.general.theme = v; }))),
-    setRow('Your name', 'For the greeting on the home page.', nameInput),
+    setRow('Your name', 'For the greeting on the home page, and so your AI spells your name right.', nameInput),
     setRow('Start Navi when Windows starts', 'It sits in the tray, ready for your shortcut.', toggle(S().general.launchAtLogin, (v) => save((n) => { n.general.launchAtLogin = v; }))),
-    setRow('Open in the tray', 'Start without showing this window.', toggle(S().general.startMinimised, (v) => save((n) => { n.general.startMinimised = v; }))),
+    setRow('Open in the tray', 'When Windows starts Navi, it stays in the tray without opening this window. Opening Navi yourself always shows it.', toggle(S().general.startMinimised, (v) => save((n) => { n.general.startMinimised = v; }))),
     setRow('Show the bubble', 'The small pill at the bottom of the screen while you talk.', toggle(S().general.showPill, (v) => save((n) => { n.general.showPill = v; }))),
     setRow('Show the firefly', 'The little firefly that flies in at the top right while you talk. Turn it off if you would rather not see it.', toggle(S().general.showFirefly !== false, (v) => save((n) => { n.general.showFirefly = v; }))),
     setRow('How text goes in', 'Paste is instant. Type works in the rare app that blocks pasting.', seg([{ value: 'paste', label: 'Paste' }, { value: 'type', label: 'Type' }], S().general.pasteMethod, (v) => save((n) => { n.general.pasteMethod = v; }))),
@@ -121,16 +121,16 @@ export async function render(root, { store, arg }) {
   }
   drawModeKeys();
   cleanups.push(() => { if (capturingMode) invoke('cancel_shortcut_capture').catch(() => {}); });
-  section('shortcuts', 'Shortcuts', 'Hold to talk, let go to finish. Works in every app except ones running as administrator.',
+  section('shortcuts', 'Shortcuts', 'Hold to talk, let go to finish. Works in almost every app: one running as administrator gets your words on the clipboard to paste instead.',
     h('div', { class: 'set-row', style: { display: 'block' } }, h('div', { class: 'h3', style: { marginBottom: '12px' } }, 'Talk'), picker.el),
     setRow('Hands-free', 'Double-tap the talk keys to keep listening without holding. Press Enter, or tap the keys again, to finish.', toggle(S().hotkeys.doubleTapHandsFree, (v) => save((n) => { n.hotkeys.doubleTapHandsFree = v; }))),
     setRow('Ramble', 'While holding the talk keys, tap this to switch to notes mode. A different sound plays and Navi keeps listening until you press Enter (or tap the talk keys again), then saves it to Notes.', select(['Space', 'Enter', 'Tab', 'N', 'R'], S().hotkeys.rambleKey, (v) => save((n) => { n.hotkeys.rambleKey = v; }))),
     setRow('Cancel', 'Throws the take away while it is recording.', keycaps([S().hotkeys.cancelKey])),
     modeKeysBlock,
-    setRow('Voice edits', 'Start with “Navi”: “Navi, scratch that”, “Navi, make that shorter”, “Navi, change Tuesday to Wednesday”. Select text first and say “Navi, turn this into bullet points”, or “Navi, what’s wrong with this?” for a blunt list of its problems.', chip('Always on', 'accent', true)),
+    setRow('Voice edits', 'Start with “Navi”: “Navi, scratch that”, “Navi, make that shorter”, “Navi, change Tuesday to Wednesday”. Select text first and say “Navi, turn this into bullet points”, or “Navi, what’s wrong with this?” for a blunt list of its problems. “Scratch that” works without an AI, and so does “change Tuesday to Wednesday” when Navi finds the word. Shorter, bullet points and “what’s wrong” need an AI (set one up under AI).', chip('Always on', 'accent', true)),
   );
 
-  // ---------------------------------------------------------------- Hey Navi
+  // ---------------------------------------------------------------- wake word
   const watchNote = h('span', { class: 'small faint' });
   const watchBtn = btn('Start watching', { size: 'sm', icon: 'play' });
   const drawWatch = (w) => {
@@ -159,13 +159,13 @@ export async function render(root, { store, arg }) {
     nameOnlyNote.hidden = phrase === 'hey-navi';
     save((n) => { n.heyNavi = { ...(n.heyNavi || {}), phrase }; });
   };
-  section('heynavi', 'Hey Navi', ['Start talking without touching the keyboard. Say “', wk(), '” and carry on: Navi types what you say next. Take your time: it finishes after six seconds of quiet, or press Enter when you’re done.'],
+  section('heynavi', 'Wake word', ['Start talking without touching the keyboard. Say “', wk(), '” and carry on: Navi types what you say next. Take your time: it finishes after six seconds of quiet, or press Enter when you’re done.'],
     setRow(['Listen for “', wk(), '”'], ['The microphone stays on while Navi listens for its name, so Windows shows its microphone icon. What it hears is checked on this computer and never kept. It pauses while Navi takes call notes, where “', wk(), ', …” gives it a job instead.'], toggle(!!hn.enabled, (v) => save((n) => { n.heyNavi = { ...(n.heyNavi || {}), enabled: v }; }))),
-    setRow('Wake word', [h('span', {}, '“Navi” on its own is quickest to say. “Hey Navi” is the hardest to set off by accident.'), nameOnlyNote],
+    setRow('Which word', [h('span', {}, '“Navi” on its own is quickest to say. “Hey Navi” is the hardest to set off by accident.'), nameOnlyNote],
       seg([{ value: 'navi', label: 'Navi' }, { value: 'hey-navi', label: 'Hey Navi' }], hn.phrase === 'hey-navi' ? 'hey-navi' : 'navi', setWake)),
-    setRow('What you can say', ['“', wk(), '” and then your words. “', wk(), ', scratch that.” “', wk(), ', make that shorter.” Select some text and say “', wk(), ', what’s wrong with this?” for a list of its problems.'], chip('Works with the shortcut too', 'line')),
-    setRow('Watch my screen', ['“', wk(), ', watch” and Navi takes a screenshot whenever the screen changes. “', wk(), ', stop watching” and your AI picks the ones that matter and writes up what you did, on the Notes page.'], h('div', { class: 'row' }, watchNote, watchBtn)),
-    setRow('How often to look', 'A screenshot is only kept when enough of the screen has changed.', select([{ value: '5', label: 'Every 5 seconds' }, { value: '10', label: 'Every 10 seconds' }, { value: '20', label: 'Every 20 seconds' }, { value: '30', label: 'Every 30 seconds' }], String(S().watch?.everySecs || 10), (v) => save((n) => { n.watch = { ...(n.watch || {}), everySecs: Number(v) }; }))),
+    setRow('What you can say', ['“', wk(), '” and then your words. “', wk(), ', scratch that.” “', wk(), ', make that shorter.” Select some text and say “', wk(), ', what’s wrong with this?” for a list of its problems. Shorter and “what’s wrong” need an AI.'], chip('Works with the shortcut too', 'line')),
+    setRow('Watch my screen', ['“', wk(), ', watch” and Navi looks at the screen every few seconds (set how often below) and keeps a screenshot only when enough of it has changed. “', wk(), ', stop watching” and your AI picks the ones that matter and writes up what you did, on the Notes page. With no AI, every screenshot is kept, listed by time. Watching stops by itself after an hour.'], h('div', { class: 'row' }, watchNote, watchBtn)),
+    setRow('How often to look', null, select([{ value: '5', label: 'Every 5 seconds' }, { value: '10', label: 'Every 10 seconds' }, { value: '20', label: 'Every 20 seconds' }, { value: '30', label: 'Every 30 seconds' }], String(S().watch?.everySecs || 10), (v) => save((n) => { n.watch = { ...(n.watch || {}), everySecs: Number(v) }; }))),
     h('p', { class: 'small faint', style: { paddingTop: '14px', borderTop: '1px solid var(--line-soft)' } },
       'Screenshots stay on this computer, in Navi’s data folder. Your AI only gets the text read off them and the window names, never the pictures. Apps under “Never read these apps” (in Context and privacy) are never captured.'),
   );
@@ -181,7 +181,7 @@ export async function render(root, { store, arg }) {
     h('div', { style: { margin: '6px 0 16px' } }, sounds.el),
     setRow('Sounds', 'Turn every cue off.', toggle(S().sounds.enabled, (v) => save((n) => { n.sounds.enabled = v; }))),
     setRow('Volume', null, vol),
-    setRow('Your own sounds', 'Use any WAV file for a cue. Built-in sounds are used for the rest.', btn('Choose a file…', { size: 'sm', icon: 'folder', onClick: async () => {
+    setRow('Your own sounds', 'Use any WAV file for a cue. Only its first 3 seconds play. Built-in sounds are used for the rest.', btn('Choose a file…', { size: 'sm', icon: 'folder', onClick: async () => {
       const path = await pickFile({ filters: [{ name: 'WAV audio', extensions: ['wav'] }] });
       if (!path) return;
       const which = await new Promise((resolve) => {
@@ -260,7 +260,7 @@ export async function render(root, { store, arg }) {
   section('engine', 'Speech engine', 'Navi runs Whisper on this computer. Nothing you say is uploaded to transcribe it.',
     engineHost,
     h('div', { class: 'set-row', style: { display: 'block' } }, h('div', { class: 'h3', style: { marginBottom: '4px' } }, 'Models'), modelsHost),
-    setRow('Language', 'English is fastest. Auto-detect handles 99 languages.', select([{ value: 'en', label: 'English' }, { value: 'auto', label: 'Detect automatically' }], S().engine.language, (v) => save((n) => { n.engine.language = v; }))),
+    setRow('Language', 'Detect automatically handles 99 languages with a Large v3 Turbo model. Small (English) and Base (English) only understand English.', select([{ value: 'en', label: 'English' }, { value: 'auto', label: 'Detect automatically' }], S().engine.language, (v) => save((n) => { n.engine.language = v; }))),
     setRow('Use the graphics card', 'Much faster when you have an NVIDIA card.', toggle(S().engine.useGpu, (v) => save((n) => { n.engine.useGpu = v; }))),
     setRow('Trim silences', 'Skips pauses before transcribing. Faster, and fewer phantom words.', toggle(S().engine.vad, (v) => save((n) => { n.engine.vad = v; }))),
   );
@@ -273,7 +273,7 @@ export async function render(root, { store, arg }) {
     const p = S().ai.provider;
     if (p === 'off' || p === 'ollama') { keyState.textContent = ''; return; }
     const has = await invoke('has_secret', { name: p }).catch(() => false);
-    keyState.textContent = has ? 'Saved in Windows Credential Manager' : 'No key saved';
+    keyState.textContent = has ? 'Saved in Windows Credential Manager' : p === 'custom' ? 'No key saved. Only needed if your server asks for one.' : 'No key saved';
   };
   const modelInput = h('input', { class: 'input', style: { width: '260px' }, value: ai.model, list: 'model-hints' });
   const hints = h('datalist', { id: 'model-hints' });
@@ -351,7 +351,9 @@ export async function render(root, { store, arg }) {
       if (using || !t.found) {
         // An address left from Ollama or Custom isn't a path (cli_ai.rs passes over it).
         const path = using && !String(S().ai.baseUrl || '').includes('://') ? S().ai.baseUrl || '' : '';
-        const pathIn = h('input', { class: 'input', value: path, placeholder: `C:\\Users\\you\\AppData\\Roaming\\npm\\${t.id === 'codex' ? 'codex' : 'claude'}.cmd`, spellcheck: 'false' });
+        // Where each tool usually is: Claude Code's own installer puts it in .local\bin (where
+        // cli_ai.rs looks first), and Codex comes through npm.
+        const pathIn = h('input', { class: 'input', value: path, placeholder: t.id === 'codex' ? 'C:\\Users\\you\\AppData\\Roaming\\npm\\codex.cmd' : 'C:\\Users\\you\\.local\\bin\\claude.exe', spellcheck: 'false' });
         pathIn.addEventListener('change', () => setToolPath(t, pathIn.value.trim()));
         pathRow = h('div', { class: 'ai-tool-path' },
           h('span', { class: 'small quiet' }, 'Path to the tool'), pathIn,
@@ -366,13 +368,17 @@ export async function render(root, { store, arg }) {
           t.id === 'claude-code' ? h('span', { class: 'small faint' }, 'Haiku is quickest.') : null) : null,
         pathRow);
     }));
-    // Or an API key.
+    // Or straight to a provider: an API key, Ollama, or any OpenAI-compatible server.
     apiHost.replaceChildren(
-      setRow('Or use an API key', 'Quicker than the tools above (about a second a rewrite), paid by use.',
+      setRow('Or connect directly', 'An API key for Claude or OpenAI (paid by use), Ollama on this computer (free, no key), or any OpenAI-compatible server.',
         seg([{ value: 'anthropic', label: 'Claude' }, { value: 'openai', label: 'OpenAI' }, { value: 'ollama', label: 'Ollama' }, { value: 'custom', label: 'Custom' }], API.includes(p) ? p : '', (v) => setProvider(v))));
     if (API.includes(p)) {
-      apiHost.append(setRow('Model', p === 'anthropic' ? 'Haiku is quick and cheap, and plenty for dictation.' : null, h('div', {}, modelInput, hints)));
-      if (p === 'ollama' || p === 'custom') apiHost.append(setRow('Address', p === 'ollama' ? 'Where Ollama is running.' : 'Any OpenAI-compatible endpoint.', baseInput));
+      apiHost.append(setRow('Model', p === 'anthropic' ? 'Haiku is quick and cheap, and plenty for dictation.' : p === 'custom' ? 'Needed: the name your server knows the model by.' : null, h('div', {}, modelInput, hints)));
+      if (p === 'ollama' || p === 'custom') {
+        // Navi adds /chat/completions to a custom server's address (llm.rs).
+        baseInput.placeholder = p === 'ollama' ? 'http://localhost:11434' : 'http://localhost:1234/v1';
+        apiHost.append(setRow('Address', p === 'ollama' ? 'Where Ollama is running.' : 'The address of any OpenAI-compatible server, up to the part before /chat/completions.', baseInput));
+      }
       if (p !== 'ollama') apiHost.append(setRow('API key', keyState, h('div', { class: 'row' }, keyInput, btn('Save', { size: 'sm', onClick: async () => {
         if (!keyInput.value.trim()) return;
         try { await invoke('set_secret', { name: p, value: keyInput.value.trim() }); keyInput.value = ''; toast('Key saved'); refreshKey(); } catch (e) { toast(errText(e), { error: true }); }
@@ -382,7 +388,7 @@ export async function render(root, { store, arg }) {
     offHost.replaceChildren(...[
       longRow(),
       p !== 'off' ? testRow() : null,
-      setRow(p === 'off' ? 'AI is off' : 'Turn AI off', 'Navi still tidies punctuation, capitals, fillers and spelling on this computer. AI is for the rewriting modes, voice edits, and the write-ups of calls and screen watches.',
+      setRow(p === 'off' ? 'AI is off' : 'Turn AI off', 'Navi still tidies punctuation, capitals, fillers and spelling on this computer. AI is for the rewriting modes, edits like “make that shorter”, “what’s wrong with this?”, ramble and call notes, Short ideas, jobs on calls, screen-watch write-ups and learning your style. “Scratch that” and “change X to Y” work without it.',
         p === 'off' ? chip('Off', 'line') : btn('Turn off', { size: 'sm', variant: 'ghost', onClick: () => setProvider('off') })),
     ].filter(Boolean));
   };
@@ -404,11 +410,11 @@ export async function render(root, { store, arg }) {
     }
     const inp = h('input', { class: 'input', style: { width: '260px' }, value: cur, placeholder: 'Same as above', list: 'model-hints' });
     inp.addEventListener('change', () => save((n) => { n.ai.longModel = inp.value.trim(); }));
-    return setRow('Model for longer jobs', 'For call notes, Short ideas, screen watches and jobs on calls. Leave it empty to use the model above.', inp);
+    return setRow('Model for longer jobs', 'For call notes, Short ideas, screen watches, jobs on calls and “what’s wrong with this?”. Leave it empty to use the model above.', inp);
   };
-  section('ai', 'AI', 'Optional. Used by the modes that rewrite (Email, Message, Prompt, Interview me), voice edits, and the write-ups of calls and screen watches. Only words are sent, never audio or pictures.',
+  section('ai', 'AI', 'Optional, and off until you pick one. Used by the modes that rewrite (Email, Message, Prompt, Interview me), edits like “make that shorter”, “what’s wrong with this?”, ramble and call notes, Short ideas, jobs on calls, screen-watch write-ups, learning your style, and Clean’s light polish if you turn it on. Only words are sent, never audio or pictures.',
     h('div', { class: 'h3', style: { margin: '2px 0 4px' } }, 'Use the AI you already pay for'),
-    h('p', { class: 'small quiet', style: { marginBottom: '12px' } }, 'Navi can borrow Claude Code or Codex if they are on this computer. Rewrites take about five seconds this way. Clean mode stays instant.'),
+    h('p', { class: 'small quiet', style: { marginBottom: '12px' } }, 'Navi can borrow Claude Code or Codex if they are on this computer, with no API key. Rewrites take a few seconds this way: about 3 with Claude Code and about 4 or 5 with Codex. Clean mode stays instant, because its polish skips these tools.'),
     subHost, apiHost, offHost);
   drawAi();
   invoke('detect_ai_tools').then((list) => { tools = list || []; drawAi(); }).catch(() => {});
@@ -483,16 +489,16 @@ export async function render(root, { store, arg }) {
     excl.append(add);
   };
   drawExcl();
-  section('privacy', 'Context and privacy', 'Navi reads a little of what is on screen to get names and tone right. All of it happens on this computer.',
-    setRow('Know which app I am in', 'App name and window title, so Navi can pick the right mode.', toggle(S().context.readApp, (v) => save((n) => { n.context.readApp = v; }))),
+  section('privacy', 'Context and privacy', 'Navi reads a little of what is on screen to get names and tone right. The reading happens on this computer. When an AI mode runs, the app name, the window title and up to 1,000 characters of the text before your cursor go to your AI with your words.',
+    setRow('Read the window title', 'Lets Navi use the title of the window you are in. Off, Navi still sees which app you are in, to pick a mode, and tells your AI its name.', toggle(S().context.readApp, (v) => save((n) => { n.context.readApp = v; }))),
     setRow('Read the text near my cursor', 'The paragraph you are writing, so names come out right and replies match the thread. Password boxes are never read.', toggle(S().context.readField, (v) => save((n) => { n.context.readField = v; }))),
-    setRow('Read the screen', 'Windows’ own on-device text recognition of the window you are in. Off by default.', toggle(S().context.ocr, (v) => save((n) => { n.context.ocr = v; }))),
+    setRow('Read the screen', 'Windows’ own on-device text recognition of the window you are in, so the speech engine spells names on screen right. It never goes to your AI. Off by default.', toggle(S().context.ocr, (v) => save((n) => { n.context.ocr = v; }))),
     setRow('Never read these apps', null, excl),
-    setRow('Local only', 'Blocks every connection to the internet except downloads you start. AI modes then fall back to on-device tidying.', toggle(S().privacy.localOnly, (v) => save((n) => { n.privacy.localOnly = v; }))),
+    setRow('Local only', 'Nothing goes to the internet except downloads you start and the Check for updates button. AI then only works with Ollama or a server on this computer; without one, Navi tidies your words on this computer.', toggle(S().privacy.localOnly, (v) => save((n) => { n.privacy.localOnly = v; }))),
     setRow('Keep recordings for', 'Text is kept until you delete it. Audio can expire.', select([{ value: '7', label: '7 days' }, { value: '30', label: '30 days' }, { value: '90', label: '90 days' }, { value: '0', label: 'Forever' }], String(S().privacy.keepAudioDays), (v) => save((n) => { n.privacy.keepAudioDays = Number(v); }))),
     setRow('Save history', 'Off means nothing is kept after it is pasted.', toggle(S().privacy.saveHistory, (v) => save((n) => { n.privacy.saveHistory = v; }))),
-    setRow('Delete everything', 'All takes and recordings on this computer.', btn('Clear history', { size: 'sm', variant: 'danger', onClick: async () => {
-      if (!(await confirmDialog('Clear all history?', 'Every take and recording is deleted from this computer. Your words, snippets and modes stay.', { ok: 'Delete all', danger: true }))) return;
+    setRow('Clear history', 'Every take and its recording on this computer. Your notes stay.', btn('Clear history', { size: 'sm', variant: 'danger', onClick: async () => {
+      if (!(await confirmDialog('Clear all history?', 'Every take and its recording is deleted from this computer. Your words, snippets and modes stay, and so do your notes, call notes, screenshots and Markdown files.', { ok: 'Delete all', danger: true }))) return;
       await invoke('clear_history'); toast('History cleared');
     } })),
   );
@@ -511,14 +517,14 @@ export async function render(root, { store, arg }) {
       brief)] : []));
   };
   drawBrief();
-  section('meetings', 'Meeting notes', 'Navi can take notes on your calls: it records both sides, writes down who said what, and turns it into notes with the AI set up above. The audio is transcribed on this computer and never kept; only the transcript goes to that AI.',
+  section('meetings', 'Meeting notes', 'Navi can take notes on your calls: it records both sides, writes down what was said with each line marked You or Them, and turns it into notes with the AI set up above. The audio is transcribed on this computer and never kept. Only words go to that AI: the transcript, anything you typed during the call, and the text on screenshots if those are on.',
     setRow('Offer to take notes when a call starts', 'When Teams, Zoom, Google Meet, Slack, Discord or WhatsApp starts using your microphone, a small card in the corner asks.', toggle(nt.detectCalls, (v) => save((n) => { n.notes.detectCalls = v; }))),
     setRow('Record the other side of the call', 'What your computer plays, so the other people are in the notes too. Off records only your microphone.', toggle(nt.systemAudio, (v) => save((n) => { n.notes.systemAudio = v; }))),
-    setRow('Finish when the call ends', 'Navi writes the notes once the call app lets go of the microphone. Notes with no call app to follow finish after 20 minutes with nothing said.', toggle(nt.autoStop, (v) => save((n) => { n.notes.autoStop = v; }))),
+    setRow('Finish when the call ends', 'Navi writes the notes 20 seconds after the call app lets go of the microphone. Notes with no call app to follow finish after 20 minutes with nothing said.', toggle(nt.autoStop, (v) => save((n) => { n.notes.autoStop = v; }))),
     setRow('Short ideas', 'Every few minutes your AI looks through the call so far for moments worth turning into a Short, with the exact lines to cut and when they were said. They build up on the call’s note as you talk.', toggle(!!nt.shortIdeas, async (v) => { await save((n) => { n.notes.shortIdeas = v; }); drawBrief(); })),
     briefHost,
     setRow('Jobs on calls', ['Say “', wk(), ', …” on a call (“', wk(), ', draft the follow-up email to Sam”) and your AI does it while you talk. The answer is kept with the notes. It only writes: nothing is sent or booked.'], toggle(nt.callJobs !== false, (v) => save((n) => { n.notes.callJobs = v; }))),
-    setRow('Screenshots during calls', 'A screenshot whenever the screen changes, so the notes can say what was shown. They stay on this computer; your AI only gets the text on them.', toggle(!!nt.callScreenshots, (v) => save((n) => { n.notes.callScreenshots = v; }))),
+    setRow('Screenshots during calls', 'A look at the screen every 15 seconds, kept when it has changed, so the notes can say what was shown. They stay on this computer; your AI only gets the text on them.', toggle(!!nt.callScreenshots, (v) => save((n) => { n.notes.callScreenshots = v; }))),
     setRow('Send actions to', 'The actions from each call’s notes, once they’re written. Connect ClickUp or Notion under Notes and tasks.', seg([{ value: 'none', label: 'Nowhere' }, { value: 'clickup', label: 'ClickUp' }, { value: 'notion', label: 'Notion' }], nt.actionsTo || 'none', async (v) => { await save((n) => { n.notes.actionsTo = v; }); drawInt(); })),
     setRow('Your notes', 'Saved on the Notes page and as Markdown files in your notes folder (below).', btn('Open Notes', { size: 'sm', icon: 'notes', onClick: () => invoke('open_note', { id: null }) })),
     h('p', { class: 'small faint', style: { paddingTop: '14px', borderTop: '1px solid var(--line-soft)' } },
@@ -546,7 +552,7 @@ export async function render(root, { store, arg }) {
     if (wanted.includes('clickup')) intRows.append(tokenRow('clickup', 'ClickUp', 'clickupListId', 'List ID'));
     if (wanted.includes('notion')) intRows.append(tokenRow('notion', 'Notion', 'notionDatabaseId', 'Database ID'));
   };
-  section('integrations', 'Notes and tasks', 'Where your rambles and meeting notes go. Each is saved as a Markdown file; tasks from rambles and actions from calls can also go to ClickUp or Notion.',
+  section('integrations', 'Notes and tasks', 'Where your rambles and meeting notes go. Each is saved as a Markdown file. A ramble’s tasks can go to ClickUp, or the whole note (without the transcript) to Notion; a call’s actions can go to either.',
     setRow('Notes folder', folderLabel, btn('Change…', { size: 'sm', icon: 'folder', onClick: async () => {
       const dir = await pickFile({ directory: true, title: 'Choose a folder for your notes' });
       if (!dir) return;
@@ -589,11 +595,11 @@ export async function render(root, { store, arg }) {
   listen('update', drawUpdate).then((off) => cleanups.push(off)).catch(() => {});
   section('about', 'About Navi', null,
     setRow('Version', h('span', {}, `Navi ${info.version || '0.1.0'}. `, upNote), upBtn),
-    setRow('Check for updates automatically', 'Navi looks on GitHub for a new version when it starts and every few hours, and tells you when one is ready.', toggle(S().general.checkUpdates !== false, (v) => save((n) => { n.general.checkUpdates = v; }))),
-    setRow('Your data', 'Settings, history and recordings live in this folder.', btn('Open folder', { size: 'sm', icon: 'external', onClick: () => invoke('open_data_folder') })),
+    setRow('Check for updates automatically', 'Navi looks on GitHub for a new version soon after it starts and every few hours, and tells you when one is ready. It doesn’t look while Local only is on.', toggle(S().general.checkUpdates !== false, (v) => save((n) => { n.general.checkUpdates = v; }))),
+    setRow('Your data', 'Settings, history, recordings, screenshots and speech models live in this folder. Markdown notes go to your notes folder.', btn('Open folder', { size: 'sm', icon: 'external', onClick: () => invoke('open_data_folder') })),
     setRow('Set-up', 'Walk through the first-run steps again.', btn('Run set-up again', { size: 'sm', onClick: async () => { await save((n) => { n.onboarded = false; }); location.reload(); } })),
     h('p', { class: 'small faint', style: { paddingTop: '14px', borderTop: '1px solid var(--line-soft)' } },
-      'Navi is free and open source under the MIT licence. Speech recognition by whisper.cpp (MIT). Typeface Poppins (SIL Open Font Licence). Made by ',
+      'Navi is free, under the MIT licence. Speech recognition by whisper.cpp (MIT). Typeface Poppins (SIL Open Font Licence). Made by ',
       h('a', { href: 'https://github.com/GoodLadTom', onClick: (e) => { e.preventDefault(); openPath('https://github.com/GoodLadTom'); } }, 'GoodLad'), '.'),
   );
 

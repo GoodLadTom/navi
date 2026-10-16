@@ -1,4 +1,5 @@
-//! Takes: every dictation, kept with its audio so nothing is ever lost.
+//! Takes: every dictation, kept while Save history is on. The text stays until you delete it; the
+//! audio goes after keepAudioDays (30 by default, 0 keeps it for good; see purge_audio_older_than).
 //!
 //! OWNER: data agent. STATUS: implemented, with unit tests.
 //!

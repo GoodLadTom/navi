@@ -9,10 +9,11 @@ shortcut, speak, release: the words appear in whatever app has focus, transcribe
   packs, settings, onboarding), `pill` (the recording overlay: transparent, always on top, never
   focused, click-through, covering the screen's work area so the firefly can hover in its top-right
   corner while you talk) and `prompt` (the card in the bottom-right corner for meeting notes and
-  for answers such as "what's wrong with this?", shown without taking the focus). All load plain HTML from `ui/` (no build step). A tray icon keeps Navi running when the
-  main window is closed.
+  for answers such as "what's wrong with this?", shown without taking the focus). All load plain
+  HTML from `ui/` (no build step). A tray icon keeps Navi running when the main window is closed.
 - A `whisper-server.exe` child process (whisper.cpp, CUDA build when there is an NVIDIA GPU) keeps
-  the speech model loaded so each take is transcribed in well under a second.
+  the speech model loaded, so takes don't wait for it to load each time. Transcription is quick on
+  an NVIDIA card and slower on the processor.
 
 ## One take, end to end
 
@@ -26,25 +27,39 @@ shortcut, speak, release: the words appear in whatever app has focus, transcribe
    After a short grace (110 to 180 ms) it plays the start cue (`sounds`: the chosen sound set from
    ui/sounds/sets) and shows the `overlay` pill, so a quick tap or a shortcut that merely starts
    with the talk keys ends silently.
-3. On `TalkUp` (or the second tap in hands-free), audio stops; the stretch up to the end of the cue
-   is trimmed off the start; `engine.transcribe` runs with a vocabulary prompt from the dictionary.
+3. On `TalkUp` (or, in hands-free, the next press of the talk keys or Enter), audio stops. The
+   audio recorded while the start cue played (at most about 0.1 s: the cue's length, capped at
+   160 ms, less its last 60 ms) is cut out so speaker bleed never becomes text; anything said
+   before the cue is kept. Nothing is cut in a wake-word take, with sounds off, or when Settings >
+   Microphone > Ignore the start cue is off. `engine.transcribe` then runs with a vocabulary
+   prompt from the dictionary.
 4. `text::voice::parse` checks for a wake-word command ("Navi, scratch that"). A rewrite or replace
    only runs when Navi typed something into this window in the last ten minutes; otherwise the words
-   are dictation ("Hello Navi, this is my first note"). Then `text::pipeline::run` applies snippets,
-   dictionary, offline cleanup, the optional AI step for the mode (`text::llm`), no-em-dash and
-   British spelling rules.
-5. `insert` pastes into the original app (clipboard snapshot, Ctrl+V, restore) and the take is saved
-   (`store::history` + a WAV in the audio folder). The pill shows done, the done cue plays.
-6. Later, `context::read_focused_text` reads the field again and `text::learn::find_corrections`
-   spots words the user fixed; repeated fixes are added to the dictionary automatically.
+   are dictation ("Hello Navi, this is my first note"). Then `text::pipeline::run` applies spoken
+   punctuation, snippets, the dictionary, offline cleanup, the optional AI step for the mode
+   (`text::llm`, which hands Claude Code and Codex to `text::cli_ai`), the no-em-dash and British
+   spelling rules, then the dictionary again.
+5. `insert` pastes into the app that has the focus when the text is ready (clipboard snapshot,
+   Ctrl+V, restore; or typed, as Settings choose). In a window running as administrator Windows
+   blocks the keystrokes, so the text is left on the clipboard. Unless Save history is off, the
+   take is saved (`store::history` + a WAV in the audio folder, deleted after
+   `privacy.keepAudioDays`, 30 by default). The pill shows done, the done cue plays.
+6. Later (25 seconds after pasting, or at the next take), `context::read_focused_text` reads the
+   field again and `text::learn::find_corrections` spots words the user fixed. A fix seen twice is
+   added to the dictionary by itself when `text::learn::can_auto_add` allows it (the misheard word
+   isn't everyday English); otherwise it waits as a suggestion on the Dictionary page. This needs
+   "Read the text near my cursor" on.
 
 Mode keys (HotkeySettings::mode_keys) fire `HotkeyEvent::ModeKey(n)`; `controller::switch_mode`
 saves the active mode, ticks the tray and shows "Mode: Email" in the bubble (or switches a take
 being recorded hands-free).
 
-Ramble (Space while holding the chord, with its own sound) records hands-free, transcribes in
-chunks as it goes, then `text::ramble` turns the talk into notes and tasks, saved as Markdown, kept
-on the Notes page (`meeting::save_ramble`) and optionally sent to ClickUp or Notion
+Ramble (Space while holding the chord, with its own sound) records hands-free in the Notes mode.
+Every 12 seconds it transcribes the last 30 seconds, only for the live preview in the bubble (the
+`ramble-partial` event). When it ends, the whole recording is transcribed once and `text::ramble`
+turns it into notes (title, summary, key points, decisions and tasks; rough offline notes when
+there is no AI or no reply within 90 seconds), saved as Markdown, kept on the Notes page
+(`meeting::save_ramble`) and optionally sent to ClickUp (the tasks) or Notion (the note without its transcript)
 (`integrations`). A hands-free take or a ramble finishes on Enter (`HotkeyEvent::Finish`, swallowed)
 or on the talk shortcut.
 
@@ -54,9 +69,11 @@ app starts. A meeting records two tracks, the microphone and the speakers in WAS
 input stream on the output device), and transcribes both every 20 seconds, cutting at a quiet
 moment. Loopback sends nothing while the computer is silent, so the gap is filled with silence to
 keep each line's time. Lines are marked You or Them, and microphone lines that echo the other side
-are dropped. On stop (or 20 seconds after the call app lets go of the microphone) the AI writes the
-notes around what you typed. They are saved in the `notes` table (`store::notes`, schema version
-2) and as Markdown in the notes folder. The audio is never kept.
+are dropped. On stop (or 20 seconds after the call app lets go of the microphone, or after 20
+minutes with nothing said when there is no call app to follow) the AI writes the notes around what
+you typed; with no AI the note keeps the transcript and your own notes. They are saved in the
+`notes` table (`store::notes`, schema version 2) and as Markdown in the notes folder. The audio is
+never kept.
 
 Along the way, as Settings > Meeting notes allows:
 - Short ideas (`ideas`): every four minutes of call, the AI for longer jobs reads the last nine
@@ -64,8 +81,10 @@ Along the way, as Settings > Meeting notes allows:
   call ends one more pass reads the whole transcript and returns the final list. Every quote is
   checked against the transcript and takes the time of the line it came from; anything not in the
   transcript is dropped.
-- Jobs (`jobs`): a line from your side that opens with "Hey Navi" and carries an instruction goes
-  straight to the AI with the call so far; the answer is kept with the note. The AI only writes.
+- Jobs (`jobs`): a line from your side that opens with the wake word ("Navi," with a pause by
+  default, or "Hey Navi"; a greeting and the name always count) and carries an instruction of three
+  or more words goes straight to the AI for longer jobs with the call so far; the answer is kept
+  with the note. The AI only writes.
 - Screenshots (`screen`): every 15 seconds a look at the screen, kept when enough of it changed,
   its text read with Windows OCR. Only that text goes to the AI writing the notes.
 - Actions: the bullets under the notes' Actions heading go to ClickUp or Notion.
@@ -73,48 +92,66 @@ Ideas, jobs and screenshots live in the note's `extras` JSON (schema version 3).
 after the call, so a note's jobs are always read, merged and saved under `NOTE_LOCK`, and a finished
 job is never overwritten by an older copy that still says "working".
 
-"Hey Navi" (`wake`, off by default): a microphone stream of its own feeds a ten-second ring at
-16 kHz; an energy voice detector finds where each utterance starts, and its first 1.8 seconds go to
-the engine. If the words open with the wake phrase, `controller::start_from_wake` starts a
-hands-free take with the audio from the start of the utterance prepended (`AudioService::prepend`),
-so nothing said while Navi woke up is lost; the take ends after six seconds of quiet (`WAKE_QUIET`),
-or sooner on Enter. Only real commands count in such a take (`voice::parse_after_wake`), and the
-wake phrase is stripped from the dictation. The listener pauses during takes, call notes, a paused
-shortcut and microphone tests.
+The wake word (`wake`, off by default): "Navi" followed by a pause (the default, so a mention
+mid-sentence never wakes it), or "Hey Navi" if Settings choose it; a greeting and the name ("Hey
+Navi", "OK Navi") always count. A microphone stream of its own feeds a ten-second ring at 16 kHz;
+an energy voice detector finds where each utterance starts, and its first 1.8 seconds go to the
+engine. If the words open with the wake word, `controller::start_from_wake` starts a hands-free
+take with the audio from the start of the utterance prepended (`AudioService::prepend`), so nothing
+said while Navi woke up is lost. The take ends after six seconds of quiet (`WAKE_QUIET`), on Enter
+or the talk shortcut, or after two minutes (`WAKE_MAX`). Only real commands count in such a take
+(`voice::parse_after_wake`), and the wake word is stripped from the dictation. The listener pauses
+during takes, call notes, a paused shortcut and microphone tests.
 
-"Watch my screen" (`watch`): a screenshot whenever the screen changes, until "stop watching" (or
-an hour). The AI then gets each screenshot's time, window and OCR text (never the picture), picks
-the ones that matter with captions and writes a short account; the rest are deleted. The result is
-a note whose app is "Watch". Screenshots live in the app data folder (`shots/<note id>/`), which the
+"Watch my screen" (`watch`): started by "Navi, watch" (said with the shortcut or to the wake-word
+listener), the tray or the Notes page. Every 10 seconds by default (Settings: 5, 10, 20 or 30) it
+looks at the screen and keeps a screenshot when enough of it changed, until "stop watching" (or an
+hour). The AI for longer jobs then gets each screenshot's time, window and OCR text (never the
+picture), picks up to 20 that matter with captions and writes a short account; the rest are
+deleted. Without an AI every screenshot stays, listed by time and window. The result is a note
+whose app is "Watch". Screenshots live in the app data folder (`shots/<note id>/`), which the
 asset protocol may read, so the interface shows them with `convertFileSrc`.
 
 "What's wrong with this?" (`VoiceCommand::Critique`): the selection (or the last insertion) goes to
 the AI with a prompt that asks for flaws, never praise, and the answer appears on the `prompt`
 card (`PromptState::Answer`) to read and copy. It runs in the background so the next take is never
-held up. The "Interview me" mode turns a ramble into a prompt that has the AI question you first.
+held up. The "Interview me" mode turns what you say in a take into a prompt that has the AI
+question you first.
 
 Updates (`update`): tauri-plugin-updater reads `latest.json` from the latest GitHub release of
 GoodLadTom/navi (20 seconds after start, then every six hours, unless Settings or Local only says
-no; Settings > About can always check). The installer it downloads must match the minisign public
-key in tauri.conf.json. A plain `npm run build` makes no update files (tauri.conf.json sets
-`createUpdaterArtifacts` to false) and needs no key. `scripts/release.py` bumps the version, builds
-with `src-tauri/tauri.release.conf.json` (which turns the update files on) and the private key
-(`NAVI_UPDATER_KEY`, by default `%USERPROFILE%\.tauri\navi-updater.key`), writes `latest.json` and
-publishes the release. Updates wait while a take or a meeting is recording.
+no; Settings > About can always check). That needs a published release anyone can download: the
+repository is private and has none yet, so the URL returns 404 and a check reports "No updates have
+been published yet." Nothing downloads until the user presses Update now; the installer must match
+the minisign public key in tauri.conf.json and runs in passive mode (a progress window, nothing to
+click). A plain `npm run build` makes no update files (tauri.conf.json sets
+`createUpdaterArtifacts` to false) and needs no key. `scripts/release.py` bumps the version in
+tauri.conf.json, Cargo.toml and package.json, builds with `src-tauri/tauri.release.conf.json`
+(which turns the update files on) and the private key (`NAVI_UPDATER_KEY`, by default
+`%USERPROFILE%\.tauri\navi-updater.key`), writes `latest.json`, and with `--publish` creates the
+GitHub release. A dry run (no `--publish`) still bumps the version files, so publishing the same
+version afterwards needs them reset first. Updates never install while a take or a meeting is
+recording, the screen is being watched, or notes are being written up.
 
 ## Where data lives
 
-`paths` puts everything under the per-user app data folder, `%APPDATA%\com.goodlad.navi` (the app
-identifier): `settings.json`, the SQLite database `navi.db`, the take recordings (`audio/`), the
-speech models (`models/`), the downloaded engine (`engine/`), logs, packs and screenshots
-(`shots/`). Notes default to `Documents\Navi Notes`. Installs from before the identifier changed
-keep using their `%APPDATA%\com.navaigate.navi` folder, because the database stores absolute paths
-(`paths::choose_data_dir`). API keys and tokens are in the Windows Credential Manager, never in
-these files.
+`paths` puts the app's files under the per-user app data folder, `%APPDATA%\com.goodlad.navi` (the
+app identifier): `settings.json`, the SQLite database `navi.db` (which also holds installed packs:
+the `packs` table, plus words, snippets and modes tagged with the pack id), the take recordings
+(`audio/`), the speech models (`models/`), the downloaded engine (`engine/`) and screenshots
+(`shots/<note id>/`). It also creates `logs/` and `packs/` there, but nothing writes to them. The
+log is `%LOCALAPPDATA%\com.goodlad.navi\logs\Navi.log` (tauri-plugin-log's default targets), and
+the WebView2 profile is in `%LOCALAPPDATA%\com.goodlad.navi` too. Notes default to
+`Documents\Navi Notes`. Installs from before the identifier changed keep using their old data
+folder beside it (`com.navaigate.navi`), because the database stores absolute paths
+(`paths::choose_data_dir`). API keys and tokens are in the Windows Credential Manager under the
+service "Navi", never in these files.
 
 ## Module map
 
-All Rust code is in `src-tauri/src`; the doc comment at the top of each file describes its module.
+The app's Rust code is in `src-tauri/src`, plus `src-tauri/build.rs` and the
+`src-tauri/examples/card_check.rs` helper. The doc comment at the top of each module file (every
+file but main.rs) describes it.
 
 | Area | Files |
 |---|---|
@@ -132,8 +169,13 @@ All Rust code is in `src-tauri/src`; the doc comment at the top of each file des
 
 - British English in everything the user reads. No em dashes in UI strings.
 - Never log API keys, tokens, prompts or transcripts at info level.
-- Nothing leaves the machine unless the user turned on an AI provider or an integration;
-  `privacy.localOnly` blocks even those.
+- Nothing leaves the machine except the update check and update download (GitHub), the
+  silence-model download (Hugging Face, tried at each start until it's there), engine and model
+  downloads the user starts (GitHub and Hugging Face), packs installed or refreshed from a link,
+  and the AI provider, ElevenLabs or integrations the user turned on (with their Test buttons).
+  `privacy.localOnly` blocks all of those, the ClickUp and Notion Test buttons included, except
+  engine and model downloads the user starts, a manual "Check for updates" and "Update now", and
+  an Ollama or custom endpoint whose address is this machine (localhost, 127.x or ::1).
 - Raw device events are off (`DeviceEventFilter::Always` on the Tauri builder): with tao's default
   raw keyboard registration, Windows stops calling the low-level hook while Navi's own window has
   the focus, which killed the shortcut, "Any key" and the key display inside Navi
@@ -150,6 +192,6 @@ All Rust code is in `src-tauri/src`; the doc comment at the top of each file des
   from the keyboard even when starting a take is slow (a Bluetooth microphone waking up).
 - Every take logs its steps at info level (started, stopped with speech seconds and peak level,
   words heard, typed or dropped and why), never the words themselves.
-- The "Hey Navi" listener never logs or keeps what it hears. Screenshots never leave the computer:
+- The wake-word listener never logs or keeps what it hears. Screenshots never leave the computer:
   the AI only ever gets the text read off them and the window names, and apps under "Never read
   these apps" are never captured.

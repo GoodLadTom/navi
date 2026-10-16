@@ -728,8 +728,8 @@ pub fn forget_missing_modes(settings: &mut types::Settings, modes: &[types::Mode
     changed
 }
 
-/// Ticks the tray's "Listen for Hey Navi" and "Watch my screen" to match, and names the wake word
-/// chosen in Settings.
+/// Ticks the tray's "Listen for ..." and "Watch my screen" to match, and names the wake word
+/// chosen in Settings > Wake word > Which word.
 pub fn sync_tray_toggles(app: &App) {
     let wake = app.settings().hey_navi;
     let watching = watch::is_watching();

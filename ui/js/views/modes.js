@@ -2,7 +2,26 @@ import { invoke, pickFile, listen } from '../bridge.js';
 import { h, ico, btn, chip, toggle, select, seg, setRow, field, toast, confirmDialog, errText, keycaps } from '../ui.js';
 
 const ICONS = ['clean', 'pen', 'mail', 'chat', 'terminal', 'notes', 'spark', 'wand'];
-const KIND_LABEL = { raw: 'Verbatim', clean: 'Tidy', rewrite: 'Rewrite', prompt: 'Agent prompt', notes: 'Notes' };
+const KIND_LABEL = { raw: 'As said', clean: 'Tidy', rewrite: 'Rewrite', prompt: 'Agent prompt', notes: 'Notes' };
+// What a mode does, under its name. Speak is a Clean mode that reads your words aloud instead of
+// typing them (controller.rs checks its id).
+const kindLabel = (m) => (m.id === 'speak' ? 'Read aloud' : KIND_LABEL[m.kind] || m.kind);
+
+// True when no AI can run (controller.rs make_llm gives None): none chosen in Settings > AI, or
+// Local only blocking one that runs off this computer. A missing key isn't known here.
+const noAi = (s) => {
+  const provider = s.ai?.provider || 'off';
+  return provider === 'off' || (!!s.privacy?.localOnly && ['claude-code', 'codex', 'anthropic', 'openai'].includes(provider));
+};
+// Whether takes in this mode go through the AI: rambles (Notes) whenever there is one, Raw never,
+// Clean's light polish not on the slower subscription tools (pipeline.rs), the rest when switched on.
+const usesAi = (m, s) => {
+  if (noAi(s)) return false;
+  if (m.kind === 'notes') return true;
+  if (m.kind === 'clean' && ['claude-code', 'codex'].includes(s.ai?.provider)) return false;
+  return !!m.useAi && m.kind !== 'raw';
+};
+const listNames = (names) => (names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0] || '');
 
 export async function render(root, { store, arg, go }) {
   let modes = await invoke('list_modes').catch(() => []);
@@ -44,11 +63,29 @@ export async function render(root, { store, arg, go }) {
           select(modes.filter((m) => m.kind !== 'notes').map((m) => ({ value: m.id, label: m.name })), store.settings.modes.defaultMode, (v) => store.saveSettings((n) => { n.modes.defaultMode = v; }).then(draw)))));
   }
 
+  const aiNote = h('div', {});
   const grid = h('div', { class: 'grid cols-3' });
   const editorHost = h('div', {});
-  root.append(grid, editorHost);
+  root.append(aiNote, grid, editorHost);
+
+  // Without an AI the rewrite modes quietly give back the offline tidy (pipeline.rs), so say so here.
+  function drawAiNote() {
+    const st = store.settings;
+    const needs = modes.filter((m) => m.useAi && (m.kind === 'rewrite' || m.kind === 'prompt')).map((m) => m.name);
+    if (!noAi(st) || !needs.length) { aiNote.replaceChildren(); return; }
+    const blocked = (st.ai?.provider || 'off') !== 'off';
+    const why = blocked ? 'Local only is on, so your AI is blocked' : 'No AI is set up';
+    const fix = blocked ? 'Turn Local only off, or use Ollama or a server on this computer.'
+      : 'Claude Code or Codex use the plan you already pay for, with no API key.';
+    aiNote.replaceChildren(h('div', { class: 'card', style: { marginBottom: '14px' } },
+      h('div', { class: 'card-head' },
+        h('div', {}, h('div', { class: 'h2' }, why),
+          h('p', { class: 'small quiet', style: { marginTop: '3px' } }, `${listNames(needs)} tidy your words offline instead of rewriting them, and rambles get rough notes. ${fix}`)),
+        btn('Set up AI', { size: 'sm', variant: 'ghost', icon: 'right', onClick: () => go('settings', 'ai') }))));
+  }
 
   const draw = () => {
+    drawAiNote();
     grid.innerHTML = '';
     const active = store.settings.modes.active || '';
     for (const m of modes) {
@@ -59,7 +96,7 @@ export async function render(root, { store, arg, go }) {
         h('span', { class: 'ico' }, ico(m.icon || 'spark', 20)),
         h('span', { class: 'default' }, inUse ? chip('In use', 'accent', true) : isDefault ? chip('Default', 'ink') : null,
           btn('', { variant: 'ghost', size: 'sm', icon: 'pen', title: `Edit ${m.name}`, onClick: () => openEditor(m) })),
-        h('div', {}, h('div', { class: 'h2' }, m.name), h('div', { class: 'small faint' }, KIND_LABEL[m.kind] + (m.useAi && m.kind !== 'raw' ? ' · AI' : ''))),
+        h('div', {}, h('div', { class: 'h2' }, m.name), h('div', { class: 'small faint' }, kindLabel(m) + (usesAi(m, store.settings) ? ' · AI' : ''))),
         h('div', { class: 'desc' }, m.description),
         h('div', { class: 'apps' }, key ? keycaps(key) : null, ...(m.apps || []).slice(0, 3).map((a) => chip(a.replace(/\.exe$/i, ''), 'line')), m.apps?.length > 3 ? chip(`+${m.apps.length - 3}`, 'line') : null,
           m.kind === 'notes' ? chip('Used by ramble', 'line') : null));
@@ -98,7 +135,9 @@ export async function render(root, { store, arg, go }) {
 
     const previewOut = h('div', { class: 'text-body quiet', style: { minHeight: '60px', fontSize: '13px' } }, 'Runs this mode on your last take so you can see the result before saving.');
     const testBtn = btn('Test on my last take', { size: 'sm', icon: 'play', onClick: async () => {
-      const last = (await invoke('list_takes', { query: { limit: 1, offset: 0, kind: 'talk' } }).catch(() => []))[0];
+      // The last dictation, held or hands-free (rambles and voice edits are left out).
+      const recent = await invoke('list_takes', { query: { limit: 20, offset: 0 } }).catch(() => []);
+      const last = (recent || []).find((t) => (t.kind === 'talk' || t.kind === 'handsFree') && t.rawText);
       if (!last) { previewOut.textContent = 'Say something first, then test.'; return; }
       testBtn.disabled = true; previewOut.textContent = 'Running…';
       try { previewOut.textContent = await invoke('preview_mode', { mode: collect(), text: last.rawText }); }
@@ -125,7 +164,7 @@ export async function render(root, { store, arg, go }) {
       h('div', { style: { marginTop: '14px' } }, field('Instructions for the AI', instr)),
       h('div', { style: { marginTop: '14px' } }, field('Icon', iconPick)),
       h('div', { class: 'divider' }),
-      setRow('Use AI for this mode', m.kind === 'raw' ? 'Raw never uses AI.' : 'Off keeps everything on this computer and uses Navi’s own tidy-up rules.', useAi),
+      setRow('Use AI for this mode', aiHelp(m), m.kind === 'notes' ? null : useAi),
       h('div', { class: 'stack', style: { marginTop: '6px' } }, h('div', { class: 'h3' }, 'Use automatically in'), appsWrap, appInput),
       h('div', { class: 'row', style: { marginTop: '20px', gap: '8px' } }, saveBtn, makeDefault, h('span', { style: { flex: 1 } }), removeBtn));
 
@@ -140,6 +179,16 @@ export async function render(root, { store, arg, go }) {
   draw();
   if (arg) { const m = modes.find((x) => x.id === arg); if (m) openEditor(m); }
   return () => cleanups.forEach((f) => { try { f(); } catch {} });
+}
+
+// What the "Use AI for this mode" switch really does for this kind of mode (pipeline.rs; rambles
+// are written up in controller.rs process_ramble, which never looks at the switch).
+function aiHelp(m) {
+  if (m.kind === 'raw') return 'This mode never uses AI: your words go in as said.';
+  if (m.kind === 'notes') return 'Rambles are written up by your AI whenever one is set up in Settings > AI, and get rough notes on this computer when not.';
+  if (m.id === 'speak') return 'Speak always sends your words to ElevenLabs to be read aloud. This switch only adds a light AI polish first, and not through Claude Code or Codex.';
+  if (m.kind === 'clean') return 'Off keeps everything on this computer and uses Navi’s own tidy-up rules. On adds a light AI polish, except through Claude Code or Codex, which are too slow for it.';
+  return 'Off keeps everything on this computer and uses Navi’s own tidy-up rules.';
 }
 
 function projectsCard(store) {

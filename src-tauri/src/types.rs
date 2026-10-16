@@ -47,9 +47,11 @@ pub struct NotesSettings {
     pub short_ideas: bool,
     /// What makes a good Short, in the user's words. Given to the AI with every pass.
     pub ideas_brief: String,
-    /// "Hey Navi, ..." said on a call gives the AI a job, done while the call goes on.
+    /// "Navi, ..." (or "Hey Navi, ...", as Settings > Wake word says) said on a call gives the AI
+    /// a job, done while the call goes on.
     pub call_jobs: bool,
-    /// Take a screenshot when the screen changes, so the notes can say what was shown.
+    /// Look at the screen every 15 seconds (meeting.rs SHOT_EVERY) and keep a screenshot when it
+    /// has changed, so the notes can say what was shown.
     pub call_screenshots: bool,
     /// Where the actions from the notes go: "none" | "clickup" | "notion" (connections under
     /// RambleSettings).
@@ -80,7 +82,7 @@ impl Default for NotesSettings {
     }
 }
 
-/// "Hey Navi": listening all the time for the wake word (see wake.rs).
+/// Settings > Wake word: listening all the time for the wake word, "Navi" by default (see wake.rs).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct HeyNaviSettings {
@@ -114,7 +116,7 @@ impl HeyNaviSettings {
     }
 }
 
-/// "Hey Navi, watch": screenshots while you work, written up afterwards (see watch.rs).
+/// "Navi, watch": screenshots while you work, written up afterwards (see watch.rs).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct WatchSettings {
@@ -423,7 +425,12 @@ impl Default for RambleSettings {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct PrivacySettings {
-    /// Blocks every network call except model and engine downloads you start yourself.
+    /// Keeps Navi off the internet. Blocks AI that runs off this computer (Anthropic, OpenAI,
+    /// Claude Code, Codex, and Ollama or a custom server at any other address), ElevenLabs, ClickUp
+    /// and Notion (sending notes and tasks, and the Test buttons), packs fetched or refreshed from
+    /// the web, the automatic update checks and the automatic download of the silence-trimming
+    /// model. Still allowed: model and engine downloads you start, Check for updates and Update now
+    /// when you press them, and Ollama or a custom server on this computer.
     pub local_only: bool,
     /// Days to keep recordings; 0 keeps them forever.
     pub keep_audio_days: u32,
@@ -481,7 +488,7 @@ impl Default for GeneralSettings {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ModeKind {
-    /// Exactly what you said (dictionary and snippets still apply).
+    /// Exactly what you said (spoken punctuation, dictionary and snippets still apply).
     Raw,
     /// Offline tidy: punctuation, capitals, fillers, British spelling. AI polish if enabled.
     Clean,
@@ -532,8 +539,8 @@ pub struct Take {
     pub model: String,
     /// From key release to text delivered.
     pub latency_ms: u64,
-    /// "pasted" | "typed" | "clipboard" | "notes" | "command" | "cancelled" | "error" | "rerun"
-    /// (a failed take transcribed again from History)
+    /// "pasted" | "typed" | "clipboard" | "notes" | "command" | "spoken" (Speak mode read it aloud)
+    /// | "cancelled" | "error" | "rerun" (a failed take transcribed again from History)
     pub status: String,
     /// "talk" | "handsFree" | "ramble" | "command"
     pub kind: String,

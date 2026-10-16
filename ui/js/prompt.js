@@ -86,7 +86,9 @@ function render(s) {
     case 'thinking':
       card.replaceChildren(
         h('span', { class: 'spin' }),
-        h('div', { class: 'txt' }, h('b', {}, s.title || 'Thinking'), h('span', {}, 'Asking your AI. It takes a few seconds.')),
+        // The AI for longer jobs answers this (Sonnet through Claude Code by default), which can
+        // take a while (controller.rs CRITIQUE_DEADLINE), so no promise of seconds.
+        h('div', { class: 'txt' }, h('b', {}, s.title || 'Thinking'), h('span', {}, 'Asking your AI. The answer appears here.')),
         closeBtn('Close'));
       break;
     case 'answer': {

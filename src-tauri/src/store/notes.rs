@@ -43,7 +43,7 @@ pub struct MeetingNote {
     pub file_path: Option<String>,
     /// Ideas for Shorts that came up on the call (ideas.rs).
     pub ideas: Vec<ShortIdea>,
-    /// Jobs given on the call with "Hey Navi, ..." (jobs.rs).
+    /// Jobs given on the call with "Navi, ..." or "Hey Navi, ..." (jobs.rs).
     pub jobs: Vec<CallJob>,
     /// Screenshots taken on the call or while watching (screen.rs, watch.rs).
     pub shots: Vec<Shot>,
@@ -86,7 +86,7 @@ pub struct IdeaQuote {
     pub text: String,
 }
 
-/// A job given on a call ("Hey Navi, draft the proposal") and what the AI made of it.
+/// A job given on a call ("Navi, draft the proposal") and what the AI made of it.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct CallJob {

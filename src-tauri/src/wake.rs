@@ -1,14 +1,15 @@
-//! "Hey Navi": the microphone stays open and Navi listens for its name, so you can start talking
-//! without touching the keyboard (Settings > Hey Navi). Off by default.
+//! The wake word ("Navi" by default, or "Hey Navi"): the microphone stays open and Navi listens for
+//! its name, so you can start talking without touching the keyboard (Settings > Wake word, with
+//! the choice of phrase under Which word). Off by default.
 //!
 //! * Its own microphone stream (WASAPI shared mode, alongside anything else using the mic) feeds a
 //!   few seconds of 16 kHz audio into a ring.
 //! * A simple voice detector (loudness over a slowly adapting noise floor) spots where each
 //!   utterance starts. Its first moments (up to 1.8 s, less if it ends sooner) go to the speech
 //!   engine, and if the words open with the wake phrase ("Hey Navi", any spelling, or "Navi" with a
-//!   pause after it when Settings choose the name alone, see voice::is_wake_phrase) a hands-free
-//!   take starts straight away with the audio from the start of
-//!   the utterance included, so "Hey Navi, email Sam about Friday" keeps every word. The take ends
+//!   pause after it while Settings keep the name alone, the default; see voice::is_wake_phrase) a
+//!   hands-free take starts straight away with the audio from the start of the utterance
+//!   included, so "Hey Navi, email Sam about Friday" keeps every word. The take ends
 //!   by itself when you stop talking (controller::start_from_wake).
 //! * Paused while a take is running, while Navi is taking call notes (the call's own transcript
 //!   hears "Hey Navi, ..." as a job instead, see jobs.rs), while the shortcut is paused from the
@@ -240,7 +241,7 @@ fn listen(app: Arc<App>) {
                 Err(e) => {
                     if open_error.as_deref() != Some(e.as_str()) {
                         log::warn!("couldn't open the microphone for Hey Navi: {e}");
-                        tell(&app, open_notice(device.as_deref(), &e));
+                        tell(&app, open_notice(app.settings().hey_navi.label(), device.as_deref(), &e));
                     }
                     open_error = Some(e);
                     retry_at = Instant::now() + Duration::from_secs(30);
@@ -301,12 +302,13 @@ fn tell(app: &Arc<App>, message: String) {
     app.hide_pill_later(gen, 4000);
 }
 
-/// What the bubble says when the listener can't open the microphone.
-fn open_notice(device: Option<&str>, error: &str) -> String {
+/// What the bubble says when the listener can't open the microphone. `phrase` is the wake phrase
+/// as people say it (HeyNaviSettings::label: "Navi" by default, or "Hey Navi").
+fn open_notice(phrase: &str, device: Option<&str>, error: &str) -> String {
     match device.map(str::trim).filter(|n| !n.is_empty()) {
         // Listening starts by itself once it is plugged in.
-        Some(name) if error.ends_with("is not connected") => format!("Hey Navi is waiting for the microphone '{name}'"),
-        _ => format!("Hey Navi can't listen. {error}"),
+        Some(name) if error.ends_with("is not connected") => format!("Listening for \u{201c}{phrase}\u{201d} is waiting for the microphone '{name}'"),
+        _ => format!("Can't listen for \u{201c}{phrase}\u{201d}. {error}"),
     }
 }
 
@@ -586,15 +588,18 @@ mod tests {
     fn a_missing_named_microphone_is_not_swapped_for_the_default() {
         let err = Mic::open(Some("Navi test: no such microphone")).err().expect("must not open another mic");
         assert!(err.contains("is not connected"), "{err}");
-        assert_eq!(open_notice(Some("Navi test: no such microphone"), &err), "Hey Navi is waiting for the microphone 'Navi test: no such microphone'");
+        assert_eq!(
+            open_notice("Navi", Some("Navi test: no such microphone"), &err),
+            "Listening for \u{201c}Navi\u{201d} is waiting for the microphone 'Navi test: no such microphone'"
+        );
     }
 
     #[test]
     fn says_why_hey_navi_cant_listen() {
-        assert_eq!(open_notice(Some(" USB Mic "), "The microphone 'USB Mic' is not connected"), "Hey Navi is waiting for the microphone 'USB Mic'");
-        assert_eq!(open_notice(None, audio::NO_MICROPHONE), "Hey Navi can't listen. No microphone found");
+        assert_eq!(open_notice("Navi", Some(" USB Mic "), "The microphone 'USB Mic' is not connected"), "Listening for \u{201c}Navi\u{201d} is waiting for the microphone 'USB Mic'");
+        assert_eq!(open_notice("Navi", None, audio::NO_MICROPHONE), "Can't listen for \u{201c}Navi\u{201d}. No microphone found");
         let blocked = audio::describe_open_error(&"Access is denied. (0x80070005)", false, "USB Mic").to_string();
-        assert_eq!(open_notice(Some("USB Mic"), &blocked), format!("Hey Navi can't listen. {blocked}"));
+        assert_eq!(open_notice("Hey Navi", Some("USB Mic"), &blocked), format!("Can't listen for \u{201c}Hey Navi\u{201d}. {blocked}"));
     }
 
     #[test]

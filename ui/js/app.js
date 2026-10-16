@@ -226,7 +226,7 @@ async function boot() {
   const meetingChanged = (m) => { const was = !!store.meeting?.recording; store.meeting = m; if (was !== !!m?.recording) renderNav(current.id); };
   listen('meeting', meetingChanged);
   invoke('meeting_status').then(meetingChanged).catch(() => {});
-  // The same dot while Navi watches the screen ("Hey Navi, watch").
+  // The same dot while Navi watches the screen ("Navi, watch", the tray or the Notes page).
   const watchChanged = (w) => { const was = !!store.watching; store.watching = !!w?.watching; if (was !== store.watching) renderNav(current.id); };
   listen('watch', watchChanged);
   invoke('watch_status').then(watchChanged).catch(() => {});

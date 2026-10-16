@@ -88,7 +88,7 @@ export async function render(root, { store, arg }) {
   function drawLearned() {
     const s = store.settings;
     body.append(h('div', { class: 'card', style: { marginBottom: '14px' } },
-      setRow('Learn from my corrections', `After Navi pastes, it looks again ${s.learning.checkAfterSecs} seconds later. If you have fixed a word, it notices. Fix the same word ${s.learning.autoAddAfter} times and it is added to your words automatically. The text is read on this computer only.`,
+      setRow('Learn from my corrections', `After Navi pastes, it looks again ${s.learning.checkAfterSecs} seconds later. If you have fixed a word, it notices. Fix the same name or term ${s.learning.autoAddAfter} times and it is added to your words automatically; everyday words wait here for your yes. It needs “Read the text near my cursor” on in Settings > Context and privacy. The text is read on this computer only.`,
         toggle(s.learning.enabled, (v) => store.saveSettings((n) => { n.learning.enabled = v; })))));
     const list = h('div', { class: 'card' });
     if (!suggestions.length) list.append(h('div', { class: 'empty' }, h('div', { class: 'h2' }, 'Nothing to review'), h('p', {}, 'Corrections Navi spots will wait here for a yes or no.')));

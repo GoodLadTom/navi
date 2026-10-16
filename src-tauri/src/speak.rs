@@ -1,5 +1,5 @@
 //! Text to speech with ElevenLabs: your words played back in a voice from your ElevenLabs account.
-//! Used by the Speak page, "Hear in voice" in History and the Speak mode (read aloud, not typed).
+//! Used by the Speak page, "Hear it" in History and the Speak mode (read aloud, not typed).
 //!
 //! * The key is saved in the Windows Credential Manager as "elevenlabs" (store::secrets), never in
 //!   settings or logs.
@@ -14,8 +14,9 @@ use std::time::Duration;
 const API: &str = "https://api.elevenlabs.io/v1";
 pub const SAMPLE_RATE: u32 = 24_000;
 pub const DEFAULT_MODEL: &str = "eleven_v4_turbo";
-/// ElevenLabs bills per character, so longer text is cut to this (see `fit`). The Speak page
-/// (ui/js/views/speak.js) says when only the first part is read.
+/// Navi's own cap: ElevenLabs bills per character, so longer text is cut to this (see `fit`). The
+/// Speak page (ui/js/views/speak.js), History's "Hear it" and the Speak mode's bubble say when only
+/// the first part is read.
 pub const MAX_CHARS: usize = 5_000;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

@@ -295,7 +295,14 @@ pub fn switch_mode(app: &Arc<App>, target: &str) {
     };
     if !live {
         app.show_pill_window(context::foreground_hwnd());
-        let message = if next_id.is_empty() { "Mode: Auto, picked from the app".to_string() } else { format!("Mode: {name}") };
+        // With "Pick the mode from the app" off, Auto always uses the default mode (pick_mode).
+        let message = if !next_id.is_empty() {
+            format!("Mode: {name}")
+        } else if next.modes.auto_by_app {
+            "Mode: Auto, picked from the app".to_string()
+        } else {
+            format!("Mode: Auto (your default, {})", modes::pick_mode(&all, &AppContext::default(), &next, None).name)
+        };
         let gen = app.pill(PillState::Notice { message });
         app.hide_pill_later(gen, 1500);
     }
@@ -1049,7 +1056,8 @@ async fn process_take(app: &Arc<App>, mut rec: Recording, mut samples: Vec<f32>,
             Ok(()) => {
                 log::info!("spoke {} words in {latency} ms", out.text.split_whitespace().count());
                 save_take(app, &settings, &rec, &raw, &out.text, &full_audio, latency, "spoken", rec.kind.as_str(), meta);
-                // Past ElevenLabs' limit only the start is read: say so, or the rest just goes missing.
+                // Past Navi's 5,000-character cap (speak::MAX_CHARS) only the start is read: say so,
+                // or the rest just goes missing.
                 if crate::speak::fit(&out.text).1 {
                     let message = "Read the first part only. Navi reads up to 5,000 characters.".to_string();
                     let hold = read_ms(&message, 2600);
@@ -1321,7 +1329,7 @@ async fn run_command(app: &Arc<App>, rec: &Recording, cmd: VoiceCommand, raw: &s
 async fn ai_edit(llm: &Llm, system: &str, user: &str, max_tokens: u32, temperature: f32) -> Result<String> {
     tokio::time::timeout(COMMAND_AI_DEADLINE, llm.complete(system, user, max_tokens, temperature))
         .await
-        .map_err(|_| anyhow!("{} took too long", llm.label()))?
+        .map_err(|_| anyhow!("{} took too long", llm.display_name()))?
 }
 
 async fn replace_last(app: &Arc<App>, last: &LastInsert, new_text: String, settings: &Settings) -> Result<()> {
@@ -1434,7 +1442,7 @@ async fn process_ramble(app: &Arc<App>, mut rec: Recording, mut samples: Vec<f32
             // Its own deadline: no take can start until this one is written up.
             let reply = tokio::time::timeout(RAMBLE_AI_DEADLINE, llm.complete(&sys, &user, 2500, 0.2))
                 .await
-                .unwrap_or_else(|_| Err(anyhow!("{} took too long", llm.label())));
+                .unwrap_or_else(|_| Err(anyhow!("{} took too long", llm.display_name())));
             match reply.and_then(|o| ramble::parse_notes(&o)) {
                 Ok(n) => n,
                 Err(e) => {
@@ -1517,7 +1525,7 @@ async fn process_ramble(app: &Arc<App>, mut rec: Recording, mut samples: Vec<f32
 }
 
 /// Why a ramble's tasks can't go where Settings > Notes and tasks sends them, before trying, as a
-/// short note for the bubble: no token or ID saved, or Local only (which blocks every connection,
+/// short note for the bubble: no token or ID saved, or Local only (which blocks ClickUp and Notion,
 /// as it does for call notes). None when they can be sent, or there is nothing to send: ClickUp
 /// takes only the tasks, Notion the whole note. `has_token` asks Windows Credential Manager.
 fn ramble_send_blocked(settings: &Settings, has_tasks: bool, has_token: impl Fn(&str) -> bool) -> Option<String> {

@@ -1,7 +1,8 @@
-//! Jobs given on a call: "Hey Navi, draft a follow-up email to Sam about the dates we agreed".
+//! Jobs given on a call: "Navi, draft a follow-up email to Sam about the dates we agreed".
 //!
 //! * The call's own transcript is watched for your lines (the microphone side) that open with the
-//!   wake phrase, any spelling ("Hey Navi", "OK Navy"), and carry an instruction
+//!   wake phrase, any spelling ("Hey Navi", "OK Navy", and "Navi," with a pause while Settings keep
+//!   the name alone, the default), and carry an instruction
 //!   (voice::job_instruction). When whisper splits "Hey Navi" from the instruction, the next line
 //!   of yours is joined on, even when it lands in the next 20-second piece.
 //! * Each job goes to the AI for longer jobs with the transcript so far and the notes you typed, and
@@ -21,7 +22,7 @@ const JOIN_WITHIN_MS: u64 = 6_000;
 /// next piece. A "Hey Navi" that is the last of your lines in a piece, bare or cut off mid-sentence,
 /// is held: the rest of it is likely at the start of the next piece. Pass it back as `held` with
 /// the next piece and it is dealt with then, once, whether or not more of it came.
-/// `name_only`: "Navi, ..." counts as well as "Hey Navi, ..." (Settings > Hey Navi > Wake word).
+/// `name_only`: "Navi, ..." counts as well as "Hey Navi, ..." (Settings > Wake word > Which word).
 /// `more_to_come`: another piece follows, so a line can be held for it.
 pub fn find(new: &[Line], held: Option<&Line>, name_only: bool, more_to_come: bool) -> (Vec<(u64, String)>, Option<Line>) {
     let mine: Vec<&Line> = held.into_iter().chain(new.iter()).filter(|l| l.who == "you").collect();

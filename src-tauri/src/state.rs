@@ -31,7 +31,8 @@ pub struct App {
     /// The tray's Mode submenu items ("mode:auto", "mode:<id>"), kept so their ticks can follow
     /// the active mode however it changes.
     pub tray_mode_items: Mutex<Vec<tauri::menu::CheckMenuItem<tauri::Wry>>>,
-    /// The tray's "Listen for Hey Navi" and "Watch my screen" ticks ("heynavi", "watch").
+    /// The tray's "Listen for “Navi”" (or “Hey Navi”) and "Watch my screen" ticks ("heynavi",
+    /// "watch").
     pub tray_toggles: Mutex<Vec<tauri::menu::CheckMenuItem<tauri::Wry>>>,
     pub mic_test: AtomicBool,
     pub quitting: AtomicBool,

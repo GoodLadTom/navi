@@ -1,4 +1,4 @@
-//! Screenshots for call notes and "Hey Navi, watch" (watch.rs): a look at the screen now and then,
+//! Screenshots for call notes and "Navi, watch" (watch.rs): a look at the screen now and then,
 //! kept only when enough of it has changed, with the text on it read on this computer.
 //!
 //! * `capture` copies the monitor the window in front is on, scaled to at most `max_width` pixels

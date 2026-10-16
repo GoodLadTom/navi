@@ -610,13 +610,23 @@ pub fn has_secret(name: String) -> bool {
 #[tauri::command]
 pub async fn test_ai(app: State<'_, Arc<App>>) -> Res<String> {
     let settings = app.settings();
+    // Why make_llm (llm.rs from_settings) turned the provider down, in its own terms: a custom
+    // server needs an address and a model (its key is optional), Claude Code and Codex need no key.
     let llm = make_llm(&settings).ok_or_else(|| {
-        if settings.privacy.local_only {
-            "Local only is on, so cloud AI is blocked.".to_string()
-        } else if settings.ai.provider == "off" {
+        let provider = settings.ai.provider.trim().to_ascii_lowercase();
+        let filled = |v: Option<&str>| v.is_some_and(|s| !s.trim().is_empty());
+        if provider.is_empty() || provider == "off" {
             "Choose a provider first.".to_string()
-        } else {
+        } else if provider == "custom" && !(filled(settings.ai.base_url.as_deref()) && filled(Some(&settings.ai.model))) {
+            "Enter the server address and model first.".to_string()
+        } else if settings.privacy.local_only {
+            "Local only is on, so AI that runs off this computer (Claude Code and Codex included) is blocked.".to_string()
+        } else if provider == "anthropic" || provider == "openai" {
             "Save an API key first.".to_string()
+        } else if provider == "custom" {
+            "Check the server address and model.".to_string()
+        } else {
+            "Choose a provider first.".to_string()
         }
     })?;
     llm.test().await.map_err(err)
@@ -748,14 +758,29 @@ pub fn open_link(url: String) -> Res<()> {
     tauri_plugin_opener::open_url(url.trim(), None::<&str>).map_err(err)
 }
 
+/// The Test button beside a ClickUp or Notion token: asks the service who the token belongs to.
 #[tauri::command]
-pub async fn test_integration(name: String) -> Res<String> {
+pub async fn test_integration(app: State<'_, Arc<App>>, name: String) -> Res<String> {
+    if let Some(why) = test_integration_blocked(&app.settings(), &name) {
+        return Err(why);
+    }
     let token = secrets::get(&name).ok_or("Save a token first.")?;
     match name.as_str() {
         "clickup" => integrations::test_clickup(&token).await.map(|u| format!("Connected as {u}")).map_err(err),
         "notion" => integrations::test_notion(&token).await.map(|u| format!("Connected as {u}")).map_err(err),
         _ => Err("Unknown integration.".into()),
     }
+}
+
+/// Why the Test button for `name` won't go online: Local only, which blocks ClickUp and Notion here
+/// as it does when notes and tasks are sent. None for a name that isn't a service.
+fn test_integration_blocked(settings: &Settings, name: &str) -> Option<String> {
+    let service = match name {
+        "clickup" => "ClickUp",
+        "notion" => "Notion",
+        _ => return None,
+    };
+    settings.privacy.local_only.then(|| format!("Local only is on, so Navi won't contact {service}. Turn it off in Settings > Context and privacy."))
 }
 
 #[tauri::command]
@@ -1182,6 +1207,20 @@ mod tests {
         s.privacy.local_only = false;
         s.notes.actions_to = "notion".into();
         assert!(actions_blocked(&s, |name| name == "notion").unwrap().contains("Notion database ID"));
+    }
+
+    #[test]
+    fn local_only_stops_the_clickup_and_notion_test_buttons() {
+        let mut s = Settings::default();
+        assert_eq!(test_integration_blocked(&s, "clickup"), None);
+        assert_eq!(test_integration_blocked(&s, "notion"), None);
+        s.privacy.local_only = true;
+        assert_eq!(
+            test_integration_blocked(&s, "clickup").as_deref(),
+            Some("Local only is on, so Navi won't contact ClickUp. Turn it off in Settings > Context and privacy.")
+        );
+        assert!(test_integration_blocked(&s, "notion").unwrap().contains("won't contact Notion"));
+        assert_eq!(test_integration_blocked(&s, "dropbox"), None, "not a service: Unknown integration says so");
     }
 
     #[test]
