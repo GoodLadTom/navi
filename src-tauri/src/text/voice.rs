@@ -68,9 +68,11 @@ pub fn strip_wake_phrase(transcript: &str) -> Option<String> {
 }
 
 /// True when `transcript` opens with the wake phrase: a greeting and the name ("Hey Navi", "OK Navy",
-/// "Hi Navi"). With `name_only` (Settings > Wake word > Which word: Navi) the name on its own counts
-/// too, but only with a pause after it ("Navi, email Sam", "Navi."), so "Navi is our new app" or
-/// "Navy blue" said in passing never wake it. The always-on listener and call jobs use this.
+/// "Hi Navi"). With `name_only` (a wake phrase in Settings > Voice commands is the bare name, see
+/// VoiceCommandSettings::jobs_name_only) the name on its own counts too, but only with a pause after
+/// it ("Navi, email Sam", "Navi."), so "Navi is our new app" or "Navy blue" said in passing never
+/// count. For call jobs (jobs.rs), where this stricter bar suits a long transcript; the always-on
+/// listener uses spoken::Matcher instead, which needs no pause after the name.
 pub fn is_wake_phrase(transcript: &str, name_only: bool) -> bool {
     let t = transcript.trim_start_matches(|c: char| !c.is_alphanumeric());
     let (first, after) = take_word(t);

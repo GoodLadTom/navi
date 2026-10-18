@@ -14,11 +14,13 @@ people with access can read it. Navi runs on Windows. A Mac version is planned
   in any app, speak and let go. Double-tap for hands-free, then press Enter or the shortcut to
   finish; Esc cancels. Windows won't let Navi type into an app running as administrator, so there
   the text is left on your clipboard instead.
-- **Just say "Navi".** Turn it on and you can start talking without touching the keyboard:
-  "Navi," a short pause, and carry on. Navi types what you say and finishes after six seconds of
-  quiet, when you press Enter or the shortcut, or after two minutes at most. Would rather say
-  "Hey Navi", which is harder to set off by accident? Pick it in Settings. The listening happens on
-  your computer and nothing it hears is kept.
+- **Voice commands.** Turn them on and talk to Navi without touching the keyboard. Say "Navi"
+  (or "Hey Navi") and keep talking, and Navi types what you say; it finishes after six seconds of
+  quiet, when you say "that's all", or when you press Enter. Say the wake word and a command and it
+  happens straight away: "Navi, watch my screen", "Navi, take notes", "Navi, scratch that". Say
+  "don't worry" on its own during a take to throw it away. Every phrase can be changed in Settings >
+  Voice commands, to any words you like. The listening happens on your computer, no AI is
+  involved, and nothing it hears is kept.
 - **Modes at your fingertips.** Switch between Raw, Clean, Message, Email, Prompt, Interview me,
   Speak and your own modes from the Modes page, the tray, or a key per mode (F1 to F5, say). The
   bubble shows which mode you are on. Interview me turns what you want into a prompt that has the
@@ -35,8 +37,8 @@ people with access can read it. Navi runs on Windows. A Mac version is planned
 - **Ideas for Shorts as the call happens.** Turn on Short ideas and give Navi your rules for a
   good Short. Every four minutes your AI looks through the call for moments worth posting, with
   the exact lines to cut and when they were said.
-- **Jobs on calls.** Say "Navi, draft the follow-up email" on a call (or "Hey Navi, ..." if you
-  picked that wake word) and your AI writes it while you talk. It only writes: nothing is sent or
+- **Jobs on calls.** Say "Navi, draft the follow-up email" on a call (with a pause after the name)
+  and your AI writes it while you talk. It only writes: nothing is sent or
   booked. Turn on call screenshots and Navi also looks at the screen every 15 seconds and keeps a
   screenshot when it has changed, so the notes can say what was shown; click one to see it full
   size. Screenshots of Navi itself, and black ones from apps that block capture, are skipped.

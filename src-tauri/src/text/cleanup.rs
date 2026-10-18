@@ -674,8 +674,18 @@ fn introductory(toks: &[Tok], del: &[bool], comma: Option<usize>) -> bool {
             _ => {}
         }
     }
-    words.len() == 1 && INTRO_WORDS.contains(&toks[words[0]].text.to_lowercase().as_str())
+    // Words were collected from the comma backwards; the first one said is the last collected.
+    let opener = |k: usize| toks[k].text.to_lowercase();
+    match words.as_slice() {
+        [w] => INTRO_WORDS.contains(&opener(*w).as_str()) || GREETINGS.contains(&opener(*w).as_str()),
+        // "Hi Sam, um, just wanted to say": the comma belongs to the greeting, so it stays.
+        [_name, greet] | [_, _name, greet] => GREETINGS.contains(&opener(*greet).as_str()),
+        _ => false,
+    }
 }
+
+/// Openers whose comma belongs to them ("Hi Sam, ...", "Thanks, ...").
+const GREETINGS: &[&str] = &["hi", "hey", "hello", "morning", "afternoon", "evening", "dear", "thanks", "cheers"];
 
 fn mark(del: &mut [bool], idx: Option<usize>) {
     if let Some(k) = idx {
@@ -1611,6 +1621,10 @@ mod tests {
         assert_eq!(remove_fillers("I was, um, thinking about it."), "I was thinking about it.");
         assert_eq!(remove_fillers("Yes, um, I agree."), "Yes, I agree.");
         assert_eq!(remove_fillers("So, uh, what now?"), "So, what now?");
+        // A greeting keeps its comma.
+        assert_eq!(remove_fillers("Hi Sam, um, just wanted to say thanks."), "Hi Sam, just wanted to say thanks.");
+        assert_eq!(remove_fillers("Hey, er, are you around?"), "Hey, are you around?");
+        assert_eq!(remove_fillers("Hello Sam Jones, um, quick one."), "Hello Sam Jones, quick one.");
         assert_eq!(remove_fillers("I think um we should erm go"), "I think we should go");
         assert_eq!(remove_fillers("Hmm."), "");
         assert_eq!(remove_fillers("It's done, um."), "It's done.");

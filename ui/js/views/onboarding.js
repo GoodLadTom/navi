@@ -196,6 +196,10 @@ export function run({ store }) {
       const learns = s().learning?.enabled !== false && s().context?.readField !== false;
       const n = Math.max(1, s().learning?.autoAddAfter || 2);
       const times = n === 1 ? 'once' : n === 2 ? 'twice' : `${n} times`;
+      // Voice commands quote the words set now (Settings > Voice commands), "Navi" by default.
+      const vc = s().voiceCommands;
+      const said = (action) => (vc?.commands || []).find((c) => c.action === action)?.phrases?.find((p) => String(p).trim());
+      const wake = said('wake') || 'Navi';
       frame(h('div', {},
         h('img', { class: 'welcome-mark', src: markSrc(), alt: '', style: { width: '64px', height: '64px' } }),
         h('div', { class: 'eyebrow' }, 'All set'),
@@ -205,6 +209,9 @@ export function run({ store }) {
           hk.doubleTapHandsFree !== false ? tip('Double-tap', 'your shortcut for hands-free.') : null,
           tip(`Hold ${chordLabel(hk.talk)}, tap ${chordLabel([hk.rambleKey || 'Space'])}`, 'to ramble. Press Enter when you’re done and Navi turns it into notes.'),
           tip('“Navi, scratch that”', 'undoes the last thing you said.'),
+          vc?.enabled
+            ? tip(`“${wake}, ${said('watch_on') || 'watch my screen'}”`, 'and other voice commands. Change the words in Settings > Voice commands.')
+            : tip(`Say “${wake}”`, 'to talk hands-free once you turn on Voice commands in Settings.'),
           learns ? tip(`Fix a name ${times}`, 'and Navi adds it to your words. Everyday words wait on the Dictionary page for your yes.') : null)),
         { next: 'Start using Navi' });
     }

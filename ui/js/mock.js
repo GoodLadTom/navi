@@ -29,7 +29,7 @@ const modes = [
 const takes = [
   { id: 't1', createdAt: iso(4), durationMs: 14200, appName: 'Outlook', windowTitle: 'RE: Slides for the Acme Studio pitch', modeId: 'email', rawText: "hi priya um just to say the slides are done and uploaded to the shared folder er I went with the warmer colours because they read better on a projector let me know if you want the other version instead cheers alex", finalText: "Hi Priya,\n\nJust to say the slides are done and uploaded to the shared folder. I went with the warmer colours because they read better on a projector. Let me know if you'd rather have the other version.\n\nCheers,\nAlex", words: 40, audioPath: 'sounds/warmup.wav', model: 'large-v3-turbo', latencyMs: 3100, status: 'pasted', kind: 'talk', meta: {} },
   { id: 't2', createdAt: iso(26), durationMs: 6100, appName: 'Slack', windowTitle: '#content', modeId: 'message', rawText: "yeah that works for me can we do thursday afternoon instead though", finalText: 'Yeah, that works for me. Can we do Thursday afternoon instead though?', words: 13, audioPath: 'sounds/warmup.wav', model: 'large-v3-turbo', latencyMs: 2800, status: 'pasted', kind: 'talk', meta: {} },
-  { id: 't3', createdAt: iso(48), durationMs: 21800, appName: 'Windows Terminal', windowTitle: 'claude ~ navi', modeId: 'prompt', rawText: "so in the history page when you click a take the audio player should show the waveform and let me scrub through it at the moment it only plays from the start can you fix that and keep the styling the same", finalText: "Goal: let me scrub through a take's audio from its waveform in the history page.\n\nContext: clicking a take opens the detail panel (@ui/js/views/history.js), where the player draws the waveform but only plays from the start.\n\nConstraints: keep the current styling.\n\nDone when: clicking or dragging on the waveform seeks the audio and the playhead follows.", words: 61, audioPath: 'sounds/warmup.wav', model: 'large-v3-turbo', latencyMs: 4300, status: 'pasted', kind: 'talk', meta: {} },
+  { id: 't3', createdAt: iso(48), durationMs: 21800, appName: 'Windows Terminal', windowTitle: 'claude ~ navi', modeId: 'prompt', rawText: "so in the history page when you click a take the audio player should show the waveform and let me scrub through it at the moment it only plays from the start can you fix that and keep the styling the same", finalText: "Let me scrub through a take's audio from its waveform on the History page.\n\nContext: clicking a take opens the detail panel (@ui/js/views/history.js), where the player draws the waveform but only plays from the start.\n\nConstraints: keep the current styling.", words: 44, audioPath: 'sounds/warmup.wav', model: 'large-v3-turbo', latencyMs: 4300, status: 'pasted', kind: 'talk', meta: {} },
   { id: 't4', createdAt: iso(95), durationMs: 184000, appName: 'Notion', windowTitle: 'Navi launch', modeId: 'notes', rawText: 'okay so for the launch we need the website live first then the video ...', finalText: "Navi launch plan\n\nSummary: get the website live first, then the film, then send the spring newsletter and post to Hacker News on the same morning.", words: 412, audioPath: 'sounds/warmup.wav', model: 'large-v3-turbo', latencyMs: 11800, status: 'notes', kind: 'ramble', meta: { notes: { title: 'Navi launch plan', summary: 'Get the website live first, then the 80-second film, then send the spring newsletter and post to Hacker News on the same morning.', points: ['The film has no talking: just music and chapters.', 'Keep the download on GitHub releases for now.', 'Windows first, Mac once the core is settled.'], decisions: ['No code signing for the first release.'], tasks: [{ text: 'Finish the landing page copy', owner: 'Alex', due: 'Friday' }, { text: 'Record the screen captures for the film', owner: null, due: null }, { text: 'Ask Priya for the launch post wording', owner: 'Alex', due: null }] } } },
   { id: 't5', createdAt: iso(60 * 20), durationMs: 3200, appName: 'Outlook', windowTitle: 'RE: Slides', modeId: 'email', rawText: 'Navi, make that shorter', finalText: 'Hi Priya, the slides are in the shared folder. I went with the warmer colours. Shout if you want the other version.', words: 22, audioPath: 'sounds/warmup.wav', model: 'large-v3-turbo', latencyMs: 3300, status: 'command', kind: 'command', meta: { command: { type: 'rewrite', instruction: 'make that shorter' } } },
   { id: 't6', createdAt: iso(60 * 26), durationMs: 9400, appName: 'Chrome', windowTitle: 'Acme Studio - Templates', modeId: 'clean', rawText: 'the template library is live now and you can duplicate any of the layouts from the gallery', finalText: 'The template library is live now, and you can duplicate any of the layouts from the gallery.', words: 17, audioPath: 'sounds/warmup.wav', model: 'large-v3-turbo', latencyMs: 520, status: 'pasted', kind: 'talk', meta: {} },
@@ -145,6 +145,125 @@ function meetingStatus() {
 }
 let mockWatch = { watching: false, id: '', elapsedMs: 0, shots: 0 };
 
+// Settings > Voice commands as Navi ships them. Keep in step with default_voice_commands in
+// src-tauri/src/types.rs.
+const DEFAULT_VOICE_COMMANDS = [
+  { action: 'wake', phrases: ['Navi', 'Hey Navi'] },
+  { action: 'scratch_that', phrases: ['scratch that'] },
+  { action: 'watch_on', phrases: ['watch my screen'] },
+  { action: 'watch_off', phrases: ['stop watching'] },
+  { action: 'notes_on', phrases: ['take notes'] },
+  { action: 'notes_off', phrases: ['stop taking notes'] },
+  { action: 'cancel', phrases: ["don't worry"] },
+  { action: 'finish', phrases: ["that's all"] },
+];
+const VOICE_ACTIONS = DEFAULT_VOICE_COMMANDS.map((c) => c.action);
+const VOICE_LABELS = { wake: 'Wake word', scratch_that: 'Scratch that', watch_on: 'Watch my screen', watch_off: 'Stop watching', notes_on: 'Take notes', notes_off: 'Stop taking notes', cancel: 'Cancel', finish: 'Finish' };
+// What Whisper writes for silence and noise, so no phrase may be one of them (types.rs BLOCKED).
+const VOICE_BLOCKED = ['thank you', 'thanks', 'thank you very much', 'thank you so much', 'thanks for watching', 'thank you for watching', 'you', 'bye', 'bye bye', 'ok', 'okay', 'yes', 'no', 'so', 'um', 'uh', 'hmm', 'the', 'a', 'i'];
+// types.rs phrase_key: "Don't worry!" -> "dont worry".
+const phraseKey = (s) => String(s ?? '').toLowerCase().replace(/['’‘]/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+// types.rs clean_phrase: trimmed, no punctuation at either end, single spaces. "Hey, Navi" keeps its comma.
+const cleanPhrase = (p) => String(p ?? '').trim().replace(/^[^\p{L}\p{N}'’]+|[^\p{L}\p{N}'’]+$/gu, '').replace(/\s+/g, ' ');
+const keyWords = (key) => (key ? key.split(' ').length : 0);
+// types.rs PHRASE_FOLDS and fold_key: two words the listener hears as one ("do not" is "don't").
+const PHRASE_FOLDS = [['do', 'not', 'dont'], ['that', 'is', 'thats'], ['it', 'is', 'its'], ['let', 'us', 'lets'], ['i', 'am', 'im'], ['what', 'is', 'whats'], ['all', 'right', 'alright'], ['can', 'not', 'cant'], ['will', 'not', 'wont'], ['o', 'k', 'ok']];
+function foldKey(key) {
+  const words = key.split(' ').filter(Boolean);
+  const out = [];
+  for (let i = 0; i < words.length; i++) {
+    const fold = PHRASE_FOLDS.find(([a, b]) => words[i] === a && words[i + 1] === b);
+    if (fold) { out.push(fold[2]); i++; } else out.push(words[i]);
+  }
+  return out.join(' ');
+}
+// types.rs after_words: what follows the first `n` words of `text`, a word being a run of letters,
+// digits and apostrophes with at least one letter or digit in it. Empty when the words run out.
+function afterWords(text, n) {
+  let count = 0;
+  let inWord = false;
+  let hasAlnum = false;
+  let i = 0;
+  for (const c of text) {
+    const alnum = /[\p{L}\p{N}]/u.test(c);
+    if (alnum || /['’‘]/.test(c)) {
+      if (!inWord) { inWord = true; hasAlnum = false; }
+      hasAlnum ||= alnum;
+    } else if (inWord) {
+      inWord = false;
+      if (hasAlnum && ++count === n) return text.slice(i);
+    }
+    i += c.length;
+  }
+  return '';
+}
+
+// Tidies and checks Settings > Voice commands before a save, throwing the message Rust would.
+// `before`: the settings before this save, so a phrase used twice names the command that had it.
+// Keep in step with VoiceCommandSettings::normalised_from in src-tauri/src/types.rs.
+function normaliseVoiceCommands(vc, before = null) {
+  const src = vc || {};
+  const lists = new Map();
+  const unknown = [];
+  for (const c of src.commands || []) {
+    if (!c || !VOICE_ACTIONS.includes(c.action)) { if (c) unknown.push(c); continue; }
+    if (lists.has(c.action)) lists.get(c.action).push(...(c.phrases || []));
+    else lists.set(c.action, [...(c.phrases || [])]);
+  }
+  // 1. complete(): a missing action gets its starting phrases; one left empty on purpose stays off.
+  for (const c of DEFAULT_VOICE_COMMANDS) if (!lists.has(c.action)) lists.set(c.action, [...c.phrases]);
+  // 2. Cleaned, empty ones dropped.
+  for (const [a, list] of lists) lists.set(a, list.map(cleanPhrase).filter((p) => phraseKey(p)));
+  // 3. A command typed with the wake word in front loses it: "Navi, take notes" is saved as "take notes".
+  const wakeKeys = [...new Set([...lists.get('wake').map(phraseKey), 'navi', 'hey navi', 'hi navi', 'ok navi', 'okay navi'])]
+    .sort((x, y) => y.length - x.length);
+  for (const a of VOICE_ACTIONS) {
+    if (a === 'wake') continue;
+    lists.set(a, lists.get(a).map((p) => {
+      const key = phraseKey(p);
+      const wake = wakeKeys.find((w) => key === w || key.startsWith(`${w} `));
+      if (!wake) return p;
+      if (key === wake) throw `“${p}” is the wake word. Type what you say after it.`;
+      return cleanPhrase(afterWords(p, keyWords(wake)));
+    }));
+  }
+  // 4. Each phrase on its own.
+  for (const a of VOICE_ACTIONS) {
+    for (const p of lists.get(a)) {
+      const key = phraseKey(p);
+      if ([...p].length > 40 || keyWords(key) > 6) throw `“${p}” is too long for a voice command. Keep it to six words or fewer.`;
+      if (VOICE_BLOCKED.includes(key)) throw `Navi can’t listen for “${p}”: Whisper often hears it in silence. Pick another phrase.`;
+      if ((a === 'cancel' || a === 'finish') && keyWords(key) === 1 && [...key].length < 6) throw `“${p}” is too short to listen for while you’re dictating. Use two words or more, such as “that’s all”.`;
+    }
+  }
+  // 5 and 6. No repeats within an action, and at most eight phrases.
+  for (const a of VOICE_ACTIONS) {
+    const seen = new Set();
+    const list = lists.get(a).filter((p) => { const k = phraseKey(p); if (seen.has(k)) return false; seen.add(k); return true; });
+    if (list.length > 8) throw 'Up to eight phrases for each command.';
+    lists.set(a, list);
+  }
+  // 7. A phrase belongs to one action, compared folded. Named: the command that had it before
+  // this save, else the earlier one.
+  const had = (action, k) => (before?.commands || []).some((c) => c && c.action === action && (c.phrases || []).some((q) => foldKey(phraseKey(cleanPhrase(q))) === k));
+  const owner = new Map();
+  for (const a of VOICE_ACTIONS) {
+    for (const p of lists.get(a)) {
+      const k = foldKey(phraseKey(p));
+      if (owner.has(k)) {
+        const [earlier, earlierP] = owner.get(k);
+        if (had(a, k) && !had(earlier, k)) throw `“${earlierP}” is already used for ${VOICE_LABELS[a]}.`;
+        throw `“${p}” is already used for ${VOICE_LABELS[earlier]}.`;
+      }
+      owner.set(k, [a, p]);
+    }
+  }
+  // 8. Something has to wake Navi.
+  if (!lists.get('wake').length) throw 'Keep at least one wake word.';
+  // 9. In Settings order, with actions from a newer Navi kept as they were, after them.
+  return { enabled: !!src.enabled, commands: [...VOICE_ACTIONS.map((action) => ({ action, phrases: lists.get(action) })), ...unknown] };
+}
+
 const daily = Array.from({ length: 14 }, (_, i) => ({ date: new Date(now - (13 - i) * 86400000).toISOString().slice(0, 10), words: [320, 610, 180, 0, 890, 1240, 760, 430, 980, 1120, 640, 1510, 1380, 1730][i] }));
 
 const state = {
@@ -166,7 +285,7 @@ const state = {
     general: { launchAtLogin: true, startMinimised: true, pasteMethod: 'paste', restoreClipboard: true, showPill: true, showFirefly: true, closeToTray: true, trayTipShown: false, checkUpdates: true, theme: 'light' },
     speak: { voiceId: 'v2', voiceName: 'George', model: 'eleven_v4_turbo' },
     notes: { detectCalls: true, systemAudio: true, autoStop: true, shortIdeas: true, ideasBrief: '', callJobs: true, callScreenshots: false, actionsTo: 'clickup' },
-    heyNavi: { enabled: false, phrase: 'navi' },
+    voiceCommands: { enabled: true, commands: structuredClone(DEFAULT_VOICE_COMMANDS) },
     watch: { everySecs: 10 },
   },
   takes,
@@ -261,7 +380,19 @@ function checkShortcut(keys) {
 const handlers = {
   app_info: () => ({ version: '0.1.0', chordLabel: state.settings.hotkeys.talk.join(' + '), dataDir: 'C:\\Users\\you\\AppData\\Roaming\\com.goodlad.navi', engine: state.engine, onboarded: state.settings.onboarded }),
   get_settings: () => structuredClone(state.settings),
-  save_settings: ({ settings }) => { state.settings = settings; return settings; },
+  // As commands.rs: voice commands are tidied and checked first, and the tidied settings come back.
+  // Phrases already saved that fail today's checks never stop something else (the theme) saving.
+  save_settings: ({ settings }) => {
+    let voiceCommands;
+    try { voiceCommands = normaliseVoiceCommands(settings.voiceCommands, state.settings.voiceCommands); } catch (e) {
+      if (JSON.stringify(settings.voiceCommands) !== JSON.stringify(state.settings.voiceCommands)) throw e;
+      voiceCommands = settings.voiceCommands;
+    }
+    const next = { ...settings, voiceCommands };
+    state.settings = next;
+    return structuredClone(next);
+  },
+  voice_command_defaults: () => ({ enabled: false, commands: structuredClone(DEFAULT_VOICE_COMMANDS) }),
   get_stats: () => state.stats,
   list_takes: ({ query }) => {
     let list = state.takes;

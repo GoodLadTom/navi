@@ -11,8 +11,9 @@
 //!   Node is run directly because the npm `codex.cmd` shim cuts an argument at its first line break.
 //!   Codex has no system prompt switch, so the instructions are the prompt and the text follows on
 //!   standard input. Its model list comes from Codex's own cache (~/.codex/models_cache.json).
-//! * Both take a few seconds (measured 14 Oct 2026: Claude Code about 3 s, Codex about 4.5 s), so
-//!   the pipeline uses them for rewrites, not for Clean's light polish.
+//! * Both take a few seconds, so the pipeline uses them for rewrites, not for Clean's light polish.
+//!   Claude Code runs with MAX_THINKING_TOKENS=0: with thinking on, Haiku spent about 470 output
+//!   tokens thinking before a ten-word reply (about 6 s); without it, about 2 s (18 Oct 2026).
 //! * No console window flashes up (CREATE_NO_WINDOW), and a tool that runs past the deadline is
 //!   killed. Errors are short sentences; prompts and replies are never logged.
 //! * Finding the tools: a path in Settings (the AI address field) first, then the native
@@ -150,6 +151,9 @@ async fn claude_code(model: &str, system: &str, user: &str, path_override: Optio
         cmd.arg("--system-prompt").arg(&system);
     }
     cmd.args(["--tools", "", "--no-session-persistence", "--strict-mcp-config", "--disable-slash-commands"]);
+    // No hidden thinking before a tidy-up: it was most of the wait (about 6 s down to about 2 s on
+    // Haiku, 18 Oct 2026) and adds nothing to rewording a few sentences.
+    cmd.env("MAX_THINKING_TOKENS", "0");
     let out = run(cmd, user).await;
     let _ = std::fs::remove_file(&prompt_file);
     let out = out.map_err(|e| anyhow!("Claude Code didn't answer: {e}"))?;

@@ -644,4 +644,37 @@ mod tests {
         assert!(out.used_ai, "{:?}", out.warnings);
         assert_eq!(out.text, email);
     }
+
+    /// Every built-in mode on the same sentences, through the real AI step (Claude Code, Haiku, as
+    /// the owner runs it), printing what each one gives back and whether the AI's answer was kept.
+    /// Run by hand: cargo test --lib text::pipeline::tests::live_every_mode -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn live_every_mode() {
+        let provider = std::env::var("NAVI_LIVE_PROVIDER").unwrap_or_else(|_| "claude-code".into());
+        let model = std::env::var("NAVI_LIVE_MODEL").unwrap_or_else(|_| "haiku".into());
+        let ai = AiSettings { provider: provider.clone(), model: model.clone(), ..Default::default() };
+        let llm = Llm::from_settings(&ai, None, false).expect("an AI provider");
+        let mut settings = Settings::default();
+        settings.user_name = "Alex".into();
+        // As whisper writes them: already punctuated, with the ums and the thinking aloud left in.
+        let said = [
+            ("casual", "Hi Sam, um, just wanted to say thanks for yesterday. The meeting went really well, and, er, can we do Thursday instead of Friday for the follow-up? Cheers."),
+            ("coding", "Can you fix the login page so that when the password is wrong it shows a proper error message instead of just going blank? And keep the styling the same."),
+            ("plan", "So I want to plan a birthday party for my mum. She's turning sixty in March, and she likes jazz and doesn't like big crowds, and we've got about a thousand pounds."),
+        ];
+        println!("provider {provider} / {model}");
+        for (label, raw) in said {
+            println!("\n=============== {label}: {raw}");
+            for id in ["raw", "clean", "message", "email", "prompt", "interview", "speak", "notes"] {
+                let m = mode(id);
+                let t = std::time::Instant::now();
+                let out = run(PipelineInput { raw, mode: &m, ctx: &AppContext::default(), settings: &settings, words: &[], snippets: &[], llm: Some(&llm), project_files: &[] })
+                    .await
+                    .expect("pipeline");
+                println!("\n--- {id} ({:?}, ai {}, {} ms){}", m.kind, out.used_ai, t.elapsed().as_millis(), if out.warnings.is_empty() { String::new() } else { format!(" WARNINGS: {:?}", out.warnings) });
+                println!("{}", out.text);
+            }
+        }
+    }
 }

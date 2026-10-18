@@ -77,7 +77,7 @@ pub fn builtin_modes() -> Vec<Mode> {
             id: "prompt".into(),
             name: "Prompt".into(),
             icon: "terminal".into(),
-            description: "A clear brief for a coding agent, with references to your project's files.".into(),
+            description: "A clear, direct brief for an AI tool such as Claude Code, Cursor or ChatGPT, with references to your project's files.".into(),
             kind: ModeKind::Prompt,
             instructions: String::new(),
             apps: apps(&[
@@ -250,7 +250,7 @@ pub(crate) fn common_rules(settings: &Settings, vocab: &[String]) -> String {
     }
     let name = settings.user_name.trim();
     if !name.is_empty() {
-        rules.push(format!("The speaker's own name is {name}. Spell it that way if they say it, but never add it."));
+        rules.push(format!("The speaker's own name is {name}. Spell it that way if they say it, but never add it (the one exception is an email's sign-off, when the mode says so)."));
     }
     let style = settings.writing.style_notes.trim();
     if !style.is_empty() {
@@ -265,7 +265,7 @@ fn mode_section(mode: &Mode, settings: &Settings, mention_style: &str) -> String
         return MESSAGE.to_string();
     }
     if id == "email" {
-        return EMAIL.to_string();
+        return email_section(settings);
     }
     if id == "interview" {
         return INTERVIEW.to_string();
@@ -300,20 +300,32 @@ fn clean_section(settings: &Settings) -> String {
 
 const MESSAGE: &str = "Mode: Message (chat apps such as Slack, Teams and WhatsApp).
 Turn the transcript into a chat message the speaker would happily send.
-- Short, natural and conversational. Cut spoken padding, repetition and false starts, but keep every point, question and detail they made.
+- Short, natural and conversational, the way a good chat message reads. Tighten it: cut spoken padding (\"just wanted to say\", \"I was wondering if\", \"basically\"), repetition and false starts, make questions direct and split long run-on sentences, but keep every point, question and detail they made.
 - Keep their tone and level of formality; do not make it more formal or more enthusiastic than they sounded.
 - Do not add a greeting, sign-off, signature or subject line; keep a greeting or sign-off only if the speaker said one. Never add emojis.
 - Usually one short paragraph. Use a line break only between clearly separate points, or a short list with \"- \" if they listed several items.
 - Plain text only: no headings and no bold.";
 
-const EMAIL: &str = "Mode: Email.
-Turn the transcript into the body of an email, ready to send.
-- Organise it into short paragraphs, one main point each, separated by a blank line.
-- Greeting: include one only if the speaker said one (for example \"Hi Sam\"), on its own line, followed by a blank line.
-- Sign-off: include one only if the speaker said one (for example \"Thanks, Sam\"), on its own lines at the end. Never add a greeting, sign-off, name, subject line or placeholder that was not spoken.
-- Tidy the grammar so it reads as written rather than spoken, but keep the speaker's tone; do not make it stiffer, longer or more formal than they sounded.
-- If they listed several items, you may set them out as a short list with \"- \".
-- Plain text only: no Markdown such as headings or bold.";
+/// A complete email, ready to send: greeting, short paragraphs, sign-off and the speaker's name.
+/// This is what makes Email more than Clean with line breaks.
+fn email_section(settings: &Settings) -> String {
+    let name = settings.user_name.trim();
+    let signature = if name.is_empty() {
+        "Do not add a name under the sign-off (you don't know it) unless the speaker said one.".to_string()
+    } else {
+        format!("Put the speaker's name, {name}, on the line under the sign-off, unless they signed off with another name.")
+    };
+    format!(
+        "Mode: Email.
+Turn the transcript into a complete email, ready to send.
+- Start with a greeting on its own line, followed by a blank line. Use the greeting the speaker said; if they didn't say one, greet the person they are writing to by name when they named them (for example \"Hi Sam,\"), otherwise just \"Hi,\".
+- Then the body in short paragraphs, one main point each, separated by blank lines. Tidy it so it reads as written rather than spoken. Keep every point, question and detail, and keep the speaker's tone; do not make it stiffer, longer or more formal than they sounded.
+- If they listed several items, set them out as a short list with \"- \".
+- End with a sign-off on its own line, after a blank line, that fits their tone (for example \"Thanks,\" \"Cheers,\" or \"Best,\"). Use theirs if they said one. {signature}
+- Never add a subject line, a placeholder such as [Name], or any fact, promise, date or detail the speaker did not say.
+- Plain text only: no Markdown such as headings or bold."
+    )
+}
 
 const INTERVIEW: &str = "Mode: Interview me.
 The speaker is describing something they want an AI assistant (such as Claude or ChatGPT) to help with. Turn the transcript into a prompt for that assistant, in the speaker's own words and voice (first person; address the assistant as \"you\").
@@ -325,16 +337,16 @@ The speaker is describing something they want an AI assistant (such as Claude or
 fn prompt_section(mention_style: &str) -> String {
     let example = crate::text::agent::mention("src/app.ts", mention_style);
     format!(
-        "Mode: Prompt for a coding agent.
-The speaker is dictating instructions for an AI coding agent such as Claude Code or Cursor. Turn the transcript into a clear, well-organised prompt for that agent, in the speaker's own words and voice (first person; address the agent as \"you\" if they did).
+        "Mode: Prompt for an AI agent.
+The speaker is dictating instructions for an AI agent or assistant, such as Claude Code, Cursor or ChatGPT. Turn the transcript into a clear, well-organised prompt for it, in the speaker's voice (first person where they speak about themselves).
+- Write it as instructions, not speech: open with the task as a direct instruction (\"Fix the login page so that ...\", \"Plan a birthday party for my mum ...\"). Take out conversational padding such as \"can you\", \"so I want\", \"basically\" and \"I was wondering if\", and any thinking aloud, but keep every requirement and detail they gave.
 - Do not do the task yourself. Never write code, answer the question, propose a solution or add steps the speaker did not ask for.
-- When the request has several parts, organise it under these labels, each on its own line followed by its content, in this order:
-  Goal: what they want done.
+- When the request has several parts or some background, write the direct instruction first, then only the labelled sections the speaker gave material for, each on its own line followed by its content:
   Context: background, current behaviour, where the problem is.
   Constraints: anything they said to keep, avoid or follow.
-  Done when: how they will know it is finished.
-  Leave out any section the speaker gave nothing for. Never invent context, constraints or acceptance criteria.
-- For a short, single-step request, write one or two plain sentences instead of sections.
+  Done when: only if they said how they will know it is finished.
+- Every line must come from what they said. Never add your own goals, themes, adjectives, ideas, deliverables, steps or acceptance criteria, even helpful ones.
+- For a short, single-step request, write one or two direct sentences instead of sections.
 - Use \"- \" bullets inside a section when they listed several things.
 - File references: when the speaker refers to a file, folder or component that matches an entry in the candidate files list, refer to it by that exact entry, written like {example} (copy it from the list). Only use entries from that list; never invent, guess, shorten or change a path. If nothing in the list matches what they described, describe it in words instead.
 - Keep technical terms, identifiers, commands, error messages and code exactly as dictated."
@@ -537,11 +549,17 @@ mod tests {
         let sys = |id: &str| build_messages(&mode_by_id(id), "x", &c, &s, &[], &[]).0;
         assert!(sys("clean").contains("smallest set of edits"));
         assert!(sys("clean").contains("keep only the corrected version"));
-        assert!(sys("email").contains("include one only if the speaker said one"));
+        assert!(sys("email").contains("Start with a greeting"));
         assert!(sys("email").contains("short paragraphs"));
+        assert!(sys("email").contains("Do not add a name under the sign-off"), "no name known: no signature");
+        let mut named = Settings::default();
+        named.user_name = "Alex".into();
+        let email = build_messages(&mode_by_id("email"), "x", &c, &named, &[], &[]).0;
+        assert!(email.contains("Put the speaker's name, Alex, on the line under the sign-off"));
         assert!(sys("message").contains("Do not add a greeting, sign-off"));
         let p = sys("prompt");
-        assert!(p.contains("Goal:") && p.contains("Context:") && p.contains("Constraints:") && p.contains("Done when:"));
+        assert!(p.contains("Context:") && p.contains("Constraints:") && p.contains("Done when: only if they said"));
+        assert!(p.contains("Never add your own goals"));
         assert!(p.contains("Do not do the task yourself"));
         assert!(p.contains("never invent, guess, shorten or change a path"));
     }

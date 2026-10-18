@@ -5,7 +5,7 @@ import { shortcutPicker } from '../shortcut.js';
 import { soundPicker, playCue } from '../soundpicker.js';
 
 const SECTIONS = [
-  ['general', 'General'], ['shortcuts', 'Shortcuts'], ['heynavi', 'Wake word'], ['sound', 'Sound'], ['mic', 'Microphone'], ['engine', 'Speech engine'],
+  ['general', 'General'], ['shortcuts', 'Shortcuts'], ['commands', 'Voice commands'], ['sound', 'Sound'], ['mic', 'Microphone'], ['engine', 'Speech engine'],
   ['ai', 'AI'], ['voice', 'Voice'], ['writing', 'Writing'], ['privacy', 'Context and privacy'], ['meetings', 'Meeting notes'], ['integrations', 'Notes and tasks'], ['about', 'About'],
 ];
 
@@ -23,6 +23,34 @@ const MODEL_HINTS = {
   openai: ['gpt-5-mini', 'gpt-5'],
   ollama: ['llama3.2', 'qwen3:8b', 'gemma3'],
   custom: [],
+};
+
+// Settings > Voice commands. Rows are named as types.rs voice_action_label names the actions.
+// Said on their own while you dictate, rather than straight after the wake word.
+const IN_TAKE = ['cancel', 'finish'];
+// Wake words common enough that Navi may hear them when nobody meant to wake it.
+const COMMON_WAKE = ['hey', 'hi', 'hello', 'ok', 'okay', 'right', 'so', 'computer'];
+// Two phrases are the same command when their keys match ("Don't worry!" and "dont worry"). Keep in
+// step with phrase_key in src-tauri/src/types.rs.
+const vkey = (s) => String(s ?? '').toLowerCase().replace(/['’‘]/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+const vcEntry = (vc, action) => (vc?.commands || []).find((c) => c.action === action);
+const vcPhrases = (vc, action) => (vcEntry(vc, action)?.phrases || []).filter((p) => vkey(p));
+// The wake word as the page quotes it: the first one, or "Navi" (types.rs wake_label).
+const wakeLabel = (vc) => vcPhrases(vc, 'wake')[0] || 'Navi';
+// How to say a command: "Navi, stop watching" (types.rs say). Null when the command is off.
+const sayFor = (vc, action) => {
+  const first = vcPhrases(vc, action)[0];
+  if (!first) return null;
+  return action === 'wake' ? wakeLabel(vc) : `${wakeLabel(vc)}, ${first}`;
+};
+// The words for jobs on calls: jobs.rs takes "Navi" alone only while it is a wake word
+// (types.rs jobs_name_only), and otherwise wants "Hey Navi".
+const jobsWake = (vc) => (vcPhrases(vc, 'wake').some((p) => vkey(p) === 'navi') ? 'Navi' : 'Hey Navi');
+// A wake word short or common enough to set Navi off by accident. Navi's own name is what the
+// listener is tuned for, so it never gets the warning.
+const commonWake = (p) => {
+  const k = vkey(p);
+  return k !== 'navi' && ((!k.includes(' ') && [...k].length <= 4) || COMMON_WAKE.includes(k));
 };
 
 // Model downloads carry on when you leave Settings, so their progress is kept here rather than in
@@ -130,7 +158,7 @@ export async function render(root, { store, arg }) {
     setRow('Voice edits', 'Start with “Navi”: “Navi, scratch that”, “Navi, make that shorter”, “Navi, change Tuesday to Wednesday”. Select text first and say “Navi, turn this into bullet points”, or “Navi, what’s wrong with this?” for a blunt list of its problems. “Scratch that” works without an AI, and so does “change Tuesday to Wednesday” when Navi finds the word. Shorter, bullet points and “what’s wrong” need an AI (set one up under AI).', chip('Always on', 'accent', true)),
   );
 
-  // ---------------------------------------------------------------- wake word
+  // ---------------------------------------------------------------- voice commands
   const watchNote = h('span', { class: 'small faint' });
   const watchBtn = btn('Start watching', { size: 'sm', icon: 'play' });
   const drawWatch = (w) => {
@@ -145,27 +173,116 @@ export async function render(root, { store, arg }) {
   };
   invoke('watch_status').then(drawWatch).catch(() => {});
   listen('watch', drawWatch).then((off) => cleanups.push(off)).catch(() => {});
-  const hn = S().heyNavi || {};
-  // The wake word: "Hey Navi" or the name on its own. Every place that quotes it on this page
-  // follows the choice straight away.
-  // "Navi" is the default; only "hey-navi" means Hey Navi.
-  const wakeLabel = (phrase) => (phrase === 'hey-navi' ? 'Hey Navi' : 'Navi');
-  const wakeSpans = [];
-  const wk = () => { const s = h('span', {}, wakeLabel(hn.phrase)); wakeSpans.push(s); return s; };
-  const nameOnlyNote = h('p', { class: 'small faint', style: { marginTop: '6px' }, hidden: hn.phrase === 'hey-navi' },
-    'Say the name first with a short pause after it, as if you were talking to someone: “Navi, email Sam about Friday.” Just mentioning Navi in a sentence won’t wake it.');
-  const setWake = (phrase) => {
-    wakeSpans.forEach((s) => { s.textContent = wakeLabel(phrase); });
-    nameOnlyNote.hidden = phrase === 'hey-navi';
-    save((n) => { n.heyNavi = { ...(n.heyNavi || {}), phrase }; });
+
+  // Each action lists the phrases that set it off, as chips. Every save goes through Rust's checks
+  // (types.rs normalised) and the section redraws from what comes back, so a refused phrase never
+  // shows as a chip and a failed save puts the chips back as they were.
+  const VC = () => S().voiceCommands || { enabled: false, commands: [] };
+  // The entry for `action` in settings being saved, made if it is missing.
+  const entryIn = (n, action) => {
+    n.voiceCommands = n.voiceCommands || { enabled: false, commands: [] };
+    n.voiceCommands.commands = n.voiceCommands.commands || [];
+    let e = n.voiceCommands.commands.find((c) => c.action === action);
+    if (!e) { e = { action, phrases: [] }; n.voiceCommands.commands.push(e); }
+    e.phrases = e.phrases || [];
+    return e;
   };
-  section('heynavi', 'Wake word', ['Start talking without touching the keyboard. Say “', wk(), '” and carry on: Navi types what you say next. Take your time: it finishes after six seconds of quiet, or press Enter when you’re done.'],
-    setRow(['Listen for “', wk(), '”'], ['The microphone stays on while Navi listens for its name, so Windows shows its microphone icon. What it hears is checked on this computer and never kept. It pauses while Navi takes call notes, where “', wk(), ', …” gives it a job instead.'], toggle(!!hn.enabled, (v) => save((n) => { n.heyNavi = { ...(n.heyNavi || {}), enabled: v }; }))),
-    setRow('Which word', [h('span', {}, '“Navi” on its own is quickest to say. “Hey Navi” is the hardest to set off by accident.'), nameOnlyNote],
-      seg([{ value: 'navi', label: 'Navi' }, { value: 'hey-navi', label: 'Hey Navi' }], hn.phrase === 'hey-navi' ? 'hey-navi' : 'navi', setWake)),
-    setRow('What you can say', ['“', wk(), '” and then your words. “', wk(), ', scratch that.” “', wk(), ', make that shorter.” Select some text and say “', wk(), ', what’s wrong with this?” for a list of its problems. Shorter and “what’s wrong” need an AI.'], chip('Works with the shortcut too', 'line')),
-    setRow('Watch my screen', ['“', wk(), ', watch” and Navi looks at the screen every few seconds (set how often below) and keeps a screenshot only when enough of it has changed. “', wk(), ', stop watching” and your AI picks the ones that matter and writes up what you did, on the Notes page. With no AI, every screenshot is kept, listed by time. Watching stops by itself after an hour.'], h('div', { class: 'row' }, watchNote, watchBtn)),
-    setRow('How often to look', null, select([{ value: '5', label: 'Every 5 seconds' }, { value: '10', label: 'Every 10 seconds' }, { value: '20', label: 'Every 20 seconds' }, { value: '30', label: 'Every 30 seconds' }], String(S().watch?.everySecs || 10), (v) => save((n) => { n.watch = { ...(n.watch || {}), everySecs: Number(v) }; }))),
+  // Places that quote the words for jobs on calls; drawVoice keeps them in step with the wake words.
+  const jobsSpans = [];
+  const jobsWk = () => { const s = h('span', {}, jobsWake(VC())); jobsSpans.push(s); return s; };
+  // The lead's example command follows the phrases too. With Watch my screen off, another command stands in.
+  const vcExample = h('span', {});
+  const example = (vc, order) => order.map((a) => sayFor(vc, a)).find(Boolean) || `${wakeLabel(vc)}, watch my screen`;
+  const vcHost = h('div', {});
+  const vcInputs = {};
+  let vcDrawn = '';
+  const vcToggle = toggle(!!VC().enabled, async (v) => {
+    await save((n) => { n.voiceCommands = { ...(n.voiceCommands || { commands: [] }), enabled: v }; });
+    drawVoice();
+  });
+  const addPhrase = async (action) => {
+    const input = vcInputs[action];
+    const typed = input.value.trim();
+    if (!vkey(typed)) { input.value = ''; return; }
+    const vc = VC();
+    if (vcPhrases(vc, action).some((p) => vkey(p) === vkey(typed))) { toast('Already there'); return; }
+    // A phrase another command has is refused by Rust (types.rs normalised_from), which names that
+    // command after taking a wake word off the front and hearing "do not" as "don't", as the
+    // listener does. Its message comes back as the toast.
+    if (await save((n) => { entryIn(n, action).phrases.push(typed); })) vcInputs[action].value = '';
+    drawVoice();
+  };
+  const removePhrase = async (action, phrase) => {
+    await save((n) => { const e = entryIn(n, action); e.phrases = e.phrases.filter((p) => vkey(p) !== vkey(phrase)); });
+    drawVoice();
+  };
+  const vcRow = (vc, action, name, desc) => {
+    const phrases = vcPhrases(vc, action);
+    const first = phrases[0];
+    // The last wake word can't go: without one, nothing would start a take.
+    const lastWake = action === 'wake' && phrases.length === 1;
+    const chips = phrases.map((p) => h('span', { class: 'chip phrase', title: lastWake ? 'Keep at least one wake word' : null }, `“${p}”`,
+      lastWake ? null : h('button', { html: '&times;', title: 'Remove', 'aria-label': `Remove “${p}”`, onClick: () => removePhrase(action, p) })));
+    const input = h('input', { class: 'input vc-add', placeholder: 'Add a phrase', 'aria-label': `Add a phrase for ${name}`, spellcheck: 'false' });
+    input.addEventListener('keydown', (e) => {
+      if (e.isComposing || (e.key !== 'Enter' && e.key !== ',')) return;
+      e.preventDefault();
+      addPhrase(action);
+    });
+    vcInputs[action] = input;
+    const say = !first ? h('div', { class: 'vc-off' }, 'Off. Add a phrase to use it.')
+      : h('div', { class: 'vc-say' }, action === 'wake' ? `Say “${first}” and keep talking` : IN_TAKE.includes(action) ? `Say “${first}” on its own` : `Say “${sayFor(vc, action)}”`);
+    const cancel = vcPhrases(vc, 'cancel')[0];
+    const warns = action === 'wake' ? phrases.filter(commonWake).map((p) => h('div', { class: 'vc-warn' },
+      `“${p}” is short and common, so Navi may wake when you didn’t mean it to. ${cancel ? `Say “${cancel}” or press Esc to send it away.` : 'Press Esc to send it away.'}`)) : [];
+    return h('div', { class: 'vc-row' },
+      h('div', {}, h('div', { class: 'nm' }, name), h('div', { class: 'ds' }, desc)),
+      h('div', {}, h('div', { class: 'vc-phrases' }, chips, input), say, warns));
+  };
+  const vcGroup = (title, help, ...rows) => h('div', { class: 'vc-group' }, h('div', { class: 'h3' }, title), h('p', {}, help), h('div', {}, rows));
+  function drawVoice() {
+    const vc = VC();
+    // A phrase half typed, and the box the cursor was in, survive the redraw.
+    const typed = Object.fromEntries(Object.entries(vcInputs).map(([a, el]) => [a, el.value]));
+    const focused = Object.keys(vcInputs).find((a) => vcInputs[a] === document.activeElement);
+    vcDrawn = JSON.stringify(vc);
+    vcToggle.classList.toggle('on', !!vc.enabled);
+    vcToggle.setAttribute('aria-checked', String(!!vc.enabled));
+    vcExample.textContent = example(vc, ['watch_on', 'notes_on', 'watch_off', 'notes_off', 'scratch_that']);
+    jobsSpans.forEach((s) => { s.textContent = jobsWake(vc); });
+    vcHost.replaceChildren(
+      vcGroup('Start dictating', `Say it at the start of a sentence, then what you want typed: “${wakeLabel(vc)}, email Sam about Friday.” Navi stops after six seconds of quiet, when you say your finish phrase, or when you press Enter.`,
+        vcRow(vc, 'wake', 'Wake word', 'Any word or phrase. Keep at least one.')),
+      vcGroup('Straight after the wake word', `Say the wake word first, in the same breath or after a pause: “${example(vc, ['notes_on', 'watch_on', 'notes_off', 'watch_off', 'scratch_that'])}.” These work from the shortcut too.`,
+        vcRow(vc, 'scratch_that', 'Scratch that', 'Removes the last thing Navi typed.'),
+        vcRow(vc, 'watch_on', 'Watch my screen', 'Looks at your screen every few seconds, then writes up what you did.'),
+        vcRow(vc, 'watch_off', 'Stop watching', 'Stops watching and writes it up on the Notes page.'),
+        vcRow(vc, 'notes_on', 'Take notes', 'Starts call notes, like Take notes now on the Notes page.'),
+        vcRow(vc, 'notes_off', 'Stop taking notes', 'Finishes the notes and writes them up. Works during a call.')),
+      vcGroup('While you’re dictating', 'Say it on its own, with a short pause before and after, so “don’t worry about the deadline” is still typed.',
+        vcRow(vc, 'cancel', 'Cancel', 'Throws the take away, like Esc. If Navi gets it wrong, the recording is kept in History so you can re-run it. With History off, a long take or a ramble asks you to say it twice.'),
+        vcRow(vc, 'finish', 'Finish', 'Stops listening and types what you said, without the phrase.')));
+    for (const [a, v] of Object.entries(typed)) if (vcInputs[a]) vcInputs[a].value = v;
+    if (focused) vcInputs[focused]?.focus();
+  }
+  const resetVoice = async () => {
+    if (!(await confirmDialog('Reset voice commands?', 'Every phrase goes back to how Navi ships: “Navi” and “Hey Navi” to wake it, “don’t worry” to cancel, “that’s all” to finish.', { ok: 'Reset' }))) return;
+    let defaults;
+    try { defaults = await invoke('voice_command_defaults'); } catch (e) { toast(errText(e), { error: true }); return; }
+    if (await save((n) => { n.voiceCommands = { ...defaults, enabled: !!n.voiceCommands?.enabled }; })) toast('Back to the starting phrases');
+    drawVoice();
+  };
+  drawVoice();
+  // The tray's "Listen for" tick changes the settings from outside this page: follow it.
+  cleanups.push(store.on(() => { if (JSON.stringify(VC()) !== vcDrawn) drawVoice(); }));
+  section('commands', 'Voice commands', ['Talk to Navi without touching the keyboard. Say the wake word and keep talking, and Navi types what you say. Say the wake word and a command, such as “', vcExample, '”, and it happens straight away. Change any phrase to words that suit you.'],
+    setRow('Listen for voice commands', ['The microphone stays on so Navi can hear you, and Windows shows its microphone icon. What it hears is checked on this computer and never kept. During call notes Navi only listens for the commands that stop the notes or watch your screen; “', jobsWk(), ', …” on a call still gives your AI a job.'], vcToggle),
+    vcHost,
+    setRow('Reset to the starting phrases', 'Puts every phrase back to how Navi ships. Your on/off choice stays.', btn('Reset', { size: 'sm', variant: 'ghost', onClick: resetVoice })),
+    // Watch my screen, below a divider: its row title is the sub-heading.
+    h('div', { class: 'vc-group' },
+      setRow('Watch my screen', 'Navi looks at the screen every few seconds and keeps a screenshot only when enough of it has changed. When you stop, your AI picks the ones that matter and writes up what you did, on the Notes page. With no AI, every screenshot is kept, listed by time. Watching stops by itself after an hour.', h('div', { class: 'row' }, watchNote, watchBtn)),
+      setRow('How often to look', null, select([{ value: '5', label: 'Every 5 seconds' }, { value: '10', label: 'Every 10 seconds' }, { value: '20', label: 'Every 20 seconds' }, { value: '30', label: 'Every 30 seconds' }], String(S().watch?.everySecs || 10), (v) => save((n) => { n.watch = { ...(n.watch || {}), everySecs: Number(v) }; })))),
     h('p', { class: 'small faint', style: { paddingTop: '14px', borderTop: '1px solid var(--line-soft)' } },
       'Screenshots stay on this computer, in Navi’s data folder. Your AI only gets the text read off them and the window names, never the pictures. Apps under “Never read these apps” (in Context and privacy) are never captured.'),
   );
@@ -523,7 +640,7 @@ export async function render(root, { store, arg }) {
     setRow('Finish when the call ends', 'Navi writes the notes 20 seconds after the call app lets go of the microphone. Notes with no call app to follow finish after 20 minutes with nothing said.', toggle(nt.autoStop, (v) => save((n) => { n.notes.autoStop = v; }))),
     setRow('Short ideas', 'Every few minutes your AI looks through the call so far for moments worth turning into a Short, with the exact lines to cut and when they were said. They build up on the call’s note as you talk.', toggle(!!nt.shortIdeas, async (v) => { await save((n) => { n.notes.shortIdeas = v; }); drawBrief(); })),
     briefHost,
-    setRow('Jobs on calls', ['Say “', wk(), ', …” on a call (“', wk(), ', draft the follow-up email to Sam”) and your AI does it while you talk. The answer is kept with the notes. It only writes: nothing is sent or booked.'], toggle(nt.callJobs !== false, (v) => save((n) => { n.notes.callJobs = v; }))),
+    setRow('Jobs on calls', ['Say “', jobsWk(), ', …” on a call (“', jobsWk(), ', draft the follow-up email to Sam”) and your AI does it while you talk. The answer is kept with the notes. It only writes: nothing is sent or booked.'], toggle(nt.callJobs !== false, (v) => save((n) => { n.notes.callJobs = v; }))),
     setRow('Screenshots during calls', 'A look at the screen every 15 seconds, kept when it has changed, so the notes can say what was shown. They stay on this computer; your AI only gets the text on them.', toggle(!!nt.callScreenshots, (v) => save((n) => { n.notes.callScreenshots = v; }))),
     setRow('Send actions to', 'The actions from each call’s notes, once they’re written. Connect ClickUp or Notion under Notes and tasks.', seg([{ value: 'none', label: 'Nowhere' }, { value: 'clickup', label: 'ClickUp' }, { value: 'notion', label: 'Notion' }], nt.actionsTo || 'none', async (v) => { await save((n) => { n.notes.actionsTo = v; }); drawInt(); })),
     setRow('Your notes', 'Saved on the Notes page and as Markdown files in your notes folder (below).', btn('Open Notes', { size: 'sm', icon: 'notes', onClick: () => invoke('open_note', { id: null }) })),

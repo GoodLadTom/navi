@@ -15,6 +15,7 @@ use crate::engine::TranscribeOptions;
 use crate::insert::{self, InsertOutcome};
 use crate::sounds::Cue;
 use crate::meeting::PromptState;
+use crate::spoken::{self, Action, Matcher, TakeAction, TakeListener};
 use crate::state::{App, Kind, LastInsert, Phase, Recording};
 use crate::text::{agent, cleanup, learn, llm::Llm, modes, pipeline, ramble, voice};
 use crate::types::{AppContext, ContextSettings, EngineStatus, HotkeyEvent, Mode, ModeKind, PillState, Settings, Take, VoiceCommand};
@@ -43,11 +44,19 @@ const COMMAND_AI_DEADLINE: Duration = Duration::from_secs(25);
 const CARET_CHECK_CHARS: usize = 600;
 /// How long "Still finishing the last one" shows before the bubble goes back to processing.
 const BUSY_NOTE_MS: u64 = 1600;
-/// A "Hey Navi" take finishes after this much quiet, whether or not anything followed the name yet.
+/// A wake word take finishes after this much quiet, whether or not anything followed the name yet.
 /// 1.6 s cut people off while they were thinking of the next word; 6 s leaves room to think, and
-/// Enter finishes it sooner.
+/// Enter or the finish phrase ("that's all") finishes it sooner.
 const WAKE_QUIET: Duration = Duration::from_secs(6);
 const WAKE_MAX: Duration = Duration::from_secs(120);
+/// How often the take's own listener reads the take's audio (spawn_take_listener).
+const TAKE_TICK: Duration = Duration::from_millis(50);
+/// Below this much speech a voice-cancelled take is not worth keeping in History.
+const CANCEL_KEEP_SPEECH_SECS: f32 = 1.5;
+/// With History off, a take with this much speech (and any ramble) is cancelled by voice only
+/// when the phrase is said a second time within CANCEL_CONFIRM: nothing could bring it back.
+const CANCEL_CONFIRM_SPEECH_SECS: f32 = 15.0;
+const CANCEL_CONFIRM: Duration = Duration::from_secs(4);
 /// How long "what's wrong with this?" waits for the AI.
 const CRITIQUE_DEADLINE: Duration = Duration::from_secs(120);
 /// How long a ramble waits for the AI's notes before making its own offline notes. Shortcut
@@ -384,6 +393,8 @@ async fn start(app: &Arc<App>, settings: &Settings, pressed: Instant) -> Result<
     };
     spawn_release_watchdog(app.clone());
     spawn_mic_watch(app.clone(), seq);
+    // Cancel and finish by voice once it turns hands-free (or a ramble).
+    spawn_take_listener(app.clone(), seq, None);
 
     let wait = grace(settings).saturating_sub(pressed.elapsed());
     if wait.is_zero() {
@@ -399,18 +410,29 @@ async fn start(app: &Arc<App>, settings: &Settings, pressed: Instant) -> Result<
     Ok(())
 }
 
-/// "Hey Navi" was heard (wake.rs): starts a hands-free take with the words said while Navi woke up
-/// already in it. It finishes by itself after 6 s of quiet, or with Enter or the shortcut.
-pub async fn start_from_wake(app: &Arc<App>, preroll: Vec<f32>) -> Result<()> {
+/// The wake word was heard (wake.rs): starts a hands-free take with the words said while Navi woke
+/// up already in it. The sound and the bubble come first, at once; the take's microphone opens
+/// behind them, and what the listener heard meanwhile is joined on (wake::join_gap), so nothing
+/// is lost. It finishes by itself after 6 s of quiet, with the finish phrase, or with Enter or the
+/// shortcut. Some(seq) when a take started; None when another take has the microphone.
+pub async fn start_from_wake(app: &Arc<App>, preroll: Vec<f32>) -> Result<Option<u64>> {
     {
         let mut s = app.session.lock();
         // A take under way, or one the shortcut is starting: that one has the microphone.
         if app.paused.load(Ordering::SeqCst) || s.starting || !matches!(s.phase, Phase::Idle) {
-            return Ok(());
+            return Ok(None);
         }
         s.starting = true;
     }
     let settings = app.settings();
+    let all = all_modes(app);
+    let active = settings.modes.active.trim();
+    let active = (!active.is_empty()).then_some(active);
+    // At once: the mode is a guess until the app in front has been read.
+    app.sounds.play(Cue::Talk, &settings.sounds);
+    let guess = modes::pick_mode(&all, &AppContext::default(), &settings, active).name;
+    app.pill(PillState::Listening { kind: Kind::HandsFree.as_str().into(), mode_name: guess, app_label: String::new() });
+    app.reveal_pill_window(context::foreground_hwnd());
     if let Err(e) = app.audio.start(settings.mic.device.as_deref()) {
         app.session.lock().starting = false;
         // wake.rs says why in the bubble.
@@ -421,23 +443,24 @@ pub async fn start_from_wake(app: &Arc<App>, preroll: Vec<f32>) -> Result<()> {
     let started = Instant::now();
     let ctx_settings = settings.context.clone();
     let ctx = tokio::task::spawn_blocking(move || context::capture(&ctx_settings)).await.unwrap_or_default();
-    let all = all_modes(app);
-    let active = settings.modes.active.trim();
-    let mode = modes::pick_mode(&all, &ctx, &settings, (!active.is_empty()).then_some(active));
+    let mode = modes::pick_mode(&all, &ctx, &settings, active);
     let hwnd = ctx.hwnd;
     let excluded = settings.context.excluded_apps.iter().any(|a| a.eq_ignore_ascii_case(&ctx.process_name));
     let ocr = if settings.context.ocr && !excluded && hwnd != 0 { Some(tokio::task::spawn_blocking(move || context::ocr_window(hwnd))) } else { None };
     let preroll_ms = (preroll.len() as u64 * 1000 / audio::SAMPLE_RATE as u64) as u32;
-    log::info!("take started by Hey Navi in {} ({} mode)", if ctx.app_label.is_empty() { "an unknown app" } else { ctx.app_label.as_str() }, mode.name);
-    let (seq, hwnd) = {
+    log::info!("take started by the wake word in {} ({} mode)", if ctx.app_label.is_empty() { "an unknown app" } else { ctx.app_label.as_str() }, mode.name);
+    let seq = {
         let mut s = app.session.lock();
         s.starting = false;
-        // Nothing else starts a take while this one holds the claim, but never overwrite one.
+        // Nothing else starts a take while this one holds the claim, but never overwrite one. The
+        // bubble is left as it is: the other take owns it.
         if !matches!(s.phase, Phase::Idle) {
-            return Ok(());
+            return Ok(None);
         }
         s.take_seq += 1;
         let seq = s.take_seq;
+        // The bubble again, with the real mode and app; no second sound.
+        app.pill(PillState::Listening { kind: Kind::HandsFree.as_str().into(), mode_name: mode.name.clone(), app_label: ctx.app_label.clone() });
         s.phase = Phase::Recording(Recording {
             kind: Kind::HandsFree,
             seq,
@@ -445,7 +468,7 @@ pub async fn start_from_wake(app: &Arc<App>, preroll: Vec<f32>) -> Result<()> {
             started,
             ctx,
             mode,
-            announced: false,
+            announced: true,
             cue_at_ms: 0,
             cue_ms: 0,
             cue_word: None,
@@ -460,19 +483,15 @@ pub async fn start_from_wake(app: &Arc<App>, preroll: Vec<f32>) -> Result<()> {
             h.set_recording(true);
             h.set_hands_free(true);
         }
-        let hwnd = match &mut s.phase {
-            Phase::Recording(rec) => announce_locked(app, rec, &settings),
-            _ => 0,
-        };
-        (seq, hwnd)
+        seq
     };
     app.reveal_pill_window(hwnd);
     spawn_wake_finish(app.clone(), seq, preroll.len());
     spawn_mic_watch(app.clone(), seq);
-    Ok(())
+    Ok(Some(seq))
 }
 
-/// Finishes a "Hey Navi" take once you have been quiet for WAKE_QUIET.
+/// Finishes a wake word take once you have been quiet for WAKE_QUIET.
 fn spawn_wake_finish(app: Arc<App>, seq: u64, from: usize) {
     tauri::async_runtime::spawn(async move {
         let begun = Instant::now();
@@ -492,7 +511,7 @@ fn spawn_wake_finish(app: Arc<App>, seq: u64, from: usize) {
             let quiet = last_voice.unwrap_or(begun).elapsed();
             let too_long = begun.elapsed() >= WAKE_MAX;
             if quiet >= WAKE_QUIET || too_long {
-                log::info!("Hey Navi take finished: {}", if too_long { "two minutes is the most" } else { "you stopped talking" });
+                log::info!("wake word take finished: {}", if too_long { "two minutes is the most" } else { "you stopped talking" });
                 if let Err(e) = stop(&app).await {
                     fail(&app, &short_error(&e));
                 }
@@ -527,7 +546,8 @@ fn announce_locked(app: &Arc<App>, rec: &mut Recording, settings: &Settings) -> 
     // take you are usually mid-sentence when the cue plays, so nothing is trimmed there.
     let cue_ms = if settings.sounds.enabled && !rec.from_wake { app.sounds.duration_ms(Cue::Talk, &settings.sounds).min(CUE_TRIM_MAX_MS) } else { 0 };
     rec.announced = true;
-    // The audio opens with what "Hey Navi" heard before the microphone was handed over.
+    // A wake word take's audio opens with what the listener heard before the microphone was
+    // handed over.
     rec.cue_at_ms = rec.started.elapsed().as_millis() as u32 + rec.preroll_ms;
     rec.cue_ms = cue_ms;
     rec.cue_word = None;
@@ -597,8 +617,19 @@ fn mic_lost_message(error: &str) -> String {
 }
 
 async fn stop(app: &Arc<App>) -> Result<()> {
+    stop_take(app, None, None).await
+}
+
+/// stop() for take `only` (None: whichever is recording), keeping the audio before 16 kHz sample
+/// `cut` when given (the finish phrase, heard by the take's own listener, is cut off that way).
+pub async fn stop_take(app: &Arc<App>, only: Option<u64>, cut: Option<usize>) -> Result<()> {
     let (rec, mode_name) = {
         let mut s = app.session.lock();
+        if let (Some(seq), Phase::Recording(r)) = (only, &s.phase) {
+            if r.seq != seq {
+                return Ok(());
+            }
+        }
         match std::mem::replace(&mut s.phase, Phase::Processing) {
             Phase::Recording(r) => {
                 let mode_name = if r.kind == Kind::Ramble { "Notes".to_string() } else { r.mode.name.clone() };
@@ -617,13 +648,18 @@ async fn stop(app: &Arc<App>) -> Result<()> {
     let settings = app.settings();
     let recording = app.audio.stop();
     let released = Instant::now();
-    let recording = match recording {
+    let mut recording = match recording {
         Ok(r) => r,
         Err(e) => {
             app.session.lock().phase = Phase::Idle;
             return Err(e);
         }
     };
+    // Before any trimming: the cut is a position in the audio as recorded, preroll included.
+    if let Some(cut) = cut {
+        recording.samples.truncate(cut);
+        log::info!("take finished by voice");
+    }
     // The microphone went away part way: what came before is used, and the bubble says so after.
     let mic_lost = app.audio.last_error();
     if let Some(m) = &mic_lost {
@@ -697,6 +733,341 @@ fn cancel_if(app: &Arc<App>, audible: bool, reason: &str, still: impl Fn(&Record
     if audible && announced {
         app.sounds.play(Cue::Cancel, &app.settings().sounds);
     }
+}
+
+/// Listens to take `seq`'s own audio for "don't worry" (cancel), "that's all" (finish) and, in a
+/// take the wake word started, a command said straight after it (spoken::TakeListener). Nothing
+/// while Settings > Voice commands is off, or on the CPU engine (too slow to check as you go).
+/// `heard`: in a wake take, how far into its audio the idle listener had judged when it woke Navi
+/// (the wake word); what comes after that may be the command.
+pub fn spawn_take_listener(app: Arc<App>, seq: u64, heard: Option<u64>) {
+    if !app.settings.read().voice_commands.enabled || app.engine_status.lock().device == "cpu" {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        let (from_wake, preroll_ms) = match &app.session.lock().phase {
+            Phase::Recording(r) if r.seq == seq => (r.from_wake, r.preroll_ms),
+            _ => return,
+        };
+        let mut listener = TakeListener::new(from_wake, preroll_ms as u64 * (audio::SAMPLE_RATE as u64 / 1000));
+        if let Some(heard) = heard {
+            listener.skip_to(heard);
+        }
+        let mut ring = spoken::Ring::new();
+        let mut matcher_for = app.settings.read().voice_commands.clone();
+        let mut matcher = Matcher::new(&matcher_for);
+        let mut looked = 0usize;
+        let mut armed = false;
+        let mut waiting: Option<(spoken::TakeCheck, tokio::sync::oneshot::Receiver<Option<String>>)> = None;
+        // Seconds of speech in the take so far, and until when a first cancel waits for a second.
+        let mut speech_secs = 0f32;
+        let mut confirm: Option<(Instant, u64)> = None;
+        loop {
+            tokio::time::sleep(TAKE_TICK).await;
+            // Only while this take records: once it is being transcribed, nothing more is checked.
+            let kind = match &app.session.lock().phase {
+                Phase::Recording(r) if r.seq == seq => r.kind,
+                _ => break,
+            };
+            // A cancel nobody said again: the take carries on, and so does its bubble.
+            if let Some((_, gen)) = confirm.filter(|(until, _)| Instant::now() >= *until) {
+                confirm = None;
+                restore_listening(&app, seq, gen);
+            }
+            {
+                let s = app.settings.read();
+                if !s.voice_commands.enabled {
+                    break;
+                }
+                if s.voice_commands != matcher_for {
+                    matcher_for = s.voice_commands.clone();
+                    matcher = Matcher::new(&matcher_for);
+                }
+            }
+            // A copy of what is new; the recording itself is left alone.
+            let new = app.audio.snapshot_16k(looked);
+            looked += new.len();
+            speech_secs += speech_seconds(&new);
+            ring.push(&new);
+            // Push-to-talk: read and segmented, but nothing acts until it turns hands-free.
+            if !armed && kind != Kind::Talk {
+                listener.arm(if from_wake { 0 } else { ring.end() });
+                armed = true;
+            }
+            listener.advance(&ring);
+            let finished = match waiting.as_mut() {
+                Some((_, rx)) => match rx.try_recv() {
+                    Ok(text) => Some(text),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => Some(None),
+                },
+                None => None,
+            };
+            let mut action = None;
+            if let Some(text) = finished {
+                if let Some((check, _)) = waiting.take() {
+                    match text {
+                        Some(text) => action = listener.on_result(&check, &text, &matcher, ring.end()),
+                        None => listener.on_failed(&check),
+                    }
+                }
+            }
+            if let Some(action) = action.or_else(|| listener.poll(ring.end())) {
+                let name = match &action {
+                    TakeAction::Cancel { .. } => "cancel",
+                    TakeAction::Finish { .. } => "finish",
+                    TakeAction::Command { action, .. } => action.id(),
+                };
+                // Nothing could bring this take back if the cancel was misheard: ask for it twice.
+                let save_history = app.settings.read().privacy.save_history;
+                if matches!(action, TakeAction::Cancel { .. }) && confirm.is_none() && cancel_needs_confirming(save_history, kind, speech_secs) {
+                    log::info!("voice: cancel in a long take, {} ms after you stopped; waiting for it a second time", listener.fired_after_ms());
+                    let say = matcher_for.first("cancel").unwrap_or_else(|| "the cancel phrase".into());
+                    app.show_pill_window(context::foreground_hwnd());
+                    let gen = app.pill(PillState::Notice { message: format!("Say \u{201c}{say}\u{201d} again, or press Esc, to throw this away") });
+                    confirm = Some((Instant::now() + CANCEL_CONFIRM, gen));
+                    listener.resume();
+                    continue;
+                }
+                log::info!("voice: {name} in the take, {} ms after you stopped", listener.fired_after_ms());
+                carry_out(&app, seq, action, &ring).await;
+                break;
+            }
+            if armed && waiting.is_none() {
+                if let Some(check) = listener.next_check() {
+                    let clip = ring.slice(check.start, check.end);
+                    // No prompt: these checks hold the wake word and more, and with the wake words
+                    // as its prompt Whisper drops the name ("Watch my screen."). An echoed prompt
+                    // can never sound like a command either.
+                    let opts = TranscribeOptions { language: app.settings.read().engine.language.clone(), prompt: String::new() };
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    let engine_app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let engine = engine_app.engine.read().await.clone();
+                        let text = match engine {
+                            Some(engine) => match engine.transcribe(&clip, &opts).await {
+                                Ok(t) => {
+                                    log::debug!("voice: checked {} ms of the take in {} ms", clip.len() * 1000 / audio::SAMPLE_RATE as usize, t.ms);
+                                    Some(t.text)
+                                }
+                                Err(e) => {
+                                    log::debug!("voice: a check in the take failed: {e:#}");
+                                    None
+                                }
+                            },
+                            None => None,
+                        };
+                        let _ = tx.send(text);
+                    });
+                    waiting = Some((check, rx));
+                }
+            }
+        }
+        // Dropping `waiting` abandons a check still in flight.
+    });
+}
+
+/// What the take's listener heard, carried out on take `seq`. `ring` holds the take's audio.
+async fn carry_out(app: &Arc<App>, seq: u64, action: TakeAction, ring: &spoken::Ring) {
+    match action {
+        TakeAction::Cancel { .. } => cancel_by_voice(app, seq).await,
+        TakeAction::Finish { cut, .. } => {
+            if let Err(e) = stop_take(app, Some(seq), Some(cut as usize)).await {
+                fail(app, &short_error(&e));
+            }
+        }
+        TakeAction::Command { action, heard } => {
+            let Some(rec) = take_for_command(app, seq) else { return };
+            if let Err(e) = run_spoken(app, action, &heard, ring.slice(0, ring.end()), Some(rec)).await {
+                log::warn!("voice: {} failed: {e:#}", action.id());
+                fail(app, &short_error(&e));
+            }
+        }
+    }
+}
+
+/// Whether a take cancelled by voice goes to History: with History on, and only when it held
+/// enough speech to be worth re-running (a misheard "don't worry" can be re-run there).
+fn keep_cancelled(save_history: bool, speech_secs: f32) -> bool {
+    save_history && speech_secs >= CANCEL_KEEP_SPEECH_SECS
+}
+
+/// Whether "don't worry" must be said twice before take `kind` goes: History is off, so a
+/// misheard cancel could not be re-run, and there is a lot to lose (a ramble, or a long take).
+fn cancel_needs_confirming(save_history: bool, kind: Kind, speech_secs: f32) -> bool {
+    !save_history && (kind == Kind::Ramble || speech_secs >= CANCEL_CONFIRM_SPEECH_SECS)
+}
+
+/// The Listening bubble again for take `seq` after a note (`gen`) asked for the cancel twice,
+/// unless the take has ended or something newer is in the bubble.
+fn restore_listening(app: &Arc<App>, seq: u64, gen: u64) {
+    let s = app.session.lock();
+    let Phase::Recording(rec) = &s.phase else { return };
+    if rec.seq != seq || app.pill_gen.load(Ordering::SeqCst) != gen {
+        return;
+    }
+    let mode_name = if rec.kind == Kind::Ramble { "Notes".to_string() } else { rec.mode.name.clone() };
+    app.pill(PillState::Listening { kind: rec.kind.as_str().into(), mode_name, app_label: rec.ctx.app_label.clone() });
+}
+
+/// "Don't worry": drops take `seq` like Esc, with the cancel sound and a short "Cancelled" note.
+/// Its recording goes to History as "cancelled" (when History is on and it held at least
+/// CANCEL_KEEP_SPEECH_SECS of speech), so a misheard cancel can be re-run.
+pub async fn cancel_by_voice(app: &Arc<App>, seq: u64) {
+    let (rec, samples, gen) = {
+        let mut s = app.session.lock();
+        if !matches!(&s.phase, Phase::Recording(r) if r.seq == seq) {
+            return;
+        }
+        let Phase::Recording(rec) = std::mem::replace(&mut s.phase, Phase::Idle) else { return };
+        // Under the lock, as cancel_if does, so a new take is never cut off.
+        let samples = app.audio.stop().ok().map(|r| r.samples);
+        if let Some(h) = app.hotkeys.lock().as_ref() {
+            h.set_recording(false);
+        }
+        (rec, samples, app.pill_gen.load(Ordering::SeqCst))
+    };
+    log::info!("take dropped: you said the cancel phrase");
+    let settings = app.settings();
+    app.sounds.play(Cue::Cancel, &settings.sounds);
+    // Unless something new has shown in the bubble since.
+    if app.pill_gen.load(Ordering::SeqCst) == gen {
+        let gen = app.pill(PillState::Notice { message: "Cancelled".into() });
+        app.hide_pill_later(gen, 900);
+    }
+    if let Some(samples) = samples {
+        if keep_cancelled(settings.privacy.save_history, speech_seconds(&samples)) {
+            save_take(app, &settings, &rec, "", "", &samples, 0, "cancelled", rec.kind.as_str(), serde_json::json!({ "cancelledBy": "voice" }));
+        }
+    }
+}
+
+/// Ends take `seq` silently for a command said straight after the wake word, returning it so the
+/// command can use its window. None when it has already ended.
+fn take_for_command(app: &Arc<App>, seq: u64) -> Option<Recording> {
+    let rec = {
+        let mut s = app.session.lock();
+        if !matches!(&s.phase, Phase::Recording(r) if r.seq == seq) {
+            return None;
+        }
+        let Phase::Recording(rec) = std::mem::replace(&mut s.phase, Phase::Idle) else { return None };
+        app.audio.cancel();
+        if let Some(h) = app.hotkeys.lock().as_ref() {
+            h.set_recording(false);
+        }
+        rec
+    };
+    // No sound: the command makes its own, and its note replaces the bubble.
+    log::info!("take dropped: a command straight after the wake word");
+    Some(rec)
+}
+
+/// A short note in the bubble for a spoken command.
+fn spoken_note(app: &Arc<App>, message: String) {
+    app.show_pill_window(context::foreground_hwnd());
+    let hold = read_ms(&message, 2500);
+    let gen = app.pill(PillState::Notice { message });
+    app.hide_pill_later(gen, hold);
+}
+
+/// A take-shaped record for a command heard with no take (scratch that from the idle listener):
+/// the app in front now and the mode it would get.
+async fn bare_recording(app: &Arc<App>) -> Recording {
+    let settings = app.settings();
+    let ctx_settings = settings.context.clone();
+    let ctx = tokio::task::spawn_blocking(move || context::capture(&ctx_settings)).await.unwrap_or_default();
+    let all = all_modes(app);
+    let active = settings.modes.active.trim();
+    let mode = modes::pick_mode(&all, &ctx, &settings, (!active.is_empty()).then_some(active));
+    let now = Instant::now();
+    Recording {
+        kind: Kind::HandsFree,
+        seq: 0,
+        pressed: now,
+        started: now,
+        ctx,
+        mode,
+        announced: true,
+        cue_at_ms: 0,
+        cue_ms: 0,
+        cue_word: None,
+        pending_tap: None,
+        ramble_cue: None,
+        ramble_started: None,
+        ocr: None,
+        from_wake: true,
+        preroll_ms: 0,
+    }
+}
+
+/// Runs a command heard by a listener, with no take (idle) or straight after the wake word in a
+/// take (`rec`, already ended). `heard` and `audio` are only for History (scratch that).
+pub async fn run_spoken(app: &Arc<App>, action: Action, heard: &str, audio: Vec<f32>, rec: Option<Recording>) -> Result<()> {
+    let settings = app.settings();
+    // watch.rs shows its own notes only while nothing else is using the bubble; from a finished
+    // take (process_take) it is still processing, so the note is shown here instead.
+    let idle = matches!(app.session.lock().phase, Phase::Idle);
+    match action {
+        Action::WatchOn => {
+            if crate::watch::is_watching() {
+                spoken_note(app, "Already watching your screen".into());
+                return Ok(());
+            }
+            crate::watch::start(app)?;
+            if !idle {
+                spoken_note(app, "Watching your screen".into());
+            }
+            app.sounds.play(Cue::Done, &settings.sounds);
+        }
+        Action::WatchOff => {
+            if !crate::watch::is_watching() {
+                spoken_note(app, "Navi wasn\u{2019}t watching your screen".into());
+                return Ok(());
+            }
+            crate::watch::stop(app)?;
+            if !idle {
+                spoken_note(app, "Writing up what you did\u{2026}".into());
+            }
+            app.sounds.play(Cue::Done, &settings.sounds);
+        }
+        Action::NotesOn => {
+            if app.meeting.lock().is_some() {
+                spoken_note(app, "Already taking notes".into());
+                return Ok(());
+            }
+            // Opening the call audio can take a moment, so not on the async threads.
+            let app2 = app.clone();
+            tokio::task::spawn_blocking(move || crate::meeting::start(&app2, None)).await.map_err(|e| anyhow!("Navi couldn't start the notes: {e}"))??;
+            let message = match settings.voice_commands.say("notes_off") {
+                Some(say) => format!("Taking notes. Say \u{201c}{say}\u{201d} when you\u{2019}re done."),
+                None => "Taking notes. Stop them from the card in the corner.".to_string(),
+            };
+            spoken_note(app, message);
+            app.sounds.play(Cue::Done, &settings.sounds);
+        }
+        Action::NotesOff => {
+            if app.meeting.lock().is_none() {
+                spoken_note(app, "Navi wasn\u{2019}t taking notes".into());
+                return Ok(());
+            }
+            crate::meeting::stop(app)?;
+            spoken_note(app, "Finishing your notes".into());
+            app.sounds.play(Cue::Done, &settings.sounds);
+        }
+        Action::ScratchThat => {
+            let rec = match rec {
+                Some(rec) => rec,
+                None => {
+                    // run_command's own bubble needs the window up.
+                    app.show_pill_window(context::foreground_hwnd());
+                    bare_recording(app).await
+                }
+            };
+            run_command(app, &rec, VoiceCommand::Undo, heard, &audio, Instant::now()).await?;
+        }
+        Action::Wake | Action::Cancel | Action::Finish => {}
+    }
+    Ok(())
 }
 
 fn fail(app: &Arc<App>, message: &str) {
@@ -951,6 +1322,47 @@ async fn screen_text(rec: &mut Recording) -> Option<String> {
     }
 }
 
+/// What a finished take turns out to be, before any dictation.
+#[derive(Debug, PartialEq)]
+enum AfterTake {
+    /// The cancel phrase on its own: nothing is typed or saved.
+    Cancel,
+    /// A command straight after the wake word.
+    Spoken(Action),
+    /// Dictation, or a spoken edit (voice::parse decides). `rest_after_wake`: the words after a
+    /// wake word, when the take opens with one.
+    Dictate { raw: String, rest_after_wake: Option<String> },
+}
+
+/// `listening`: Settings > Voice commands is on. `hands_free`: not a push-to-talk take.
+/// `from_wake`: the wake word started the take.
+fn after_take(raw: &str, m: &Matcher, listening: bool, hands_free: bool, from_wake: bool) -> AfterTake {
+    // Only the wake words in Settings decide what the take is ("Nav, take notes" said to a
+    // colleague is dictation). In a take the wake word didn't start, the name needs its strong
+    // form or a pause after it, as the idle listener asks ("Navy, take notes" is dictation).
+    let wake_rest = |text: &str| m.match_wake(text).filter(|hit| from_wake || !hit.weak || hit.paused).map(|hit| hit.rest);
+    let rest = wake_rest(raw);
+    // The cancel phrase word for word, after the wake word or (except while holding push-to-talk,
+    // which is deliberate: "Don't worry." is then a reply to type) as the whole take.
+    let said_after_wake = rest.as_deref().is_some_and(|r| m.match_exact(r, &[Action::Cancel]).is_some());
+    let said_alone = hands_free && rest.is_none() && m.match_in_take(raw) == Some(Action::Cancel);
+    if listening && (said_after_wake || said_alone) {
+        return AfterTake::Cancel;
+    }
+    if let Some(action) = rest.as_deref().and_then(|r| m.match_command(r, spoken::AFTER_WAKE)) {
+        return AfterTake::Spoken(action);
+    }
+    // Dictation after the wake word: Whisper may spell the name in a way only voice.rs knows.
+    let rest_of = |text: &str| wake_rest(text).or_else(|| if from_wake { voice::strip_wake_phrase(text) } else { None });
+    if listening && hands_free {
+        // The finish phrase is cut off the audio by the take's listener; this is the backstop.
+        let raw = m.strip_trailing(raw, Action::Finish);
+        let rest_after_wake = rest_of(&raw);
+        return AfterTake::Dictate { raw, rest_after_wake };
+    }
+    AfterTake::Dictate { raw: raw.to_string(), rest_after_wake: rest_of(raw) }
+}
+
 async fn process_take(app: &Arc<App>, mut rec: Recording, mut samples: Vec<f32>, released: Instant) -> Result<()> {
     let settings = app.settings();
     let full_audio = samples.clone();
@@ -975,8 +1387,38 @@ async fn process_take(app: &Arc<App>, mut rec: Recording, mut samples: Vec<f32>,
         return Ok(());
     }
 
+    // Voice commands: the cancel phrase, a command after the wake word (the backstop when the
+    // take's listener missed it, and how "Navi, take notes" works from the shortcut), and the
+    // finish phrase left at the end.
+    let matcher = Matcher::new(&settings.voice_commands);
+    let (raw, rest) = match after_take(&raw, &matcher, settings.voice_commands.enabled, rec.kind != Kind::Talk, rec.from_wake) {
+        AfterTake::Cancel => {
+            log::info!("take dropped: it was the cancel phrase");
+            app.sounds.play(Cue::Cancel, &settings.sounds);
+            let gen = app.pill(PillState::Notice { message: "Cancelled".into() });
+            app.hide_pill_later(gen, 900);
+            return Ok(());
+        }
+        AfterTake::Spoken(action) => {
+            log::info!("voice: {} after the take", action.id());
+            return run_spoken(app, action, &raw, full_audio, Some(rec)).await;
+        }
+        AfterTake::Dictate { raw, rest_after_wake } => (raw, rest_after_wake),
+    };
+    if !raw.chars().any(char::is_alphanumeric) {
+        // Only the finish phrase was said.
+        log::info!("nothing to type once the finish phrase was taken off");
+        app.pill(PillState::Hidden);
+        return Ok(());
+    }
+
     let has_selection = rec.ctx.selection.is_some();
-    let command = if rec.from_wake { voice::parse_after_wake(&raw, has_selection) } else { voice::parse(&raw, has_selection) };
+    let command = match rest.as_deref().filter(|r| rec.from_wake && r.chars().any(char::is_alphabetic)) {
+        // After any wake word, custom ones too ("Hey, make that shorter").
+        Some(r) => voice::parse_after_wake(&format!("Navi, {r}"), has_selection),
+        None if rec.from_wake => voice::parse_after_wake(&raw, has_selection),
+        None => voice::parse(&raw, has_selection),
+    };
     if let Some(cmd) = command {
         if command_has_target(app, &rec, &cmd) {
             log::info!("voice command: {}", command_name(&cmd));
@@ -994,7 +1436,7 @@ async fn process_take(app: &Arc<App>, mut rec: Recording, mut samples: Vec<f32>,
                     meta["error"] = serde_json::json!(short_error(&e));
                     save_take(app, &settings, &rec, &raw, "", &full_audio, released.elapsed().as_millis() as u64, "error", "command", meta);
                     if words_matter {
-                        let words = voice::strip_wake_phrase(&raw).filter(|w| w.chars().any(char::is_alphanumeric)).map(|w| capitalise_first(&w));
+                        let words = rest.clone().filter(|w| w.chars().any(char::is_alphanumeric)).map(|w| capitalise_first(&w));
                         if let Some(words) = words {
                             if insert::set_clipboard_text(&words).is_ok() {
                                 return Err(anyhow!(with_note(&short_error(&e), "Your words are on the clipboard.")));
@@ -1010,14 +1452,14 @@ async fn process_take(app: &Arc<App>, mut rec: Recording, mut samples: Vec<f32>,
         }
     }
 
-    // "Hey Navi" began the take: what came after the name is the dictation.
+    // The wake word began the take: what came after it is the dictation.
     let raw = if rec.from_wake {
-        match voice::strip_wake_phrase(&raw) {
+        match rest {
             Some(rest) if rest.chars().any(char::is_alphanumeric) => capitalise_first(&rest),
             Some(_) => {
-                log::info!("Hey Navi, then nothing");
+                log::info!("the wake word, then nothing");
                 app.sounds.play(Cue::Cancel, &settings.sounds);
-                let gen = app.pill(PillState::Error { message: format!("Didn't catch anything after \u{201c}{}\u{201d}", settings.hey_navi.label()) });
+                let gen = app.pill(PillState::Error { message: format!("Didn't catch anything after \u{201c}{}\u{201d}", settings.voice_commands.wake_label()) });
                 app.hide_pill_later(gen, 2200);
                 return Ok(());
             }
@@ -1136,11 +1578,37 @@ async fn process_take(app: &Arc<App>, mut rec: Recording, mut samples: Vec<f32>,
         }
         _ => {
             app.sounds.play(Cue::Done, &settings.sounds);
-            let gen = app.pill(PillState::Done { preview: preview(&out.text), outcome: outcome.status().into() });
-            app.hide_pill_later(gen, 1300);
+            // The mode wanted the AI but its answer didn't come or wasn't usable: say so, or the
+            // text looks like Clean's and the mode seems to do nothing.
+            if let Some(why) = out.warnings.first().filter(|_| !out.used_ai) {
+                let message = ai_fallback_note(why);
+                let hold = read_ms(&message, 3500);
+                let gen = app.pill(PillState::Notice { message });
+                app.hide_pill_later(gen, hold);
+            } else {
+                let gen = app.pill(PillState::Done { preview: preview(&out.text), outcome: outcome.status().into() });
+                app.hide_pill_later(gen, 1300);
+            }
         }
     }
     Ok(())
+}
+
+/// The bubble's short version of a pipeline warning ("AI step skipped: no reply in time. ...").
+fn ai_fallback_note(warning: &str) -> String {
+    let w = warning.to_lowercase();
+    let why = if w.contains("no reply in time") {
+        "The AI didn't answer in time"
+    } else if w.contains("replied to your words") || w.contains("answered your question") {
+        "The AI answered instead of rewriting"
+    } else if w.contains("far more") || w.contains("wrote code") {
+        "The AI added things you didn't say"
+    } else if w.contains("returned nothing") {
+        "The AI sent back nothing"
+    } else {
+        "The AI step didn't work"
+    };
+    format!("{why}, so Navi typed a plain tidy instead.")
 }
 
 /// A spoken edit needs something to act on: the text Navi just typed into this window (rewrite,
@@ -1426,6 +1894,8 @@ async fn process_ramble(app: &Arc<App>, mut rec: Recording, mut samples: Vec<f32
         Err(e) => return Err(keep_failed_take(app, &settings, &rec, "", &full_audio, released, "ramble", e)),
     };
     let raw = cleanup::strip_cue_echo(&cleanup::strip_cue_echo(&raw, rec.cue_word), Some("listen"));
+    // The finish phrase is cut off the audio by the take's listener; this is the backstop.
+    let raw = if settings.voice_commands.enabled { Matcher::new(&settings.voice_commands).strip_trailing(&raw, Action::Finish) } else { raw };
     log::info!("ramble: heard {} words", raw.split_whitespace().count());
     if heard_nothing(&raw, &samples) {
         log::info!("nothing worth keeping (speech {:.1} s, peak {:.0} dBFS)", speech_seconds(&samples), peak_dbfs(&samples));
@@ -1653,6 +2123,8 @@ async fn speak_aloud(app: &Arc<App>, settings: &Settings, text: &str) -> Result<
     }
     let key = secrets::get("elevenlabs").ok_or_else(|| anyhow!(SPEAK_NO_KEY))?;
     let samples = crate::speak::speak(&key, &settings.speak.voice_id, &settings.speak.model, text).await?;
+    // Voice commands stop listening while Navi talks, or a sentence starting "Navi, ..." would wake it.
+    crate::wake::hold_off(samples.len() as f32 / crate::speak::SAMPLE_RATE as f32);
     app.sounds.play_samples(samples, crate::speak::SAMPLE_RATE);
     Ok(())
 }
@@ -1894,6 +2366,77 @@ mod tests {
     fn a_service_error_is_cut_to_its_first_sentence() {
         assert_eq!(first_sentence("ClickUp rejected the token. Check it in Settings."), "ClickUp rejected the token.");
         assert_eq!(first_sentence("No connection to Notion"), "No connection to Notion");
+    }
+
+    fn matcher_with_wake(wake: &[&str]) -> Matcher {
+        let mut vc = crate::types::VoiceCommandSettings::default();
+        for e in vc.commands.iter_mut().filter(|e| e.action == "wake") {
+            e.phrases = wake.iter().map(|s| s.to_string()).collect();
+        }
+        Matcher::new(&vc)
+    }
+
+    fn dictate(raw: &str, rest: Option<&str>) -> AfterTake {
+        AfterTake::Dictate { raw: raw.into(), rest_after_wake: rest.map(str::to_string) }
+    }
+
+    #[test]
+    fn what_a_take_turns_out_to_be() {
+        let m = matcher_with_wake(&["Navi", "Hey Navi"]);
+        // The cancel phrase alone, or after the wake word, throws the take away while listening.
+        assert_eq!(after_take("Don't worry.", &m, true, true, false), AfterTake::Cancel);
+        assert_eq!(after_take("Navi, don't worry", &m, true, true, false), AfterTake::Cancel);
+        assert_eq!(after_take("Don't worry.", &m, false, true, false), dictate("Don't worry.", None), "voice commands off: it is typed");
+        assert_eq!(after_take("Don't worry about the deadline.", &m, true, true, false), dictate("Don't worry about the deadline.", None));
+        // Holding push-to-talk is deliberate: a bare "Don't worry." is a reply to type. After the
+        // wake word it still cancels.
+        assert_eq!(after_take("Don't worry.", &m, true, false, false), dictate("Don't worry.", None));
+        assert_eq!(after_take("Navi, don't worry.", &m, true, false, false), AfterTake::Cancel);
+        // Word for word: a short reply with a word either side is typed.
+        for said in ["Okay, don't worry.", "Don't worry, thanks.", "So don't worry."] {
+            assert_eq!(after_take(said, &m, true, true, false), dictate(said, None), "{said}");
+        }
+        // A command after the wake word runs whether or not the listener is on.
+        assert_eq!(after_take("Navi, take notes", &m, true, true, false), AfterTake::Spoken(Action::NotesOn));
+        assert_eq!(after_take("Navi, take notes", &m, false, false, false), AfterTake::Spoken(Action::NotesOn));
+        assert_eq!(after_take("Hey Navi, watch my screen.", &m, false, false, false), AfterTake::Spoken(Action::WatchOn));
+        // Only the wake words in Settings, and "Nav" never: said to a colleague, it is dictation.
+        for said in ["Nav, take notes.", "Hi Nav, take notes please.", "Nav, stop watching.", "Nav, don't worry."] {
+            assert!(matches!(after_take(said, &m, true, true, false), AfterTake::Dictate { .. }), "{said}");
+        }
+        let hey_navi = matcher_with_wake(&["Hey Navi"]);
+        assert!(matches!(after_take("Navi, take notes.", &hey_navi, true, true, false), AfterTake::Dictate { .. }), "a removed wake word no longer counts");
+        // Outside a wake take, "Navy" needs a pause after it, as the idle listener asks.
+        assert!(matches!(after_take("Navy take notes", &m, true, true, false), AfterTake::Dictate { .. }));
+        assert_eq!(after_take("Navy, take notes", &m, true, true, false), AfterTake::Spoken(Action::NotesOn));
+        assert_eq!(after_take("Navy take notes", &m, true, true, true), AfterTake::Spoken(Action::NotesOn), "the wake word started this take");
+        // The finish phrase at the end goes, only in a hands-free take while listening.
+        assert_eq!(after_take("See you Friday. That's all.", &m, true, true, false), dictate("See you Friday.", None));
+        assert_eq!(after_take("See you Friday. That's all.", &m, true, false, false), dictate("See you Friday. That's all.", None));
+        assert_eq!(after_take("See you Friday. That's all.", &m, false, true, false), dictate("See you Friday. That's all.", None));
+        assert_eq!(after_take("See you Friday. That's all, thanks.", &m, true, true, false), dictate("See you Friday. That's all, thanks.", None), "word for word");
+        assert_eq!(after_take("Navi, email Sam. That's all.", &m, true, true, true), dictate("Navi, email Sam.", Some("email Sam.")));
+        // A custom wake word leaves what came after it for voice edits and dictation.
+        let hey = matcher_with_wake(&["Hey"]);
+        assert_eq!(after_take("Hey, make that shorter", &hey, true, true, true), dictate("Hey, make that shorter", Some("make that shorter")));
+    }
+
+    #[test]
+    fn a_voice_cancelled_take_is_kept_only_with_enough_speech() {
+        assert!(!keep_cancelled(true, 1.4));
+        assert!(keep_cancelled(true, 1.6));
+        assert!(!keep_cancelled(false, 3.0), "History off keeps nothing");
+    }
+
+    #[test]
+    fn a_cancel_nothing_could_undo_is_asked_for_twice() {
+        // History off: a ramble, or a long take, is too much to lose to a misheard phrase.
+        assert!(cancel_needs_confirming(false, Kind::Ramble, 2.0));
+        assert!(cancel_needs_confirming(false, Kind::HandsFree, 16.0));
+        assert!(!cancel_needs_confirming(false, Kind::HandsFree, 5.0), "a short take goes at once");
+        // History on: it is kept there as Cancelled, with Re-run.
+        assert!(!cancel_needs_confirming(true, Kind::Ramble, 100.0));
+        assert!(!cancel_needs_confirming(true, Kind::HandsFree, 100.0));
     }
 
     #[test]

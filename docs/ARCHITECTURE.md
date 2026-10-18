@@ -92,16 +92,30 @@ Ideas, jobs and screenshots live in the note's `extras` JSON (schema version 3).
 after the call, so a note's jobs are always read, merged and saved under `NOTE_LOCK`, and a finished
 job is never overwritten by an older copy that still says "working".
 
-The wake word (`wake`, off by default): "Navi" followed by a pause (the default, so a mention
-mid-sentence never wakes it), or "Hey Navi" if Settings choose it; a greeting and the name ("Hey
-Navi", "OK Navi") always count. A microphone stream of its own feeds a ten-second ring at 16 kHz;
-an energy voice detector finds where each utterance starts, and its first 1.8 seconds go to the
-engine. If the words open with the wake word, `controller::start_from_wake` starts a hands-free
-take with the audio from the start of the utterance prepended (`AudioService::prepend`), so nothing
-said while Navi woke up is lost. The take ends after six seconds of quiet (`WAKE_QUIET`), on Enter
-or the talk shortcut, or after two minutes (`WAKE_MAX`). Only real commands count in such a take
-(`voice::parse_after_wake`), and the wake word is stripped from the dictation. The listener pauses
-during takes, call notes, a paused shortcut and microphone tests.
+Voice commands (`wake` and `spoken`, off by default; Settings > Voice commands). Every action has
+a list of phrases the user can change: wake ("Navi", "Hey Navi"), scratch that, watch my screen,
+stop watching, take notes, stop taking notes, cancel ("don't worry") and finish ("that's all").
+`spoken.rs` holds the logic as plain state machines (a segmenter, the phrase `Matcher`, an
+`IdleListener` and a `TakeListener`); `wake.rs` and `controller.rs` are thin shells around them,
+and the unit tests and the live measurement run the same code.
+
+- Idle: a microphone stream of its own feeds a ring at 16 kHz. While an utterance goes on, the
+  whisper server checks it every 0.3 s from 0.4 s in (one check at a time; the wake phrases go in
+  the first check's prompt only, so Whisper never echoes them). The wake word must open the
+  utterance. On its own it starts a hands-free take with the audio heard so far prepended; followed
+  by a command ("Navi watch my screen", in one breath or after a short pause), the command runs at
+  once with no take. Sliding checks switch off while the engine is slow (another app on the GPU).
+- During a take: `controller::spawn_take_listener` reads the take's audio and checks short
+  utterances between pauses. Cancel and finish count only as a whole utterance with half a second
+  of quiet after it, so "don't worry about the deadline" is dictation; finish cuts the phrase off
+  before transcribing. On a long take or a ramble, the first cancel asks to be said again.
+- On calls the listener only acts on stop taking notes, watch my screen and stop watching; "Navi,
+  ..." on a call is still a job.
+- A wake take ends after six seconds of quiet (`WAKE_QUIET`), on the finish phrase, Enter or the
+  talk shortcut, or after two minutes (`WAKE_MAX`). It pauses while Navi reads aloud, so it never
+  wakes itself. Measured on the owner's PC (18 Oct 2026, generated speech): the bubble about 0.3 s
+  after the wake word, one-breath commands in 0.2 to 0.3 s, cancel and finish about 0.5 s after the
+  phrase.
 
 "Watch my screen" (`watch`): started by "Navi, watch" (said with the shortcut or to the wake-word
 listener), the tray or the Notes page. Every 10 seconds by default (Settings: 5, 10, 20 or 30) it

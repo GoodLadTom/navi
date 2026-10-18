@@ -29,7 +29,7 @@ pub struct Settings {
     pub general: GeneralSettings,
     pub speak: SpeakSettings,
     pub notes: NotesSettings,
-    pub hey_navi: HeyNaviSettings,
+    pub voice_commands: VoiceCommandSettings,
     pub watch: WatchSettings,
 }
 
@@ -47,8 +47,8 @@ pub struct NotesSettings {
     pub short_ideas: bool,
     /// What makes a good Short, in the user's words. Given to the AI with every pass.
     pub ideas_brief: String,
-    /// "Navi, ..." (or "Hey Navi, ...", as Settings > Wake word says) said on a call gives the AI
-    /// a job, done while the call goes on.
+    /// "Navi, ..." (or "Hey Navi, ...", following the wake words in Settings > Voice commands) said
+    /// on a call gives the AI a job, done while the call goes on.
     pub call_jobs: bool,
     /// Look at the screen every 15 seconds (meeting.rs SHOT_EVERY) and keep a screenshot when it
     /// has changed, so the notes can say what was shown.
@@ -82,37 +82,416 @@ impl Default for NotesSettings {
     }
 }
 
-/// Settings > Wake word: listening all the time for the wake word, "Navi" by default (see wake.rs).
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// Settings > Voice commands (spoken.rs, wake.rs): the microphone stays open and Navi listens for
+/// its wake word and commands. Off by default.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
-pub struct HeyNaviSettings {
+pub struct VoiceCommandSettings {
+    /// Listen all the time. Off by default (Windows shows its microphone icon while on).
     pub enabled: bool,
-    /// What wakes it: "navi", the name on its own (the default), or "hey-navi".
-    /// Also what starts a job on a call. A string rather than an enum, so an odd value can't make
-    /// settings.json unreadable.
-    pub phrase: String,
+    /// One entry per action, in VOICE_ACTIONS order (unknown actions from a newer Navi after them).
+    pub commands: Vec<VoiceCommandEntry>,
 }
 
-impl Default for HeyNaviSettings {
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct VoiceCommandEntry {
+    /// One of VOICE_ACTIONS. A string, so a value from a newer Navi can't make settings.json
+    /// unreadable.
+    pub action: String,
+    /// What you say, as typed ("Hey Navi", "don't worry"). Matched ignoring case and punctuation.
+    /// Empty: the command is off (not allowed for "wake").
+    pub phrases: Vec<String>,
+}
+
+/// Every action, in the order Settings shows them.
+pub const VOICE_ACTIONS: &[&str] = &["wake", "scratch_that", "watch_on", "watch_off", "notes_on", "notes_off", "cancel", "finish"];
+
+/// What Whisper writes for silence and noise. Listening for any of these would set Navi off in a
+/// quiet room, so Settings refuses them.
+const BLOCKED_PHRASES: &[&str] = &[
+    "thank you", "thanks", "thank you very much", "thank you so much", "thanks for watching", "thank you for watching", "you", "bye", "bye bye", "ok", "okay", "yes", "no", "so", "um", "uh",
+    "hmm", "the", "a", "i",
+];
+
+/// Wake phrases people type in front of a command ("Navi, take notes"), whatever the wake words
+/// are. They are dropped from the command when it is saved.
+const BUILTIN_WAKE_KEYS: &[&str] = &["navi", "hey navi", "hi navi", "ok navi", "okay navi"];
+
+/// The longest phrase Settings accepts, in characters and in words. Commands are short; a long
+/// phrase is a sentence, and a sentence said between pauses is dictation.
+const MAX_PHRASE_CHARS: usize = 40;
+const MAX_PHRASE_WORDS: usize = 6;
+/// The most phrases one command can have.
+const MAX_PHRASES: usize = 8;
+/// Cancel and finish are listened for while you dictate, so a single word has to be at least this
+/// long ("cancel" passes, "done" and "stop" don't): short words turn up in dictation all the time.
+const MIN_IN_TAKE_LETTERS: usize = 6;
+
+/// Words said around a command that don't change it ("please stop taking notes now").
+const LEADING_FILLERS: &[&str] = &["please", "can you", "could you", "just", "now"];
+const TRAILING_FILLERS: &[&str] = &["please", "now", "thanks", "thank you"];
+
+impl Default for VoiceCommandSettings {
     fn default() -> Self {
-        Self { enabled: false, phrase: "navi".into() }
+        Self { enabled: false, commands: default_voice_commands() }
     }
 }
 
-impl HeyNaviSettings {
-    /// True when the name on its own wakes Navi ("Navi, email Sam"), not only "Hey Navi". Anything
-    /// but "hey-navi" counts, so a missing or odd value gets the default.
-    pub fn name_only(&self) -> bool {
-        !self.phrase.trim().eq_ignore_ascii_case("hey-navi")
+/// The phrases an action ships with. ui/js/mock.js DEFAULT_VOICE_COMMANDS keeps in step.
+fn default_phrases(action: &str) -> &'static [&'static str] {
+    match action {
+        "wake" => &["Navi", "Hey Navi"],
+        "scratch_that" => &["scratch that"],
+        "watch_on" => &["watch my screen"],
+        "watch_off" => &["stop watching"],
+        "notes_on" => &["take notes"],
+        "notes_off" => &["stop taking notes"],
+        "cancel" => &["don't worry"],
+        // Two words, natural, and rarely a whole sentence on its own in the middle of dictation
+        // (when it ends a message, finishing is what you wanted anyway).
+        "finish" => &["that's all"],
+        _ => &[],
+    }
+}
+
+fn default_entry(action: &str) -> VoiceCommandEntry {
+    VoiceCommandEntry { action: action.to_string(), phrases: default_phrases(action).iter().map(|p| p.to_string()).collect() }
+}
+
+/// Every action with the phrases Navi ships with, in VOICE_ACTIONS order.
+pub fn default_voice_commands() -> Vec<VoiceCommandEntry> {
+    VOICE_ACTIONS.iter().map(|a| default_entry(a)).collect()
+}
+
+/// "Wake word", "Cancel" ... as Settings and error messages name them; the id itself for an
+/// unknown action.
+pub fn voice_action_label(action: &str) -> &str {
+    match action {
+        "wake" => "Wake word",
+        "scratch_that" => "Scratch that",
+        "watch_on" => "Watch my screen",
+        "watch_off" => "Stop watching",
+        "notes_on" => "Take notes",
+        "notes_off" => "Stop taking notes",
+        "cancel" => "Cancel",
+        "finish" => "Finish",
+        other => other,
+    }
+}
+
+/// The comparison key for a phrase: lower case; ' and ’ and ‘ removed; every other character that is
+/// not a letter or digit becomes a space; runs of spaces collapsed; trimmed.
+/// "Don't worry!" -> "dont worry", "Hey, Navi" -> "hey navi".
+pub fn phrase_key(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut gap = false;
+    for c in s.chars().flat_map(char::to_lowercase) {
+        if is_apostrophe(c) {
+            continue;
+        }
+        if c.is_alphanumeric() {
+            if gap && !out.is_empty() {
+                out.push(' ');
+            }
+            gap = false;
+            out.push(c);
+        } else {
+            gap = true;
+        }
+    }
+    out
+}
+
+/// Two words Whisper may write for one ("do not" for "don't"). The listener (spoken.rs) folds them
+/// in phrases and in what it hears, so Settings treats them as the same phrase too (fold_key).
+pub const PHRASE_FOLDS: &[(&str, &str, &str)] = &[
+    ("do", "not", "dont"),
+    ("that", "is", "thats"),
+    ("it", "is", "its"),
+    ("let", "us", "lets"),
+    ("i", "am", "im"),
+    ("what", "is", "whats"),
+    ("all", "right", "alright"),
+    ("can", "not", "cant"),
+    ("will", "not", "wont"),
+    ("o", "k", "ok"),
+];
+
+/// A phrase_key with PHRASE_FOLDS applied: "do not worry" and "don't worry" both give "dont worry".
+pub fn fold_key(key: &str) -> String {
+    let words: Vec<&str> = key.split(' ').filter(|w| !w.is_empty()).collect();
+    let mut out: Vec<&str> = Vec::with_capacity(words.len());
+    let mut i = 0;
+    while i < words.len() {
+        if let Some((_, _, folded)) = PHRASE_FOLDS.iter().find(|(a, b, _)| words[i] == *a && words.get(i + 1) == Some(b)) {
+            out.push(folded);
+            i += 2;
+        } else {
+            out.push(words[i]);
+            i += 1;
+        }
+    }
+    out.join(" ")
+}
+
+fn is_apostrophe(c: char) -> bool {
+    matches!(c, '\'' | '\u{2019}' | '\u{2018}')
+}
+
+/// A phrase as typed, tidied: nothing but letters, digits or an apostrophe (' or ’) at either end,
+/// and one space between words. Punctuation inside stays ("Hey, Navi").
+fn clean_phrase(p: &str) -> String {
+    let t = p.trim_matches(|c: char| !(c.is_alphanumeric() || c == '\'' || c == '\u{2019}'));
+    t.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// What follows the first `n` words of `text`, counting words as phrase_key does (runs of letters,
+/// digits and apostrophes holding at least one letter or digit). Empty when the words run out.
+fn after_words(text: &str, n: usize) -> &str {
+    let (mut count, mut in_word, mut has_alnum) = (0, false, false);
+    for (i, c) in text.char_indices() {
+        if c.is_alphanumeric() || is_apostrophe(c) {
+            if !in_word {
+                in_word = true;
+                has_alnum = false;
+            }
+            has_alnum |= c.is_alphanumeric();
+        } else if in_word {
+            in_word = false;
+            if has_alnum {
+                count += 1;
+                if count == n {
+                    return &text[i..];
+                }
+            }
+        }
+    }
+    ""
+}
+
+/// `key` (a phrase_key) without the filler words around a command, unless that would leave
+/// nothing.
+fn without_fillers(key: &str) -> String {
+    let mut words: Vec<&str> = key.split(' ').filter(|w| !w.is_empty()).collect();
+    loop {
+        let before = words.len();
+        for filler in LEADING_FILLERS {
+            let f: Vec<&str> = filler.split(' ').collect();
+            if words.len() > f.len() && words.starts_with(&f) {
+                words.drain(..f.len());
+            }
+        }
+        for filler in TRAILING_FILLERS {
+            let f: Vec<&str> = filler.split(' ').collect();
+            if words.len() > f.len() && words.ends_with(&f) {
+                words.truncate(words.len() - f.len());
+            }
+        }
+        if words.len() == before {
+            break;
+        }
+    }
+    words.join(" ")
+}
+
+/// Where an action comes in VOICE_ACTIONS; unknown actions after all of them.
+fn action_rank(action: &str) -> usize {
+    VOICE_ACTIONS.iter().position(|a| *a == action).unwrap_or(VOICE_ACTIONS.len())
+}
+
+impl VoiceCommandSettings {
+    /// The phrases for `action`, cleaned (clean_phrase), empty ones dropped, as typed.
+    pub fn phrases(&self, action: &str) -> Vec<String> {
+        self.commands.iter().filter(|e| e.action == action).flat_map(|e| e.phrases.iter()).map(|p| clean_phrase(p)).filter(|p| !phrase_key(p).is_empty()).collect()
     }
 
-    /// The wake phrase as people say it: "Hey Navi" or "Navi".
-    pub fn label(&self) -> &'static str {
-        if self.name_only() {
-            "Navi"
-        } else {
-            "Hey Navi"
+    /// The first of those, if any.
+    pub fn first(&self, action: &str) -> Option<String> {
+        self.phrases(action).into_iter().next()
+    }
+
+    /// The first wake phrase as typed, or "Navi" when there is none. For "Listen for “Navi”".
+    pub fn wake_label(&self) -> String {
+        self.first("wake").unwrap_or_else(|| "Navi".into())
+    }
+
+    /// How to say a command: "Navi, stop watching" (wake_label, ", ", first phrase). For "wake":
+    /// wake_label alone. None when the action has no phrase.
+    pub fn say(&self, action: &str) -> Option<String> {
+        let first = self.first(action)?;
+        if action == "wake" {
+            return Some(first);
         }
+        Some(format!("{}, {first}", self.wake_label()))
+    }
+
+    /// For call jobs (jobs.rs `name_only`): true when a wake phrase's key is exactly "navi".
+    pub fn jobs_name_only(&self) -> bool {
+        self.phrases("wake").iter().any(|p| phrase_key(p) == "navi")
+    }
+
+    /// The non-wake action whose phrase is all of `said`, comparing phrase_key, after dropping
+    /// "please", "can you", "could you", "just", "now" from the front and "please", "now",
+    /// "thanks", "thank you" from the end. "stop taking notes." -> Some("notes_off").
+    pub fn action_for(&self, said: &str) -> Option<String> {
+        let key = phrase_key(said);
+        let bare = without_fillers(&key);
+        if key.is_empty() {
+            return None;
+        }
+        VOICE_ACTIONS
+            .iter()
+            .filter(|a| **a != "wake")
+            // A phrase that itself starts with a filler ("just stop") still matches as typed.
+            .find(|a| self.phrases(a).iter().map(|p| phrase_key(p)).any(|p| p == bare || p == key))
+            .map(|a| a.to_string())
+    }
+
+    /// Puts `phrases` in place of `action`'s, adding the entry when there is none.
+    pub fn set_phrases(&mut self, action: &str, phrases: &[&str]) {
+        let phrases: Vec<String> = phrases.iter().map(|p| p.to_string()).collect();
+        let mut seen = false;
+        self.commands.retain_mut(|e| {
+            if e.action != action {
+                return true;
+            }
+            if seen {
+                return false;
+            }
+            seen = true;
+            e.phrases = phrases.clone();
+            true
+        });
+        if !seen {
+            self.commands.push(VoiceCommandEntry { action: action.to_string(), phrases });
+            self.commands.sort_by_key(|e| action_rank(&e.action));
+        }
+    }
+
+    /// Adds an entry with its default phrases for every VOICE_ACTIONS id that has none. An entry
+    /// that exists with no phrases stays empty (the user turned that command off).
+    pub fn complete(&mut self) {
+        for action in VOICE_ACTIONS {
+            if !self.commands.iter().any(|e| e.action == *action) {
+                self.commands.push(default_entry(action));
+            }
+        }
+        // Stable, so unknown actions keep their own order after the known ones.
+        self.commands.sort_by_key(|e| action_rank(&e.action));
+    }
+
+    /// Validates and tidies what Settings saves. Err is a message for the bubble or a toast.
+    /// ui/js/mock.js normaliseVoiceCommands is a port of this: keep the two in step.
+    pub fn normalised(&self) -> Result<VoiceCommandSettings, String> {
+        self.normalised_from(None)
+    }
+
+    /// normalised(), with the settings as they were before this save (`before`), so a phrase used
+    /// twice is reported against the command that already had it, not the row it was just typed
+    /// into.
+    pub fn normalised_from(&self, before: Option<&VoiceCommandSettings>) -> Result<VoiceCommandSettings, String> {
+        let mut vc = self.clone();
+        // 1. Every action there. Then one entry per known action (a hand-edited file could have
+        // two: the second joins the first) and unknown ones set aside, untouched.
+        vc.complete();
+        let mut known: Vec<VoiceCommandEntry> = Vec::new();
+        let mut unknown: Vec<VoiceCommandEntry> = Vec::new();
+        for e in vc.commands {
+            if action_rank(&e.action) == VOICE_ACTIONS.len() {
+                unknown.push(e);
+            } else if let Some(k) = known.iter_mut().find(|k| k.action == e.action) {
+                k.phrases.extend(e.phrases);
+            } else {
+                known.push(e);
+            }
+        }
+
+        // 2. Tidy every phrase; drop the ones with nothing to say.
+        for e in &mut known {
+            e.phrases = e.phrases.iter().map(|p| clean_phrase(p)).filter(|p| !phrase_key(p).is_empty()).collect();
+        }
+
+        // 3. "Navi, take notes" typed into Take notes is saved as "take notes": the listener hears
+        // the wake word first and matches the command on what follows it.
+        let mut wake_keys: Vec<String> = known.iter().filter(|e| e.action == "wake").flat_map(|e| e.phrases.iter().map(|p| phrase_key(p))).collect();
+        wake_keys.extend(BUILTIN_WAKE_KEYS.iter().map(|k| k.to_string()));
+        wake_keys.sort_by_key(|k| std::cmp::Reverse(k.len()));
+        for e in known.iter_mut().filter(|e| e.action != "wake") {
+            for p in e.phrases.iter_mut() {
+                let key = phrase_key(p);
+                for wake in &wake_keys {
+                    if key == *wake {
+                        return Err(format!("\u{201c}{p}\u{201d} is the wake word. Type what you say after it."));
+                    }
+                    if key.starts_with(&format!("{wake} ")) {
+                        *p = clean_phrase(after_words(p, wake.split(' ').count()));
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 4. Each phrase on its own.
+        for e in &known {
+            let in_take = matches!(e.action.as_str(), "cancel" | "finish");
+            for p in &e.phrases {
+                let key = phrase_key(p);
+                let words = key.split(' ').count();
+                if p.chars().count() > MAX_PHRASE_CHARS || words > MAX_PHRASE_WORDS {
+                    return Err(format!("\u{201c}{p}\u{201d} is too long for a voice command. Keep it to six words or fewer."));
+                }
+                if BLOCKED_PHRASES.contains(&key.as_str()) {
+                    return Err(format!("Navi can\u{2019}t listen for \u{201c}{p}\u{201d}: Whisper often hears it in silence. Pick another phrase."));
+                }
+                if in_take && words == 1 && key.chars().count() < MIN_IN_TAKE_LETTERS {
+                    return Err(format!("\u{201c}{p}\u{201d} is too short to listen for while you\u{2019}re dictating. Use two words or more, such as \u{201c}that\u{2019}s all\u{201d}."));
+                }
+            }
+        }
+
+        // 5. The same phrase twice in one command: the first stays.
+        for e in &mut known {
+            let mut seen: Vec<String> = Vec::new();
+            e.phrases.retain(|p| {
+                let key = phrase_key(p);
+                if seen.contains(&key) {
+                    return false;
+                }
+                seen.push(key);
+                true
+            });
+        }
+
+        // 6. A few phrases each.
+        if known.iter().any(|e| e.phrases.len() > MAX_PHRASES) {
+            return Err("Up to eight phrases for each command.".into());
+        }
+
+        // 7. One phrase, one action, or Navi couldn't know which you meant. Compared folded, as the
+        // listener hears them: "do not worry" is "don't worry".
+        let mut taken: Vec<(String, &str, &str)> = Vec::new();
+        for e in &known {
+            for p in &e.phrases {
+                let key = fold_key(&phrase_key(p));
+                if let Some((_, earlier, earlier_p)) = taken.iter().find(|(k, _, _)| *k == key) {
+                    // Name the command that had it before this save; the phrase as typed in the other.
+                    let had = |action: &str| before.is_some_and(|b| b.phrases(action).iter().any(|q| fold_key(&phrase_key(q)) == key));
+                    let (owner, typed) = if had(&e.action) && !had(earlier) { (e.action.as_str(), *earlier_p) } else { (*earlier, p.as_str()) };
+                    return Err(format!("\u{201c}{typed}\u{201d} is already used for {}.", voice_action_label(owner)));
+                }
+                taken.push((key, e.action.as_str(), p.as_str()));
+            }
+        }
+
+        // 8. Something has to wake it.
+        if known.iter().all(|e| e.action != "wake" || e.phrases.is_empty()) {
+            return Err("Keep at least one wake word.".into());
+        }
+
+        // 9. In VOICE_ACTIONS order (complete() sorted them), unknown actions after.
+        known.extend(unknown);
+        Ok(VoiceCommandSettings { enabled: vc.enabled, commands: known })
     }
 }
 
@@ -167,7 +546,7 @@ impl Default for Settings {
             general: GeneralSettings::default(),
             speak: SpeakSettings::default(),
             notes: NotesSettings::default(),
-            hey_navi: HeyNaviSettings::default(),
+            voice_commands: VoiceCommandSettings::default(),
             watch: WatchSettings::default(),
         }
     }
@@ -785,4 +1164,266 @@ pub enum VoiceCommand {
     Critique { instruction: String },
     /// "watch" / "stop watching": screenshots while you work (see watch.rs).
     Watch { on: bool },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The default voice commands with some actions' phrases replaced.
+    fn vc_with(changes: &[(&str, &[&str])]) -> VoiceCommandSettings {
+        let mut vc = VoiceCommandSettings::default();
+        for (action, phrases) in changes {
+            vc.set_phrases(action, phrases);
+        }
+        vc
+    }
+
+    fn table(vc: &VoiceCommandSettings) -> Vec<(String, Vec<String>)> {
+        vc.commands.iter().map(|e| (e.action.clone(), e.phrases.clone())).collect()
+    }
+
+    #[test]
+    fn voice_commands_start_off_with_the_shipped_phrases() {
+        let vc = VoiceCommandSettings::default();
+        assert!(!vc.enabled, "the microphone stays closed until you turn it on");
+        let expected: Vec<(String, Vec<String>)> = [
+            ("wake", vec!["Navi", "Hey Navi"]),
+            ("scratch_that", vec!["scratch that"]),
+            ("watch_on", vec!["watch my screen"]),
+            ("watch_off", vec!["stop watching"]),
+            ("notes_on", vec!["take notes"]),
+            ("notes_off", vec!["stop taking notes"]),
+            ("cancel", vec!["don't worry"]),
+            ("finish", vec!["that's all"]),
+        ]
+        .into_iter()
+        .map(|(a, p)| (a.to_string(), p.into_iter().map(String::from).collect()))
+        .collect();
+        assert_eq!(table(&vc), expected);
+        assert_eq!(vc.commands.iter().map(|e| e.action.as_str()).collect::<Vec<_>>(), VOICE_ACTIONS);
+        assert_eq!(Settings::default().voice_commands, vc);
+        assert_eq!(vc.normalised(), Ok(vc.clone()), "the defaults pass their own checks unchanged");
+    }
+
+    #[test]
+    fn the_ui_sees_voice_commands_in_camel_case() {
+        let json = serde_json::to_value(Settings::default()).unwrap();
+        assert_eq!(json["voiceCommands"]["enabled"], false);
+        assert_eq!(json["voiceCommands"]["commands"][0], serde_json::json!({ "action": "wake", "phrases": ["Navi", "Hey Navi"] }));
+        assert_eq!(json["voiceCommands"]["commands"][7], serde_json::json!({ "action": "finish", "phrases": ["that's all"] }));
+        assert!(json.get("heyNavi").is_none());
+        // Half a section still reads, with the rest from the defaults.
+        let s: Settings = serde_json::from_str(r#"{ "voiceCommands": { "enabled": true } }"#).unwrap();
+        assert!(s.voice_commands.enabled);
+        assert_eq!(s.voice_commands.commands, default_voice_commands());
+        // An action from a newer Navi doesn't make the file unreadable.
+        let s: Settings = serde_json::from_str(r#"{ "voiceCommands": { "commands": [{ "action": "open_app", "phrases": ["open mail"] }] } }"#).unwrap();
+        assert_eq!(s.voice_commands.commands[0].action, "open_app");
+    }
+
+    #[test]
+    fn phrase_keys_ignore_case_and_punctuation() {
+        assert_eq!(phrase_key("Don't worry!"), "dont worry");
+        assert_eq!(phrase_key("Hey, Navi"), "hey navi");
+        assert_eq!(phrase_key("  Take   NOTES. "), "take notes");
+        assert_eq!(phrase_key("That\u{2019}s all"), "thats all");
+        assert_eq!(phrase_key("\u{2018}cause"), "cause");
+        assert_eq!(phrase_key("watch-my-screen"), "watch my screen");
+        assert_eq!(phrase_key("?! '"), "");
+        assert_eq!(phrase_key(""), "");
+    }
+
+    #[test]
+    fn actions_have_labels() {
+        assert_eq!(voice_action_label("wake"), "Wake word");
+        assert_eq!(voice_action_label("notes_off"), "Stop taking notes");
+        assert_eq!(voice_action_label("cancel"), "Cancel");
+        assert_eq!(voice_action_label("finish"), "Finish");
+        assert_eq!(voice_action_label("open_app"), "open_app", "an unknown action is named by its id");
+        for action in VOICE_ACTIONS {
+            assert_ne!(voice_action_label(action), *action, "{action} has a label");
+        }
+    }
+
+    #[test]
+    fn saving_tidies_phrases_and_keeps_punctuation_inside() {
+        let vc = vc_with(&[("wake", &["  Hey,   Navi!! ", "Navi"]), ("cancel", &["  don't worry!! ", "?!"])]).normalised().unwrap();
+        assert_eq!(vc.phrases("wake"), ["Hey, Navi", "Navi"]);
+        assert_eq!(vc.commands[0].phrases, ["Hey, Navi", "Navi"], "saved as tidied");
+        assert_eq!(vc.phrases("cancel"), ["don't worry"], "a phrase with no words in it goes");
+        assert_eq!(vc.normalised(), Ok(vc.clone()), "a second save changes nothing");
+    }
+
+    #[test]
+    fn a_wake_word_typed_into_a_command_is_dropped() {
+        let vc = vc_with(&[("notes_on", &["Navi, take notes"]), ("watch_on", &["Hey Navi watch my screen"]), ("notes_off", &["hey, navi - stop taking notes!"]), ("scratch_that", &["OK Navi scratch that"])])
+            .normalised()
+            .unwrap();
+        assert_eq!(vc.phrases("notes_on"), ["take notes"]);
+        assert_eq!(vc.phrases("watch_on"), ["watch my screen"]);
+        assert_eq!(vc.phrases("notes_off"), ["stop taking notes"]);
+        assert_eq!(vc.phrases("scratch_that"), ["scratch that"]);
+        // Your own wake word counts too.
+        let vc = vc_with(&[("wake", &["Computer"]), ("finish", &["computer, that's all"])]).normalised().unwrap();
+        assert_eq!(vc.phrases("finish"), ["that's all"]);
+    }
+
+    #[test]
+    fn a_command_that_is_only_the_wake_word_is_refused() {
+        assert_eq!(vc_with(&[("notes_on", &["Hey Navi"])]).normalised(), Err("\u{201c}Hey Navi\u{201d} is the wake word. Type what you say after it.".into()));
+        assert_eq!(vc_with(&[("watch_on", &["navi."])]).normalised(), Err("\u{201c}navi\u{201d} is the wake word. Type what you say after it.".into()));
+        assert_eq!(vc_with(&[("wake", &["Computer"]), ("cancel", &["computer"])]).normalised(), Err("\u{201c}computer\u{201d} is the wake word. Type what you say after it.".into()));
+    }
+
+    #[test]
+    fn long_phrases_are_refused() {
+        let long = "\u{201c}please would you start watching my screen\u{201d} is too long for a voice command. Keep it to six words or fewer.";
+        assert_eq!(vc_with(&[("watch_on", &["please would you start watching my screen"])]).normalised(), Err(long.into()));
+        // Six words is fine; so is 40 characters, but not 41.
+        assert!(vc_with(&[("watch_on", &["would you start watching my screen"])]).normalised().is_ok());
+        assert!(vc_with(&[("watch_on", &["supercalifragilisticexpialidocious scree"])]).normalised().is_ok());
+        assert_eq!(
+            vc_with(&[("watch_on", &["supercalifragilisticexpialidocious screen"])]).normalised(),
+            Err("\u{201c}supercalifragilisticexpialidocious screen\u{201d} is too long for a voice command. Keep it to six words or fewer.".into())
+        );
+    }
+
+    #[test]
+    fn what_whisper_hears_in_silence_is_refused() {
+        assert_eq!(
+            vc_with(&[("finish", &["Thank you."])]).normalised(),
+            Err("Navi can\u{2019}t listen for \u{201c}Thank you\u{201d}: Whisper often hears it in silence. Pick another phrase.".into())
+        );
+        assert!(vc_with(&[("wake", &["Navi", "OK"])]).normalised().unwrap_err().contains("\u{201c}OK\u{201d}"));
+        assert!(vc_with(&[("watch_off", &["bye bye"])]).normalised().is_err());
+        // "Hey" on its own is allowed: Settings only warns about it.
+        assert!(vc_with(&[("wake", &["Hey"])]).normalised().is_ok());
+    }
+
+    #[test]
+    fn cancel_and_finish_need_two_words_or_a_long_one() {
+        let short = |p: &str| format!("\u{201c}{p}\u{201d} is too short to listen for while you\u{2019}re dictating. Use two words or more, such as \u{201c}that\u{2019}s all\u{201d}.");
+        assert_eq!(vc_with(&[("finish", &["done"])]).normalised(), Err(short("done")));
+        assert_eq!(vc_with(&[("cancel", &["Stop!"])]).normalised(), Err(short("Stop")));
+        assert!(vc_with(&[("cancel", &["cancel"])]).normalised().is_ok());
+        assert!(vc_with(&[("cancel", &["stop it"])]).normalised().is_ok());
+        // Commands after the wake word can be one short word.
+        assert!(vc_with(&[("watch_off", &["stop"])]).normalised().is_ok());
+    }
+
+    #[test]
+    fn repeats_go_and_eight_phrases_is_the_most() {
+        let vc = vc_with(&[("wake", &["Navi", "navi!", "NAVI", "Hey Navi", "hey, navi"])]).normalised().unwrap();
+        assert_eq!(vc.phrases("wake"), ["Navi", "Hey Navi"], "the first of each stays");
+        let eight = ["scratch that", "delete that", "undo that", "remove that", "lose that", "bin that", "drop that", "cut that"];
+        assert!(vc_with(&[("scratch_that", &eight)]).normalised().is_ok());
+        let mut nine = eight.to_vec();
+        nine.push("forget that");
+        assert_eq!(vc_with(&[("scratch_that", &nine)]).normalised(), Err("Up to eight phrases for each command.".into()));
+    }
+
+    #[test]
+    fn a_phrase_can_belong_to_one_action_only() {
+        assert_eq!(vc_with(&[("notes_on", &["Stop watching"])]).normalised(), Err("\u{201c}Stop watching\u{201d} is already used for Stop watching.".into()));
+        // The earlier action in VOICE_ACTIONS order is the one named.
+        assert_eq!(vc_with(&[("scratch_that", &["take notes"])]).normalised(), Err("\u{201c}take notes\u{201d} is already used for Scratch that.".into()));
+        // A wake phrase used for a command is caught earlier, as the wake word.
+        assert_eq!(vc_with(&[("wake", &["Navi", "that's all"])]).normalised(), Err("\u{201c}that's all\u{201d} is the wake word. Type what you say after it.".into()));
+        // A command typed with the wake word in front is compared without it.
+        assert_eq!(vc_with(&[("notes_off", &["Navi, take notes"])]).normalised(), Err("\u{201c}take notes\u{201d} is already used for Take notes.".into()));
+        // Saved from Settings, the command that already had the phrase is named, even when it
+        // comes later than the row it was typed into.
+        let before = VoiceCommandSettings::default();
+        assert_eq!(vc_with(&[("scratch_that", &["Navi, take notes"])]).normalised_from(Some(&before)), Err("\u{201c}take notes\u{201d} is already used for Take notes.".into()));
+        assert_eq!(vc_with(&[("notes_on", &["Stop watching"])]).normalised_from(Some(&before)), Err("\u{201c}Stop watching\u{201d} is already used for Stop watching.".into()));
+        // Two-word forms the listener folds are the same phrase: "do not worry" is "don't worry".
+        assert_eq!(vc_with(&[("finish", &["do not worry"])]).normalised_from(Some(&before)), Err("\u{201c}do not worry\u{201d} is already used for Cancel.".into()));
+        assert_eq!(vc_with(&[("finish", &["do not worry"])]).normalised(), Err("\u{201c}do not worry\u{201d} is already used for Cancel.".into()));
+        assert!(vc_with(&[("finish", &["do nothing more"])]).normalised().is_ok(), "only whole pairs fold");
+        assert_eq!(fold_key("do not worry"), "dont worry");
+        assert_eq!(fold_key("that is all"), "thats all");
+        assert_eq!(fold_key("do"), "do");
+    }
+
+    #[test]
+    fn something_has_to_wake_navi() {
+        assert_eq!(vc_with(&[("wake", &[])]).normalised(), Err("Keep at least one wake word.".into()));
+        assert_eq!(vc_with(&[("wake", &["  ", "!!"])]).normalised(), Err("Keep at least one wake word.".into()));
+        // Any other command can be turned off by emptying it.
+        let vc = vc_with(&[("finish", &[]), ("scratch_that", &[])]).normalised().unwrap();
+        assert!(vc.phrases("finish").is_empty() && vc.phrases("scratch_that").is_empty());
+        assert_eq!(vc.commands.len(), VOICE_ACTIONS.len(), "an empty command keeps its entry");
+    }
+
+    #[test]
+    fn unknown_actions_are_kept_last_and_left_alone() {
+        let mut vc = VoiceCommandSettings::default();
+        vc.commands.insert(0, VoiceCommandEntry { action: "open_app".into(), phrases: vec!["  open mail  ".into(), "Navi".into()] });
+        vc.commands.swap(3, 5);
+        let out = vc.normalised().unwrap();
+        assert_eq!(out.commands.iter().map(|e| e.action.as_str()).take(VOICE_ACTIONS.len()).collect::<Vec<_>>(), VOICE_ACTIONS);
+        assert_eq!(out.commands.last(), Some(&VoiceCommandEntry { action: "open_app".into(), phrases: vec!["  open mail  ".into(), "Navi".into()] }));
+    }
+
+    #[test]
+    fn complete_adds_missing_actions_but_leaves_an_empty_one_empty() {
+        let mut vc = VoiceCommandSettings { enabled: true, commands: vec![VoiceCommandEntry { action: "finish".into(), phrases: vec![] }, VoiceCommandEntry { action: "wake".into(), phrases: vec!["Hey".into()] }] };
+        vc.complete();
+        assert_eq!(vc.commands.iter().map(|e| e.action.as_str()).collect::<Vec<_>>(), VOICE_ACTIONS);
+        assert!(vc.phrases("finish").is_empty(), "you turned finish off");
+        assert_eq!(vc.phrases("wake"), ["Hey"]);
+        assert_eq!(vc.phrases("cancel"), ["don't worry"], "a missing action gets its defaults");
+        assert!(vc.enabled);
+    }
+
+    #[test]
+    fn how_to_say_each_command() {
+        let vc = VoiceCommandSettings::default();
+        assert_eq!(vc.wake_label(), "Navi");
+        assert_eq!(vc.say("wake").as_deref(), Some("Navi"));
+        assert_eq!(vc.say("watch_off").as_deref(), Some("Navi, stop watching"));
+        assert_eq!(vc.first("cancel").as_deref(), Some("don't worry"));
+        let vc = vc_with(&[("wake", &["Hey Navi"]), ("watch_off", &[])]);
+        assert_eq!(vc.say("notes_off").as_deref(), Some("Hey Navi, stop taking notes"));
+        assert_eq!(vc.say("watch_off"), None, "a command that is off can't be said");
+        assert_eq!(vc_with(&[("wake", &["Hey"])]).wake_label(), "Hey");
+        assert_eq!(vc_with(&[("wake", &[])]).wake_label(), "Navi");
+        assert_eq!(vc_with(&[("wake", &[])]).say("wake"), None);
+    }
+
+    #[test]
+    fn call_jobs_take_the_name_alone_only_when_it_wakes_navi() {
+        assert!(VoiceCommandSettings::default().jobs_name_only());
+        assert!(vc_with(&[("wake", &["navi!"])]).jobs_name_only());
+        assert!(!vc_with(&[("wake", &["Hey Navi"])]).jobs_name_only());
+        assert!(!vc_with(&[("wake", &["Hey"])]).jobs_name_only());
+    }
+
+    #[test]
+    fn a_whole_line_can_be_a_command() {
+        let vc = VoiceCommandSettings::default();
+        assert_eq!(vc.action_for("stop taking notes.").as_deref(), Some("notes_off"));
+        assert_eq!(vc.action_for("please stop taking notes now").as_deref(), Some("notes_off"));
+        assert_eq!(vc.action_for("Can you watch my screen, thanks.").as_deref(), Some("watch_on"));
+        assert_eq!(vc.action_for("Just, stop watching please").as_deref(), Some("watch_off"));
+        assert_eq!(vc.action_for("draft the email"), None);
+        assert_eq!(vc.action_for("stop taking notes on the budget"), None, "the whole line, not the start of it");
+        assert_eq!(vc.action_for("navi"), None, "the wake word is not a command");
+        assert_eq!(vc.action_for("please"), None);
+        assert_eq!(vc.action_for(""), None);
+        // A command that is off matches nothing; one that starts with a filler still matches.
+        assert_eq!(vc_with(&[("notes_off", &[])]).action_for("stop taking notes"), None);
+        assert_eq!(vc_with(&[("watch_off", &["just stop"])]).action_for("just stop").as_deref(), Some("watch_off"));
+    }
+
+    #[test]
+    fn set_phrases_replaces_or_adds_an_entry() {
+        let mut vc = VoiceCommandSettings { enabled: false, commands: vec![] };
+        vc.set_phrases("cancel", &["never mind"]);
+        vc.set_phrases("wake", &["Hey"]);
+        assert_eq!(vc.commands.iter().map(|e| e.action.as_str()).collect::<Vec<_>>(), ["wake", "cancel"]);
+        vc.set_phrases("cancel", &["forget it"]);
+        assert_eq!(vc.phrases("cancel"), ["forget it"]);
+    }
 }

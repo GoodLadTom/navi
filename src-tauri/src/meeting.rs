@@ -21,8 +21,10 @@
 //!   unfinished are closed at the next start (`recover`).
 //! * Along the way, if switched on in Settings > Meeting notes:
 //!   - Short ideas (ideas.rs): a pass every few minutes, and a final one when the call ends.
-//!   - Jobs (jobs.rs): "Navi, ..." (or "Hey Navi, ...", as Settings > Wake word says) from your side
-//!     of the call goes to the AI straight away and the answer is kept with the note.
+//!   - Jobs (jobs.rs): "Navi, ..." (or "Hey Navi, ...", following the wake words in Settings >
+//!     Voice commands) from your side of the call goes to the AI straight away and the answer is
+//!     kept with the note. A voice command said that way ("Navi, stop taking notes") is not a job;
+//!     the stop one finishes the notes (`split_commands`).
 //!   - Screenshots (screen.rs): a look at the screen every 15 seconds, kept when it has changed,
 //!     its text read on this computer and given to the AI writing the notes.
 //!   - Actions: the Actions in the finished notes go to ClickUp or Notion.
@@ -32,7 +34,7 @@
 use crate::engine::TranscribeOptions;
 use crate::state::App;
 use crate::store::notes::{CallJob, Line, MeetingNote, Shot, ShortIdea};
-use crate::types::Settings;
+use crate::types::{Settings, VoiceCommandSettings};
 use crate::{audio, ideas, integrations, jobs, screen};
 use anyhow::{anyhow, bail, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -748,6 +750,8 @@ async fn run(app: Arc<App>, id: String, audio: MeetingAudio, mut stop_rx: tokio:
         let settings = app.settings();
         let mut new_jobs = Vec::new();
         let mut ideas_pass = None;
+        // "Navi, stop taking notes" heard in this piece (split_commands).
+        let mut stop_asked = false;
         let (snapshot, quiet, card) = {
             let mut slot = app.meeting.lock();
             let Some(s) = slot.as_mut().filter(|s| s.id == id) else { return };
@@ -766,12 +770,18 @@ async fn run(app: Arc<App>, id: String, audio: MeetingAudio, mut stop_rx: tokio:
             // from the end of the last piece. While the audio after it waits for the speech engine,
             // a held line waits with it.
             let waiting_for_engine = lines.is_empty() && !pending.is_empty() && !last;
+            let name_only = settings.voice_commands.jobs_name_only();
             if !settings.notes.call_jobs {
                 s.held_job = None;
+                // No jobs, but "Navi, stop taking notes" still has to stop the notes.
+                let (found, _) = jobs::find(&lines, None, name_only, false);
+                stop_asked = split_commands(found, &settings.voice_commands, s.finishing || last).1;
             } else if !waiting_for_engine {
                 let held = s.held_job.take();
-                let (found, hold) = jobs::find(&lines, held.as_ref(), settings.hey_navi.name_only(), !last);
+                let (found, hold) = jobs::find(&lines, held.as_ref(), name_only, !last);
                 s.held_job = hold;
+                let (found, asked) = split_commands(found, &settings.voice_commands, s.finishing || last);
+                stop_asked = asked;
                 for (at_ms, ask) in found {
                     let job = CallJob { id: uuid::Uuid::new_v4().to_string(), at_ms, ask, status: "working".into(), ..Default::default() };
                     log::info!("call job asked at {}", clock(at_ms));
@@ -806,6 +816,14 @@ async fn run(app: Arc<App>, id: String, audio: MeetingAudio, mut stop_rx: tokio:
         }
         if let Some(now_ms) = ideas_pass {
             spawn_ideas_pass(app.clone(), id.clone(), now_ms);
+        }
+        // The backstop for when the listener is off or missed it: the notes stop at the end of
+        // the piece they heard you ask in.
+        if stop_asked {
+            log::info!("you asked on the call for the notes to stop; finishing them");
+            if let Err(e) = finish(&app, true) {
+                log::warn!("meeting notes: {e:#}");
+            }
         }
         if let Some(followed) = quiet.filter(|followed| followed.is_empty() || !on_mic(&mic_users(), followed)) {
             log::info!("nothing said for {} minutes{}; finishing the notes", QUIET_STOP_MS / 60_000, if followed.is_empty() { String::new() } else { format!(" and {followed} let go of the microphone") });
@@ -848,6 +866,28 @@ async fn run(app: Arc<App>, id: String, audio: MeetingAudio, mut stop_rx: tokio:
             None => format!("Notes saved: {}", note.title),
         });
     }
+}
+
+/// Jobs that are really voice commands ("Navi, stop taking notes", any phrase in Settings > Voice
+/// commands) are not jobs. True in the second place when one of them asked to stop the notes and
+/// they are not already finishing (`finishing`).
+/// Only stopping acts here: the listener runs the others in call mode, and acting twice could
+/// start a second watch.
+fn split_commands(found: Vec<(u64, String)>, vc: &VoiceCommandSettings, finishing: bool) -> (Vec<(u64, String)>, bool) {
+    let mut stop = false;
+    let jobs = found
+        .into_iter()
+        .filter(|(_, ask)| match vc.action_for(ask) {
+            Some(action) => {
+                // The command, never the words.
+                log::info!("voice command heard on the call: {action}");
+                stop |= action == "notes_off" && !finishing;
+                false
+            }
+            None => true,
+        })
+        .collect();
+    (jobs, stop)
 }
 
 /// One side's piece of the call waiting to be transcribed.
@@ -2196,6 +2236,41 @@ mod tests {
         assert_eq!(call_app_name(r"C:#Program Files#Audacity#Audacity.exe"), None);
         assert_eq!(call_app_name(r"C:#Program Files (x86)#Steam#steam.exe"), None);
         assert_eq!(call_app_name("Microsoft.WindowsSoundRecorder_8wekyb3d8bbwe"), None);
+    }
+
+    #[test]
+    fn voice_commands_on_a_call_are_not_jobs() {
+        let vc = VoiceCommandSettings::default();
+        let found = vec![(1_000, "stop taking notes.".to_string()), (2_000, "watch my screen".to_string()), (3_000, "draft the email to Sam".to_string())];
+        let (jobs, stop) = split_commands(found.clone(), &vc, false);
+        assert_eq!(jobs, [(3_000, "draft the email to Sam".to_string())], "only the real job is left");
+        assert!(stop, "stop taking notes asks to stop");
+        // Watch my screen goes from the jobs but stops nothing.
+        let (jobs, stop) = split_commands(vec![found[1].clone(), found[2].clone()], &vc, false);
+        assert_eq!(jobs.len(), 1);
+        assert!(!stop);
+        // Already finishing: nothing more to ask.
+        let (jobs, stop) = split_commands(found, &vc, true);
+        assert_eq!(jobs.len(), 1);
+        assert!(!stop);
+        // Your own phrase for it works too.
+        let mut vc = VoiceCommandSettings::default();
+        vc.set_phrases("notes_off", &["wrap up the notes"]);
+        assert!(split_commands(vec![(0, "Please wrap up the notes now.".into())], &vc, false).1);
+        assert!(!split_commands(vec![(0, "stop taking notes".into())], &vc, false).1, "the old phrase is just a job now");
+    }
+
+    #[test]
+    fn navi_stop_taking_notes_said_on_a_call_stops_them() {
+        let lines = vec![
+            Line { at_ms: 1_000, who: "them".into(), text: "Navi, stop taking notes.".into() },
+            Line { at_ms: 5_000, who: "you".into(), text: "Navi, stop taking notes.".into() },
+        ];
+        let vc = VoiceCommandSettings::default();
+        let (found, _) = jobs::find(&lines, None, vc.jobs_name_only(), false);
+        let (jobs, stop) = split_commands(found, &vc, false);
+        assert!(jobs.is_empty());
+        assert!(stop, "said on your side of the call");
     }
 
     #[test]

@@ -1,169 +1,76 @@
-//! The wake word ("Navi" by default, or "Hey Navi"): the microphone stays open and Navi listens for
-//! its name, so you can start talking without touching the keyboard (Settings > Wake word, with
-//! the choice of phrase under Which word). Off by default.
+//! Voice commands (Settings > Voice commands): the microphone stays open and Navi listens for its
+//! wake word ("Navi" and "Hey Navi" to start with, or any words you choose) and for a command said
+//! straight after it, so you can talk to it without touching the keyboard. Off by default.
 //!
-//! * Its own microphone stream (WASAPI shared mode, alongside anything else using the mic) feeds a
-//!   few seconds of 16 kHz audio into a ring.
-//! * A simple voice detector (loudness over a slowly adapting noise floor) spots where each
-//!   utterance starts. Its first moments (up to 1.8 s, less if it ends sooner) go to the speech
-//!   engine, and if the words open with the wake phrase ("Hey Navi", any spelling, or "Navi" with a
-//!   pause after it while Settings keep the name alone, the default; see voice::is_wake_phrase) a
-//!   hands-free take starts straight away with the audio from the start of the utterance
-//!   included, so "Hey Navi, email Sam about Friday" keeps every word. The take ends
-//!   by itself when you stop talking (controller::start_from_wake).
-//! * Paused while a take is running, while Navi is taking call notes (the call's own transcript
-//!   hears "Hey Navi, ..." as a job instead, see jobs.rs), while the shortcut is paused from the
-//!   tray, and during a microphone test.
+//! * Its own microphone stream (WASAPI shared mode, alongside anything else using the mic) feeds
+//!   10 seconds of 16 kHz audio into a ring.
+//! * spoken::IdleListener spots where each utterance starts and sends its first moments to the
+//!   speech engine as it goes: a check 0.4 s in, then every 0.3 s of new speech up to 3 s, one at
+//!   a time, and a last one when the utterance ends. The words are matched by spoken::Matcher,
+//!   with no punctuation needed after the name, so "Navi watch my screen" in one breath counts.
+//!   Only the first check goes with the wake words as Whisper's prompt (see spoken::USE_PROMPT).
+//!   While checks come back slowly (another app busy on the GPU), only the last one is sent.
+//! * "Navi" alone, or "Navi, email Sam..." (dictation), starts a hands-free take with the audio
+//!   from the start of the utterance in it, so every word is kept (controller::start_from_wake);
+//!   the bubble shows a moment after you stop, or while you are still talking. "Navi, watch my
+//!   screen" runs the command with no take at all (controller::run_spoken).
+//! * During call notes it keeps listening in call mode: only the commands that stop the notes or
+//!   watch the screen. "Navi, ..." on a call is still a job for the call's own transcript (jobs.rs).
+//! * Paused while a take is running (the take's own listener takes over, see
+//!   controller::spawn_take_listener), while the shortcut is paused from the tray, during a
+//!   microphone test, and while Navi reads text aloud (hold_off), so it never wakes itself.
 //! * A microphone that won't open (the one named in Settings unplugged, say) is never swapped for
 //!   another. The bubble says why once, and it is tried again every 30 seconds, or at once when
 //!   Settings name another.
 //! * Each check is one short transcription on this computer. Nothing is kept or sent anywhere, and
-//!   what was heard is never logged.
+//!   what was heard is never logged: only which command fired, and how quickly.
 
 use crate::audio::{self, To16k};
 use crate::engine::TranscribeOptions;
+use crate::spoken::{IdleCheck, IdleDecision, IdleListener, ListenMode, Matcher, Ring};
 use crate::state::{App, Phase};
-use crate::text::voice;
-use crate::types::PillState;
+use crate::types::{PillState, VoiceCommandSettings};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const RATE: usize = audio::SAMPLE_RATE as usize;
-/// 20 ms frames for the voice detector.
-const FRAME: usize = RATE / 50;
-/// Audio kept in the ring.
-const RING_SECS: usize = 10;
-/// Speech frames in a row that start an utterance, and quiet frames that end one.
-const START_FRAMES: usize = 3;
-const END_FRAMES: usize = 30;
-/// Audio kept from before an utterance starts, so its first sound is whole.
-const LEAD_IN: usize = RATE / 5;
-/// How much of an utterance is checked for the wake phrase.
-const CHECK_LEN: usize = RATE * 18 / 10;
-/// Shorter utterances than this aren't worth checking.
-const MIN_CHECK: usize = RATE * 4 / 10;
-/// Louder than the noise floor by this much counts as speech, and never below the absolute floor.
-const OVER_FLOOR_DB: f32 = 10.0;
-const MIN_SPEECH_DB: f32 = -52.0;
-const TICK: Duration = Duration::from_millis(60);
+const TICK: Duration = Duration::from_millis(40);
+/// Checks slower than this, as a median, and only the last check of each utterance is sent.
+const SLOW_CHECK_MS: u64 = 500;
+/// How many of the latest checks the median is taken over.
+const TIMED_CHECKS: usize = 7;
+/// Quiet kept after Navi's own voice stops, before the listener hears the room again.
+const SPEECH_TAIL: Duration = Duration::from_millis(300);
 
-/// 16 kHz audio with the absolute index of its first sample.
-struct Ring {
-    samples: Vec<f32>,
-    first: u64,
-}
+/// Until when the listener holds off: Navi is reading text aloud (Speak mode, the Speak page).
+static HOLD_OFF_UNTIL: Mutex<Option<Instant>> = parking_lot::const_mutex(None);
 
-impl Ring {
-    fn end(&self) -> u64 {
-        self.first + self.samples.len() as u64
-    }
-
-    fn push(&mut self, new: &[f32]) {
-        self.samples.extend_from_slice(new);
-        let max = RATE * RING_SECS;
-        if self.samples.len() > max {
-            let drop = self.samples.len() - max;
-            self.samples.drain(..drop);
-            self.first += drop as u64;
-        }
-    }
-
-    /// Audio from absolute index `from` (clamped to what is still held) to the end.
-    fn since(&self, from: u64) -> Vec<f32> {
-        let start = from.saturating_sub(self.first).min(self.samples.len() as u64) as usize;
-        self.samples[start..].to_vec()
-    }
-
-    fn range(&self, from: u64, len: usize) -> Vec<f32> {
-        let start = from.saturating_sub(self.first).min(self.samples.len() as u64) as usize;
-        let end = (start + len).min(self.samples.len());
-        self.samples[start..end].to_vec()
-    }
-
-    fn clear(&mut self) {
-        self.first = self.end();
-        self.samples.clear();
+/// Navi is about to play `secs` of its own voice: the listener stops hearing the room until it has
+/// finished (and a moment after), so a sentence that starts with the wake word can't wake it.
+pub fn hold_off(secs: f32) {
+    let until = Instant::now() + Duration::from_secs_f32(secs.max(0.0)) + SPEECH_TAIL;
+    let mut slot = HOLD_OFF_UNTIL.lock();
+    if slot.is_none_or(|t| t < until) {
+        *slot = Some(until);
     }
 }
 
-/// The voice detector: where the current utterance started, if one is under way.
-#[derive(Default)]
-struct Detector {
-    floor_db: Option<f32>,
-    loud_run: usize,
-    quiet_run: usize,
-    utterance: Option<Utterance>,
-    /// Absolute index of the next frame to look at.
-    next: u64,
+fn holding_off() -> bool {
+    HOLD_OFF_UNTIL.lock().is_some_and(|t| Instant::now() < t)
 }
 
-#[derive(Clone, Copy)]
-struct Utterance {
-    start: u64,
-    checked: bool,
-}
-
-/// What the detector wants done after looking at new audio.
-#[derive(Debug, PartialEq)]
-enum Check {
-    /// Check `len` samples from `start`; `ended`: the utterance was over before the check.
-    Now { start: u64, len: usize, ended: bool },
-}
-
-impl Detector {
-    /// Looks at every whole frame not yet seen. Returns the check to make, if one is due.
-    fn feed(&mut self, ring: &Ring) -> Option<Check> {
-        let mut due = None;
-        if self.next < ring.first {
-            self.next = ring.first;
-        }
-        while self.next + FRAME as u64 <= ring.end() {
-            let at = (self.next - ring.first) as usize;
-            let frame = &ring.samples[at..at + FRAME];
-            let rms = (frame.iter().map(|x| x * x).sum::<f32>() / FRAME as f32).sqrt();
-            let db = if rms > 1e-7 { 20.0 * rms.log10() } else { -140.0 };
-            let floor = self.floor_db.get_or_insert(db);
-            // Falls fast to the quiet between words; rises slowly (about 1 dB a second).
-            *floor = if db < *floor { db } else { *floor + 0.02 };
-            let loud = db > (*floor + OVER_FLOOR_DB).max(MIN_SPEECH_DB);
-            if loud {
-                self.loud_run += 1;
-                self.quiet_run = 0;
-            } else {
-                self.quiet_run += 1;
-                self.loud_run = 0;
-            }
-            match self.utterance.as_mut() {
-                None if self.loud_run >= START_FRAMES => {
-                    let start = (self.next + FRAME as u64).saturating_sub((START_FRAMES * FRAME + LEAD_IN) as u64).max(ring.first);
-                    self.utterance = Some(Utterance { start, checked: false });
-                }
-                Some(u) => {
-                    let len = (self.next + FRAME as u64 - u.start) as usize;
-                    let ended = self.quiet_run >= END_FRAMES;
-                    if !u.checked && (len >= CHECK_LEN || (ended && len >= MIN_CHECK + END_FRAMES * FRAME)) {
-                        u.checked = true;
-                        let len = if ended { len - (END_FRAMES * FRAME) / 2 } else { len };
-                        due = Some(Check::Now { start: u.start, len: len.min(CHECK_LEN), ended });
-                    }
-                    if ended {
-                        self.utterance = None;
-                    }
-                }
-                None => {}
-            }
-            self.next += FRAME as u64;
-        }
-        due
+/// The median of the latest engine times, once there are a few.
+fn median_ms(times: &std::collections::VecDeque<u64>) -> Option<u64> {
+    if times.len() < 3 {
+        return None;
     }
-
-    fn reset(&mut self) {
-        let floor = self.floor_db;
-        *self = Detector { floor_db: floor, ..Default::default() };
-    }
+    let mut v: Vec<u64> = times.iter().copied().collect();
+    v.sort_unstable();
+    Some(v[v.len() / 2])
 }
 
 /// Starts the listener thread. It opens and closes the microphone as Settings and Navi's state
@@ -171,30 +78,56 @@ impl Detector {
 pub fn spawn(app: Arc<App>) {
     let spawned = std::thread::Builder::new().name("navi-wake".into()).spawn(move || listen(app));
     if let Err(e) = spawned {
-        log::warn!("couldn't start listening for Hey Navi: {e}");
+        log::warn!("couldn't start listening for voice commands: {e}");
     }
 }
 
-/// True when the listener should have the microphone open.
+/// True when the listener should have the microphone open. Call notes no longer close it: it
+/// listens in call mode.
 fn wanted(app: &App) -> bool {
-    // The settings lock is let go before the meeting lock is taken.
-    let enabled = app.settings.read().hey_navi.enabled;
-    enabled && !app.paused.load(Ordering::SeqCst) && !app.quitting.load(Ordering::SeqCst) && app.meeting.lock().is_none()
+    let enabled = app.settings.read().voice_commands.enabled;
+    enabled && !app.paused.load(Ordering::SeqCst) && !app.quitting.load(Ordering::SeqCst)
 }
 
-/// True while audio heard now must not wake Navi (a take, or a microphone test, is running).
-fn busy(app: &App) -> bool {
-    !matches!(app.session.lock().phase, Phase::Idle) || app.mic_test.load(Ordering::SeqCst) || app.audio.is_recording()
+/// Call mode while Navi takes call notes: only the commands that stop them or watch the screen.
+fn mode(app: &App) -> ListenMode {
+    if app.meeting.lock().is_some() {
+        ListenMode::Call
+    } else {
+        ListenMode::Normal
+    }
 }
+
+/// True while audio heard now must not wake Navi (a take, or a microphone test, is running, or Navi
+/// is reading text aloud).
+fn busy(app: &App) -> bool {
+    !matches!(app.session.lock().phase, Phase::Idle) || app.mic_test.load(Ordering::SeqCst) || app.audio.is_recording() || holding_off()
+}
+
+/// A check's words, back from the engine (None when it was missing or the check failed), and the
+/// engine's time for it.
+type CheckResult = (IdleCheck, Option<String>, Option<u64>);
 
 fn listen(app: Arc<App>) {
-    let ring = Arc::new(Mutex::new(Ring { samples: Vec::new(), first: 0 }));
-    let checking = Arc::new(AtomicBool::new(false));
+    let ring = Arc::new(Mutex::new(Ring::new()));
+    // A decision is being carried out (a take starting, a command running): no checks go out, and
+    // results that come back meanwhile are stale.
+    let acting = Arc::new(AtomicBool::new(false));
+    let (results_tx, results): (Sender<CheckResult>, Receiver<CheckResult>) = std::sync::mpsc::channel();
+    let mut idle = IdleListener::new(true);
+    // Rebuilt whenever Settings > Voice commands changes.
+    let mut matcher_for: Option<VoiceCommandSettings> = None;
+    let mut matcher = Matcher::new(&VoiceCommandSettings::default());
+    let mut was_acting = false;
+    // Checks sent for the latest utterance (its id and how many), for the log.
+    let mut sent: (u64, usize) = (0, 0);
+    // The engine's time for the latest checks, and whether they have been slow (sliding checks off).
+    let mut engine_ms: std::collections::VecDeque<u64> = std::collections::VecDeque::new();
+    let mut slow = false;
     let mut mic: Option<Mic> = None;
     // The microphone the stream was last opened (or tried) on, so a change in Settings reopens
     // it, straight away even while waiting to retry one that wouldn't open.
     let mut opened_on: Option<String> = None;
-    let mut detector = Detector::default();
     let mut retry_at = Instant::now();
     // The last reason the microphone wouldn't open, so a mic left unplugged is logged and shown
     // once, not every 30 seconds.
@@ -206,22 +139,22 @@ fn listen(app: Arc<App>) {
         }
         if !wanted(&app) {
             if mic.take().is_some() {
-                log::info!("stopped listening for Hey Navi");
+                log::info!("stopped listening for voice commands");
             }
             ring.lock().clear();
-            detector.reset();
-            // Back on (switched on again, or a call or pause over): try the mic at once, and say
-            // again if it still won't open.
+            idle.reset();
+            // Back on (switched on again, or a pause over): try the mic at once, and say again if
+            // it still won't open.
             retry_at = Instant::now();
             open_error = None;
             continue;
         }
         let device = app.settings.read().mic.device.clone();
         if mic.is_some() && opened_on != device {
-            log::info!("the microphone changed in Settings; listening for Hey Navi on the new one");
+            log::info!("the microphone changed in Settings; listening for voice commands on the new one");
             mic = None;
             ring.lock().clear();
-            detector.reset();
+            idle.reset();
         }
         if mic.is_none() {
             if opened_on != device {
@@ -234,14 +167,15 @@ fn listen(app: Arc<App>) {
             opened_on = device.clone();
             match opened {
                 Ok(m) => {
-                    log::info!("listening for Hey Navi");
+                    log::info!("listening for {}", app.settings.read().voice_commands.wake_label());
                     mic = Some(m);
                     open_error = None;
                 }
                 Err(e) => {
                     if open_error.as_deref() != Some(e.as_str()) {
-                        log::warn!("couldn't open the microphone for Hey Navi: {e}");
-                        tell(&app, open_notice(app.settings().hey_navi.label(), device.as_deref(), &e));
+                        log::warn!("couldn't open the microphone for voice commands: {e}");
+                        let wake = app.settings.read().voice_commands.wake_label();
+                        tell(&app, open_notice(&wake, device.as_deref(), &e));
                     }
                     open_error = Some(e);
                     retry_at = Instant::now() + Duration::from_secs(30);
@@ -252,44 +186,181 @@ fn listen(app: Arc<App>) {
         let Some(m) = mic.as_mut() else { continue };
         let fresh = m.take_16k();
         if m.failed() {
-            log::warn!("the microphone for Hey Navi stopped; opening it again shortly");
+            log::warn!("the microphone for voice commands stopped; opening it again shortly");
             mic = None;
             retry_at = Instant::now() + Duration::from_secs(3);
             continue;
         }
+        {
+            let s = app.settings.read();
+            if matcher_for.as_ref() != Some(&s.voice_commands) {
+                matcher = Matcher::new(&s.voice_commands);
+                matcher_for = Some(s.voice_commands.clone());
+            }
+        }
+        // The CPU engine is too slow for sliding checks: only the one at the end of each utterance.
+        // So is a GPU another app is busy on (a render, a game): every decision would come from
+        // stale results, so the same until checks are quick again.
+        let on_cpu = app.engine_status.lock().device == "cpu";
+        let now_slow = median_ms(&engine_ms).is_some_and(|ms| ms > SLOW_CHECK_MS);
+        if now_slow != slow {
+            slow = now_slow;
+            log::info!("voice: checks are {}, so {}", if slow { "slow" } else { "quick again" }, if slow { "only the last one of each utterance is sent" } else { "they go as you talk again" });
+        }
+        idle.set_sliding(!on_cpu && !slow);
         // Read before the ring is locked, so the ring is never held while the session lock is taken.
-        let (busy_now, checking_now) = (busy(&app), checking.load(Ordering::SeqCst));
-        let due = on_tick(&mut ring.lock(), &mut detector, &fresh, busy_now, checking_now);
-        if let Some(Check::Now { start, len, ended }) = due {
-            log::debug!("checking {} ms of speech for Hey Navi{}", len * 1000 / RATE, if ended { " (a short phrase)" } else { "" });
-            // One check at a time: a second utterance while one is being checked is skipped.
-            if checking.swap(true, Ordering::SeqCst) {
+        let (busy_now, acting_now) = (busy(&app), acting.load(Ordering::SeqCst));
+        if was_acting && !acting_now {
+            // The ring was emptied as the action ended; what the listener was following is gone.
+            idle.reset();
+        }
+        was_acting = acting_now;
+        on_tick(&mut ring.lock(), &mut idle, &fresh, busy_now, acting_now);
+        while let Ok((check, text, ms)) = results.try_recv() {
+            if let Some(ms) = ms {
+                if engine_ms.len() >= TIMED_CHECKS {
+                    engine_ms.pop_front();
+                }
+                engine_ms.push_back(ms);
+            }
+            if busy_now || acting.load(Ordering::SeqCst) {
                 continue;
             }
-            let audio = ring.lock().range(start, len);
-            let (app2, ring2, checking2) = (app.clone(), ring.clone(), checking.clone());
+            let Some(text) = text else {
+                idle.on_failed(&check);
+                continue;
+            };
+            let decision = idle.on_result(&check, &text, &matcher, mode(&app));
+            let checks = if sent.0 == check.utt { sent.1 } else { 1 };
+            act(&app, &ring, &acting, decision, checks);
+        }
+        // A wake word or command heard in full, waiting only for the quiet after it.
+        if !busy_now && !acting.load(Ordering::SeqCst) {
+            let decision = idle.poll();
+            if decision != IdleDecision::Wait {
+                act(&app, &ring, &acting, decision, sent.1);
+            }
+        }
+        if !busy_now && !acting.load(Ordering::SeqCst) {
+            let due = {
+                let r = ring.lock();
+                idle.next_check(&r).map(|c| (c, r.slice(c.start, c.end)))
+            };
+            if let Some((check, audio)) = due {
+                sent = if sent.0 == check.utt { (check.utt, sent.1 + 1) } else { (check.utt, 1) };
+                let language = app.settings.read().engine.language.clone();
+                // The prompt only with the first sliding check: with a longer window Whisper drops
+                // the name it was told about ("Watch my screen." for "Navi, watch my screen").
+                let prompt = if check.first { matcher.prompt() } else { String::new() };
+                send_check(&app, check, audio, TranscribeOptions { language, prompt }, results_tx.clone());
+            }
+        }
+    }
+}
+
+/// One listener tick: new audio goes into the ring and the idle listener, unless Navi is busy. A
+/// busy tick drops the new audio, empties the ring and forgets the utterance under way, so nothing
+/// said during a take can wake Navi afterwards; except while a wake is starting a take (`acting`):
+/// what the ring heard as the take's microphone opened is still to be joined onto it, so it is
+/// kept as it is.
+fn on_tick(ring: &mut Ring, idle: &mut IdleListener, fresh: &[f32], busy: bool, acting: bool) {
+    if busy {
+        if !acting {
+            ring.clear();
+        }
+        idle.reset();
+        return;
+    }
+    ring.push(fresh);
+    idle.advance(ring);
+}
+
+/// Transcribes one check on the engine Navi already runs and sends the words back to the loop.
+fn send_check(app: &Arc<App>, check: IdleCheck, audio: Vec<f32>, opts: TranscribeOptions, results: Sender<CheckResult>) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let engine = app.engine.read().await.clone();
+        let (text, ms) = match engine {
+            None => (None, None),
+            Some(engine) => match engine.transcribe(&audio, &opts).await {
+                Ok(t) => {
+                    log::debug!("voice: checked {} ms of speech in {} ms", audio.len() * 1000 / RATE, t.ms);
+                    (Some(t.text), Some(t.ms))
+                }
+                Err(e) => {
+                    log::debug!("voice: a check failed: {e:#}");
+                    (None, None)
+                }
+            },
+        };
+        let _ = results.send((check, text, ms));
+    });
+}
+
+/// Carries out what the idle listener decided. `checks`: how many it took, for the log.
+fn act(app: &Arc<App>, ring: &Arc<Mutex<Ring>>, acting: &Arc<AtomicBool>, decision: IdleDecision, checks: usize) {
+    match decision {
+        IdleDecision::Wait => {}
+        IdleDecision::Ignore => log::info!("voice: ignored an utterance"),
+        IdleDecision::Wake { start, heard_to, after_ms, .. } => {
+            log::info!("voice: woke {after_ms} ms after you stopped ({checks} checks)");
+            acting.store(true, Ordering::SeqCst);
+            let (preroll, preroll_end, judged) = {
+                let r = ring.lock();
+                (r.since(start), r.end(), take_position(start, r.first(), heard_to))
+            };
+            let (app, ring, acting) = (app.clone(), ring.clone(), acting.clone());
             tauri::async_runtime::spawn(async move {
-                check(&app2, audio, start, &ring2).await;
-                checking2.store(false, Ordering::SeqCst);
+                match crate::controller::start_from_wake(&app, preroll).await {
+                    Ok(Some(seq)) => {
+                        // Only once the gap is in: the take's listener reads the take's audio by
+                        // position, so nothing may be put in front of it after it starts.
+                        let gap = ring.lock().since(preroll_end);
+                        join_gap(&app, gap);
+                        crate::controller::spawn_take_listener(app.clone(), seq, Some(judged));
+                    }
+                    // The shortcut won the microphone.
+                    Ok(None) => {}
+                    Err(e) => {
+                        // The error sound has played; say why, or "Navi" just beeps.
+                        log::warn!("voice: couldn't start a take: {e:#}");
+                        show_error(&app, &e);
+                    }
+                }
+                ring.lock().clear();
+                acting.store(false, Ordering::SeqCst);
+            });
+        }
+        IdleDecision::Command { action, start, end, heard, after_ms } => {
+            log::info!("voice: {} {after_ms} ms after you stopped", action.id());
+            acting.store(true, Ordering::SeqCst);
+            let audio = ring.lock().slice(start, end);
+            let (app, ring, acting) = (app.clone(), ring.clone(), acting.clone());
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = crate::controller::run_spoken(&app, action, &heard, audio, None).await {
+                    log::warn!("voice: {} failed: {e:#}", action.id());
+                    app.sounds.play(crate::sounds::Cue::Error, &app.settings().sounds);
+                    show_error(&app, &e);
+                }
+                ring.lock().clear();
+                acting.store(false, Ordering::SeqCst);
             });
         }
     }
 }
 
-/// One listener tick: new audio goes into the ring and the detector, unless Navi is busy. A busy
-/// tick drops the new audio and empties the ring, so nothing said during a take can wake Navi
-/// afterwards, except while a check is starting a take: what the ring heard as the take's
-/// microphone opened is still to be joined onto it (check() takes it), so it is kept as it is.
-fn on_tick(ring: &mut Ring, detector: &mut Detector, fresh: &[f32], busy: bool, checking: bool) -> Option<Check> {
-    if busy {
-        if !checking {
-            ring.clear();
-        }
-        detector.reset();
-        return None;
-    }
-    ring.push(fresh);
-    detector.feed(ring)
+/// Where absolute ring position `pos` falls in a wake take's audio, which opens with the ring's
+/// audio from `start` (clamped to `ring_first`, the oldest sample the ring still held).
+fn take_position(start: u64, ring_first: u64, pos: u64) -> u64 {
+    pos.saturating_sub(start.max(ring_first))
+}
+
+/// The first line of `e` in the bubble.
+fn show_error(app: &Arc<App>, e: &anyhow::Error) {
+    let message = e.to_string().lines().next().unwrap_or("Navi couldn't do that").trim().to_string();
+    app.show_pill_window(crate::context::foreground_hwnd());
+    let gen = app.pill(PillState::Error { message });
+    app.hide_pill_later(gen, 3000);
 }
 
 /// Shows a short note in the bubble, unless a take or a microphone test is using it.
@@ -302,51 +373,14 @@ fn tell(app: &Arc<App>, message: String) {
     app.hide_pill_later(gen, 4000);
 }
 
-/// What the bubble says when the listener can't open the microphone. `phrase` is the wake phrase
-/// as people say it (HeyNaviSettings::label: "Navi" by default, or "Hey Navi").
+/// What the bubble says when the listener can't open the microphone. `phrase` is the wake word as
+/// people say it (VoiceCommandSettings::wake_label: "Navi" to start with).
 fn open_notice(phrase: &str, device: Option<&str>, error: &str) -> String {
     match device.map(str::trim).filter(|n| !n.is_empty()) {
         // Listening starts by itself once it is plugged in.
         Some(name) if error.ends_with("is not connected") => format!("Listening for \u{201c}{phrase}\u{201d} is waiting for the microphone '{name}'"),
         _ => format!("Can't listen for \u{201c}{phrase}\u{201d}. {error}"),
     }
-}
-
-/// Transcribes the start of an utterance and wakes Navi if it opens with the wake phrase.
-async fn check(app: &Arc<App>, audio: Vec<f32>, start: u64, ring: &Arc<Mutex<Ring>>) {
-    let Some(engine) = app.engine.read().await.clone() else { return };
-    let language = app.settings().engine.language;
-    let heard = match engine.transcribe(&audio, &TranscribeOptions { language, prompt: String::new() }).await {
-        Ok(t) => t.text,
-        Err(e) => {
-            log::debug!("Hey Navi check failed: {e:#}");
-            return;
-        }
-    };
-    let wake = app.settings().hey_navi;
-    if !voice::is_wake_phrase(&heard, wake.name_only()) || busy(app) || !wanted(app) {
-        return;
-    }
-    let (preroll, heard_to) = {
-        let r = ring.lock();
-        (r.since(start), r.end())
-    };
-    log::info!("heard {}", wake.label());
-    match crate::controller::start_from_wake(app, preroll).await {
-        Ok(()) => {
-            let gap = ring.lock().since(heard_to);
-            join_gap(app, gap);
-        }
-        Err(e) => {
-            // The error sound has played; say why, or "Navi" just beeps.
-            log::warn!("Hey Navi couldn't start a take: {e:#}");
-            let message = e.to_string().lines().next().unwrap_or("Navi couldn't start listening").trim().to_string();
-            app.show_pill_window(crate::context::foreground_hwnd());
-            let gen = app.pill(PillState::Error { message });
-            app.hide_pill_later(gen, 3000);
-        }
-    }
-    ring.lock().clear();
 }
 
 /// Joins `gap`, what the listener heard while the take's own microphone was opening, onto the
@@ -359,7 +393,7 @@ fn join_gap(app: &App, gap: Vec<f32>) {
     }
 }
 
-/// Notes a joined gap of `gap_len` samples on the take, if it is a live "Hey Navi" take. False
+/// Notes a joined gap of `gap_len` samples on the take, if it is a live wake word take. False
 /// (nothing to join) when it isn't: the shortcut won the microphone, or the take has already ended.
 fn mark_gap(phase: &mut Phase, gap_len: usize) -> bool {
     let Phase::Recording(rec) = phase else { return false };
@@ -445,7 +479,7 @@ where
             out.extend(data.chunks_exact(channels).map(|f| f.iter().map(|&s| s.to_sample::<f32>()).sum::<f32>() * inv));
         },
         move |err| {
-            log::warn!("Hey Navi microphone: {err}");
+            log::warn!("voice commands microphone: {err}");
             failed.store(true, Ordering::SeqCst);
         },
         None,
@@ -460,90 +494,53 @@ mod tests {
         (0..(secs * RATE as f32) as usize).map(|i| (i as f32 * 0.07).sin() * amp).collect()
     }
 
-    fn feed_all(d: &mut Detector, ring: &mut Ring, audio: &[f32]) -> Vec<Check> {
-        let mut out = Vec::new();
-        for chunk in audio.chunks(RATE / 20) {
-            ring.push(chunk);
-            if let Some(c) = d.feed(ring) {
-                out.push(c);
-            }
-        }
-        out
-    }
-
-    #[test]
-    fn a_short_phrase_is_checked_once_it_ends() {
-        let mut ring = Ring { samples: Vec::new(), first: 0 };
-        let mut d = Detector::default();
-        let mut audio = tone(1.0, 0.0005); // room noise
-        audio.extend(tone(0.8, 0.2)); // "Hey Navi"
-        audio.extend(tone(1.0, 0.0005));
-        let checks = feed_all(&mut d, &mut ring, &audio);
-        assert_eq!(checks.len(), 1, "{checks:?}");
-        let Check::Now { start, len, ended } = checks[0];
-        assert!(ended);
-        // Starts just before the speech, with a little lead-in.
-        let speech_at = RATE as u64;
-        assert!(start <= speech_at && start + (LEAD_IN as u64) * 2 >= speech_at, "start {start}");
-        assert!(len >= RATE * 7 / 10 && len <= CHECK_LEN, "len {len}");
-    }
-
-    #[test]
-    fn a_long_utterance_is_checked_after_its_first_moments() {
-        let mut ring = Ring { samples: Vec::new(), first: 0 };
-        let mut d = Detector::default();
-        let mut audio = tone(0.5, 0.0005);
-        audio.extend(tone(4.0, 0.2));
-        let checks = feed_all(&mut d, &mut ring, &audio);
-        assert_eq!(checks.len(), 1, "checked once, not again as it goes on");
-        let Check::Now { len, ended, .. } = checks[0];
-        assert_eq!((len, ended), (CHECK_LEN, false));
-    }
-
-    #[test]
-    fn quiet_and_clicks_are_ignored() {
-        let mut ring = Ring { samples: Vec::new(), first: 0 };
-        let mut d = Detector::default();
-        let mut audio = tone(2.0, 0.0005);
-        // A 30 ms click.
-        audio.extend(tone(0.03, 0.5));
-        audio.extend(tone(2.0, 0.0005));
-        assert!(feed_all(&mut d, &mut ring, &audio).is_empty());
-    }
-
     #[test]
     fn the_gap_is_only_what_came_after_the_preroll() {
-        let mut ring = Ring { samples: Vec::new(), first: 0 };
-        let mut d = Detector::default();
-        on_tick(&mut ring, &mut d, &vec![0.1; RATE], false, false);
-        // check() found the wake phrase and takes the preroll; start_from_wake opens the take's mic.
+        let mut ring = Ring::new();
+        let mut idle = IdleListener::new(true);
+        on_tick(&mut ring, &mut idle, &vec![0.1; RATE], false, false);
+        // The wake word was heard and the preroll taken; start_from_wake opens the take's mic.
         let (preroll, heard_to) = (ring.since(0), ring.end());
-        on_tick(&mut ring, &mut d, &vec![0.2; RATE / 10], false, true); // heard while it opened
-        // The take's microphone is open (busy) and the check hasn't finished: the ring is held,
-        // and what the listener hears now is the take's own audio, so it isn't added.
-        assert_eq!(on_tick(&mut ring, &mut d, &vec![0.3; RATE / 10], true, true), None);
+        on_tick(&mut ring, &mut idle, &vec![0.2; RATE / 10], false, true); // heard while it opened
+        // The take's microphone is open (busy) and the wake is still being acted on: the ring is
+        // held, and what the listener hears now is the take's own audio, so it isn't added.
+        on_tick(&mut ring, &mut idle, &vec![0.3; RATE / 10], true, true);
         let gap = ring.since(heard_to);
         assert_eq!((preroll.len(), gap.len()), (RATE, RATE / 10));
         assert!(gap.iter().all(|v| *v == 0.2), "none of the preroll, nor the take's audio, is repeated");
 
-        // Busy with no check under way (a take from the shortcut): the ring is emptied.
-        on_tick(&mut ring, &mut d, &vec![0.3; RATE / 10], true, false);
-        assert!(ring.samples.is_empty() && ring.since(heard_to).is_empty());
+        // Busy with nothing being acted on (a take from the shortcut): the ring is emptied.
+        on_tick(&mut ring, &mut idle, &vec![0.3; RATE / 10], true, false);
+        assert!(ring.since(0).is_empty() && ring.since(heard_to).is_empty());
         assert_eq!(ring.end(), heard_to + (RATE / 10) as u64, "positions still count on");
     }
 
     #[test]
     fn a_busy_tick_forgets_the_utterance_under_way() {
-        let mut ring = Ring { samples: Vec::new(), first: 0 };
-        let mut d = Detector::default();
+        let mut ring = Ring::new();
+        let mut idle = IdleListener::new(false);
         let mut audio = tone(1.0, 0.0005);
         audio.extend(tone(0.3, 0.2)); // speech starts...
-        for chunk in audio.chunks(RATE / 20) {
-            on_tick(&mut ring, &mut d, chunk, false, false);
+        for chunk in audio.chunks(RATE / 25) {
+            on_tick(&mut ring, &mut idle, chunk, false, false);
         }
-        assert!(d.utterance.is_some());
-        on_tick(&mut ring, &mut d, &tone(0.05, 0.2), true, true); // ...and a take starts
-        assert!(d.utterance.is_none(), "speech from before the take is never checked afterwards");
+        on_tick(&mut ring, &mut idle, &tone(0.04, 0.2), true, true); // ...and a take starts
+        // The take ends and the room is quiet: the utterance from before it is never checked.
+        for chunk in tone(1.0, 0.0005).chunks(RATE / 25) {
+            on_tick(&mut ring, &mut idle, chunk, false, false);
+            assert_eq!(idle.next_check(&ring), None, "speech from before the take is never checked afterwards");
+        }
+        // Without the take, the same speech gets its check once it ends.
+        let (mut ring, mut idle) = (Ring::new(), IdleListener::new(false));
+        let mut audio = tone(1.0, 0.0005);
+        audio.extend(tone(0.3, 0.2));
+        audio.extend(tone(1.0, 0.0005));
+        let mut checks = 0;
+        for chunk in audio.chunks(RATE / 25) {
+            on_tick(&mut ring, &mut idle, chunk, false, false);
+            checks += usize::from(idle.next_check(&ring).is_some());
+        }
+        assert_eq!(checks, 1);
     }
 
     fn recording(from_wake: bool) -> crate::state::Recording {
@@ -595,23 +592,43 @@ mod tests {
     }
 
     #[test]
-    fn says_why_hey_navi_cant_listen() {
+    fn what_the_idle_listener_heard_is_found_in_the_take() {
+        // The take opens with the ring's audio from the utterance's start.
+        assert_eq!(take_position(16_000, 0, 24_000), 8_000);
+        // A start the ring no longer held: the take opens with its oldest sample.
+        assert_eq!(take_position(1_000, 4_000, 24_000), 20_000);
+        assert_eq!(take_position(16_000, 0, 10_000), 0, "never before the take's start");
+    }
+
+    #[test]
+    fn slow_checks_are_found_by_their_median() {
+        let mut t: std::collections::VecDeque<u64> = [150, 160].into_iter().collect();
+        assert_eq!(median_ms(&t), None, "two checks are too few to judge");
+        t.push_back(9_000);
+        assert_eq!(median_ms(&t), Some(160), "one slow check (the engine waking up) is not enough");
+        t.extend([700, 800]);
+        assert!(median_ms(&t).is_some_and(|ms| ms > SLOW_CHECK_MS));
+    }
+
+    #[test]
+    fn navi_reading_aloud_holds_the_listener_off() {
+        hold_off(0.2);
+        assert!(holding_off());
+        // A shorter clip never cuts a longer one short.
+        hold_off(0.0);
+        let until = HOLD_OFF_UNTIL.lock().expect("set");
+        assert!(until >= Instant::now() + Duration::from_millis(150), "{until:?}");
+        *HOLD_OFF_UNTIL.lock() = None;
+        assert!(!holding_off());
+    }
+
+    #[test]
+    fn says_why_it_cant_listen() {
         assert_eq!(open_notice("Navi", Some(" USB Mic "), "The microphone 'USB Mic' is not connected"), "Listening for \u{201c}Navi\u{201d} is waiting for the microphone 'USB Mic'");
         assert_eq!(open_notice("Navi", None, audio::NO_MICROPHONE), "Can't listen for \u{201c}Navi\u{201d}. No microphone found");
         let blocked = audio::describe_open_error(&"Access is denied. (0x80070005)", false, "USB Mic").to_string();
         assert_eq!(open_notice("Hey Navi", Some("USB Mic"), &blocked), format!("Can't listen for \u{201c}Hey Navi\u{201d}. {blocked}"));
-    }
-
-    #[test]
-    fn the_ring_keeps_ten_seconds_and_finds_old_audio() {
-        let mut ring = Ring { samples: Vec::new(), first: 0 };
-        ring.push(&vec![0.1; RATE * 12]);
-        assert_eq!(ring.samples.len(), RATE * RING_SECS);
-        assert_eq!(ring.first, (RATE * 2) as u64);
-        assert_eq!(ring.since(0).len(), RATE * RING_SECS, "asking for audio that has gone gives what is left");
-        assert_eq!(ring.range((RATE * 11) as u64, RATE * 5).len(), RATE);
-        ring.clear();
-        assert!(ring.samples.is_empty());
-        assert_eq!(ring.end(), (RATE * 12) as u64);
+        // A custom wake word is named as it was typed.
+        assert_eq!(open_notice("Computer", None, audio::NO_MICROPHONE), "Can't listen for \u{201c}Computer\u{201d}. No microphone found");
     }
 }

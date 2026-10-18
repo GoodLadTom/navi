@@ -48,7 +48,20 @@ pub fn get_settings(app: State<'_, Arc<App>>) -> Settings {
 #[tauri::command]
 pub async fn save_settings(app: State<'_, Arc<App>>, settings: Settings) -> Res<Settings> {
     let app = app.inner().clone();
+    // Phrases are checked and tidied here, so a bad one is refused with a reason and the window
+    // stores what was really saved.
+    let mut settings = settings;
     let before = app.settings();
+    settings.voice_commands = match settings.voice_commands.normalised_from(Some(&before.voice_commands)) {
+        Ok(vc) => vc,
+        // Phrases already in settings.json that today's checks refuse (edited by hand, or saved
+        // by a newer Navi) never stop you saving something else, such as the theme.
+        Err(_) if settings.voice_commands == before.voice_commands => {
+            log::warn!("the saved voice commands don't pass today's checks; kept as they were");
+            settings.voice_commands
+        }
+        Err(e) => return Err(e),
+    };
     if before.hotkeys.talk != settings.hotkeys.talk {
         hotkey::validate_chord(&settings.hotkeys.talk)?;
     }
@@ -85,10 +98,16 @@ pub async fn save_settings(app: State<'_, Arc<App>>, settings: Settings) -> Res<
     if before.general.theme != settings.general.theme || before.general.show_firefly != settings.general.show_firefly {
         app.emit("settings-changed", ());
     }
-    if before.hey_navi.enabled != settings.hey_navi.enabled || before.hey_navi.phrase != settings.hey_navi.phrase {
+    if before.voice_commands != settings.voice_commands {
         crate::sync_tray_toggles(&app);
     }
     Ok(settings)
+}
+
+/// Settings > Voice commands > Reset: the phrases Navi ships with (enabled false; the UI keeps its own).
+#[tauri::command]
+pub fn voice_command_defaults() -> VoiceCommandSettings {
+    VoiceCommandSettings::default()
 }
 
 #[tauri::command]
@@ -692,6 +711,9 @@ pub async fn speak_preview(app: State<'_, Arc<App>>, text: String, voice_id: Opt
     let samples = crate::speak::speak(&key, &voice, &s.model, &text).await.map_err(err)?;
     let wav = crate::speak::wav(&samples).map_err(err)?;
     *LAST_SPEECH.lock() = Some(((voice, s.model, text), wav.clone()));
+    // The page plays it as soon as it arrives: voice commands stop listening meanwhile, with a
+    // second's grace for the page to start, so Navi never wakes itself.
+    crate::wake::hold_off(samples.len() as f32 / crate::speak::SAMPLE_RATE as f32 + 1.0);
     Ok(format!("data:audio/wav;base64,{}", base64::engine::general_purpose::STANDARD.encode(wav)))
 }
 

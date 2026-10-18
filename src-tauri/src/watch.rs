@@ -1,11 +1,11 @@
 //! "Navi, watch": screenshots while you work, written up as a note when you stop.
 //!
-//! * Started by "Navi, watch" said in a shortcut take (or to the wake word listener, when it is on),
-//!   the tray menu or the Notes page; stopped by "Navi, stop watching", the same buttons, or after
-//!   an hour.
-//! * Every few seconds (Settings > Wake word > How often to look, 10 by default) Navi looks at the
-//!   screen and keeps the picture only when enough of it has changed (screen.rs), with the text on
-//!   it read on this computer.
+//! * Started by "Navi, watch" said in a shortcut take (or "Navi, watch my screen" said out loud
+//!   while Settings > Voice commands is on), the tray menu or the Notes page; stopped by "Navi,
+//!   stop watching", the same buttons, or after an hour.
+//! * Every few seconds (Settings > Voice commands > How often to look, 10 by default) Navi looks
+//!   at the screen and keeps the picture only when enough of it has changed (screen.rs), with the
+//!   text on it read on this computer.
 //! * When it stops, the AI for longer jobs is given each screenshot's time, window and text (never
 //!   the picture), picks the ones that matter with a caption each, and writes a short account. The
 //!   rest are deleted. Without an AI every screenshot stays, listed by time and window.
@@ -119,11 +119,12 @@ pub fn stop(app: &Arc<App>) -> Result<()> {
 
 /// The bubble as watching starts: how to stop it by voice with today's settings. "Navi, stop
 /// watching" said in a shortcut take always works (voice::parse); said out loud on its own only
-/// while the wake word listener is on, with the phrase it listens for. The tray and the Notes page
-/// stop it too, and it stops by itself after MAX_LENGTH.
+/// while Settings > Voice commands is on, in the words set there (wake word, then the Stop watching
+/// phrase). The tray and the Notes page stop it too, and it stops by itself after MAX_LENGTH.
 fn watching_notice(settings: &Settings) -> String {
-    if settings.hey_navi.enabled {
-        format!("Watching your screen. Say \u{201c}{}, stop watching\u{201d} when you\u{2019}re done.", settings.hey_navi.label())
+    let vc = &settings.voice_commands;
+    if let Some(say) = vc.say("watch_off").filter(|_| vc.enabled) {
+        format!("Watching your screen. Say \u{201c}{say}\u{201d} when you\u{2019}re done.")
     } else {
         let keys = crate::hotkey::display_chord_label(&settings.hotkeys.talk);
         format!("Watching your screen. To stop, hold {keys} and say \u{201c}Navi, stop watching\u{201d}.")
@@ -510,12 +511,19 @@ mod tests {
     #[test]
     fn the_start_notice_names_a_way_to_stop_that_works() {
         let mut settings = Settings::default();
-        assert!(!settings.hey_navi.enabled, "the listener is off by default");
+        assert!(!settings.voice_commands.enabled, "the listener is off by default");
         let keys = crate::hotkey::display_chord_label(&settings.hotkeys.talk);
-        assert_eq!(watching_notice(&settings), format!("Watching your screen. To stop, hold {keys} and say \u{201c}Navi, stop watching\u{201d}."));
-        settings.hey_navi.enabled = true;
+        let shortcut = format!("Watching your screen. To stop, hold {keys} and say \u{201c}Navi, stop watching\u{201d}.");
+        assert_eq!(watching_notice(&settings), shortcut);
+        settings.voice_commands.enabled = true;
         assert_eq!(watching_notice(&settings), "Watching your screen. Say \u{201c}Navi, stop watching\u{201d} when you\u{2019}re done.");
-        settings.hey_navi.phrase = "hey-navi".into();
+        settings.voice_commands.set_phrases("wake", &["Hey Navi"]);
         assert!(watching_notice(&settings).contains("\u{201c}Hey Navi, stop watching\u{201d}"));
+        settings.voice_commands.set_phrases("wake", &["Navi"]);
+        settings.voice_commands.set_phrases("watch_off", &["I'm done"]);
+        assert!(watching_notice(&settings).contains("\u{201c}Navi, I'm done\u{201d}"));
+        // Stop watching turned off: only the shortcut way is left to name.
+        settings.voice_commands.set_phrases("watch_off", &[]);
+        assert_eq!(watching_notice(&settings), shortcut);
     }
 }

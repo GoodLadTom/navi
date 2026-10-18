@@ -18,6 +18,7 @@ pub mod screen;
 pub mod settings;
 pub mod sounds;
 pub mod speak;
+pub mod spoken;
 pub mod state;
 pub mod store;
 pub mod text;
@@ -75,6 +76,7 @@ pub fn run() {
             commands::app_info,
             commands::get_settings,
             commands::save_settings,
+            commands::voice_command_defaults,
             commands::get_stats,
             commands::list_takes,
             commands::get_take,
@@ -328,7 +330,7 @@ fn setup(handle: &AppHandle, started_hidden: bool) -> anyhow::Result<()> {
     // Meeting notes: close any a crash left half done, then watch for calls starting.
     meeting::recover(&app);
     meeting::spawn_watch(app.clone());
-    // "Hey Navi": opens the microphone only while Settings say so.
+    // Voice commands: opens the microphone only while Settings say so.
     wake::spawn(app.clone());
     // New versions from GitHub.
     update::spawn_auto_check(app.clone());
@@ -477,8 +479,8 @@ fn build_tray(handle: &AppHandle, app: &Arc<App>) -> anyhow::Result<()> {
     let modes_menu = Submenu::with_items(handle, "Mode", true, &mode_refs)?;
     *TRAY_MODES.lock() = Some(modes_menu.clone());
     let pause = CheckMenuItem::with_id(handle, "pause", "Pause the shortcut", true, false, None::<&str>)?;
-    let wake = app.settings().hey_navi;
-    let hey_navi = CheckMenuItem::with_id(handle, "heynavi", listen_label(&wake), true, wake.enabled, None::<&str>)?;
+    let voice = app.settings().voice_commands;
+    let hey_navi = CheckMenuItem::with_id(handle, "heynavi", listen_label(&voice), true, voice.enabled, None::<&str>)?;
     let watch_item = CheckMenuItem::with_id(handle, "watch", "Watch my screen", true, false, None::<&str>)?;
     let quit_item = MenuItem::with_id(handle, "quit", "Quit Navi", true, None::<&str>)?;
     let menu = Menu::with_items(
@@ -520,9 +522,10 @@ fn build_tray(handle: &AppHandle, app: &Arc<App>) -> anyhow::Result<()> {
                         h.pause(paused);
                     }
                 }
+                // The id stays "heynavi" (internal); it switches Settings > Voice commands on and off.
                 "heynavi" => {
                     let mut next = app.settings();
-                    next.hey_navi.enabled = !next.hey_navi.enabled;
+                    next.voice_commands.enabled = !next.voice_commands.enabled;
                     match settings::save(&app.paths, &next) {
                         Ok(()) => {
                             *app.settings.write() = next;
@@ -566,7 +569,7 @@ pub fn close_main_window(app: &Arc<App>) {
     }
     // A hidden window can't be recording a shortcut or showing keys.
     leave_shortcut_picker(app);
-    // Nor testing the microphone: left running, it kept the mic open and blocked Hey Navi.
+    // Nor testing the microphone: left running, it kept the mic open and blocked voice commands.
     if app.mic_test.swap(false, Ordering::SeqCst) {
         app.audio.cancel();
         app.emit("mic-test", false);
@@ -728,16 +731,16 @@ pub fn forget_missing_modes(settings: &mut types::Settings, modes: &[types::Mode
     changed
 }
 
-/// Ticks the tray's "Listen for ..." and "Watch my screen" to match, and names the wake word
-/// chosen in Settings > Wake word > Which word.
+/// Ticks the tray's "Listen for ..." and "Watch my screen" to match, and names the first wake word
+/// in Settings > Voice commands.
 pub fn sync_tray_toggles(app: &App) {
-    let wake = app.settings().hey_navi;
+    let voice = app.settings().voice_commands;
     let watching = watch::is_watching();
     for item in app.tray_toggles.lock().iter() {
         let on = match item.id().as_ref() {
             "heynavi" => {
-                let _ = item.set_text(listen_label(&wake));
-                wake.enabled
+                let _ = item.set_text(listen_label(&voice));
+                voice.enabled
             }
             "watch" => watching,
             _ => continue,
@@ -746,9 +749,9 @@ pub fn sync_tray_toggles(app: &App) {
     }
 }
 
-/// The tray item: "Listen for “Hey Navi”" or "Listen for “Navi”".
-fn listen_label(wake: &types::HeyNaviSettings) -> String {
-    format!("Listen for \u{201c}{}\u{201d}", wake.label())
+/// The tray item: "Listen for “Navi”", or whatever the first wake word is ("Listen for “Hey”").
+fn listen_label(vc: &types::VoiceCommandSettings) -> String {
+    format!("Listen for \u{201c}{}\u{201d}", vc.wake_label())
 }
 
 /// The mode keys' chords, in settings order, for the hook.
@@ -965,6 +968,14 @@ mod tests {
         let (modes, unreadable) = modes_for_tidy(&db).unwrap();
         assert!(modes.iter().any(|m| m.id == "brief"));
         assert_eq!(unreadable, ["newer"]);
+    }
+
+    #[test]
+    fn the_tray_names_the_first_wake_word() {
+        let mut vc = types::VoiceCommandSettings::default();
+        assert_eq!(listen_label(&vc), "Listen for \u{201c}Navi\u{201d}");
+        vc.set_phrases("wake", &["Hey"]);
+        assert_eq!(listen_label(&vc), "Listen for \u{201c}Hey\u{201d}");
     }
 
     #[test]
