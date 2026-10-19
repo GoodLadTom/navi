@@ -9,15 +9,6 @@ const SECTIONS = [
   ['ai', 'AI'], ['voice', 'Voice'], ['writing', 'Writing'], ['privacy', 'Context and privacy'], ['meetings', 'Meeting notes'], ['integrations', 'Notes and tasks'], ['about', 'About'],
 ];
 
-// The starting brief for Short ideas. Keep in step with DEFAULT_IDEAS_BRIEF in src-tauri/src/types.rs.
-const DEFAULT_IDEAS_BRIEF = `A Short is under a minute and teaches one thing that someone scrolling past, who has never heard of us, would find useful.
-- One clear lesson per Short, stated in a sentence.
-- Built only from the main speaker's own words, in whole sentences.
-- Open on a strong hook line taken from what was said.
-- Never name or show the other people on the call. A question someone else asked can become a short on-screen setup line with no name.
-- Flag anything that needs the speaker's OK before it goes out (clients, deals, prices, private details) and anything said somewhere noisy.
-- Leave out topics that only make sense to people who were on the call.`;
-
 const MODEL_HINTS = {
   anthropic: ['claude-haiku-4-5-20251001', 'claude-sonnet-5-5', 'claude-opus-5-5'],
   openai: ['gpt-5-mini', 'gpt-5'],
@@ -506,11 +497,11 @@ export async function render(root, { store, arg }) {
     offHost.replaceChildren(...[
       longRow(),
       p !== 'off' ? testRow() : null,
-      setRow(p === 'off' ? 'AI is off' : 'Turn AI off', 'Navi still tidies punctuation, capitals, fillers and spelling on this computer. AI is for the rewriting modes, edits like “make that shorter”, “what’s wrong with this?”, ramble and call notes, Short ideas, jobs on calls, screen-watch write-ups and learning your style. “Scratch that” and “change X to Y” work without it.',
+      setRow(p === 'off' ? 'AI is off' : 'Turn AI off', 'Navi still tidies punctuation, capitals, fillers and spelling on this computer. AI is for the rewriting modes, edits like “make that shorter”, “what’s wrong with this?”, ramble and call notes, jobs on calls, screen-watch write-ups and learning your style. “Scratch that” and “change X to Y” work without it.',
         p === 'off' ? chip('Off', 'line') : btn('Turn off', { size: 'sm', variant: 'ghost', onClick: () => setProvider('off') })),
     ].filter(Boolean));
   };
-  // Call notes, Short ideas, watch write-ups, jobs on calls and "what's wrong with this?" don't keep
+  // Call notes, watch write-ups, jobs on calls and "what's wrong with this?" don't keep
   // anyone waiting, so they can use a stronger model than dictation.
   const longRow = () => {
     const p = S().ai.provider;
@@ -523,14 +514,14 @@ export async function render(root, { store, arg }) {
       const names = ['haiku', 'sonnet', 'opus'];
       // Show the model that will run: the one named, otherwise Sonnet (controller.rs make_llm_long).
       const running = names.find((m) => cur.toLowerCase().includes(m)) || 'sonnet';
-      return setRow('Model for longer jobs', 'Call notes, Short ideas, screen watches, jobs on calls and “what’s wrong with this?”. Nobody sits waiting for these, so Sonnet is the default.',
+      return setRow('Model for longer jobs', 'Call notes, screen watches, jobs on calls and “what’s wrong with this?”. Nobody sits waiting for these, so Sonnet is the default.',
         seg(names.map((m) => ({ value: m, label: m[0].toUpperCase() + m.slice(1) })), running, (v) => save((n) => { n.ai.longModel = v; })));
     }
     const inp = h('input', { class: 'input', style: { width: '260px' }, value: cur, placeholder: 'Same as above', list: 'model-hints' });
     inp.addEventListener('change', () => save((n) => { n.ai.longModel = inp.value.trim(); }));
-    return setRow('Model for longer jobs', 'For call notes, Short ideas, screen watches, jobs on calls and “what’s wrong with this?”. Leave it empty to use the model above.', inp);
+    return setRow('Model for longer jobs', 'For call notes, screen watches, jobs on calls and “what’s wrong with this?”. Leave it empty to use the model above.', inp);
   };
-  section('ai', 'AI', 'Optional, and off until you pick one. Used by the modes that rewrite (Email, Message, Prompt, Interview me), edits like “make that shorter”, “what’s wrong with this?”, ramble and call notes, Short ideas, jobs on calls, screen-watch write-ups, learning your style, and Clean’s light polish if you turn it on. Only words are sent, never audio or pictures.',
+  section('ai', 'AI', 'Optional, and off until you pick one. Used by the modes that rewrite (Email, Message, Prompt), edits like “make that shorter”, “what’s wrong with this?”, ramble and call notes, jobs on calls, screen-watch write-ups, learning your style, and Clean’s light polish if you turn it on. Only words are sent, never audio or pictures.',
     h('div', { class: 'h3', style: { margin: '2px 0 4px' } }, 'Use the AI you already pay for'),
     h('p', { class: 'small quiet', style: { marginBottom: '12px' } }, 'Navi can borrow Claude Code or Codex if they are on this computer, with no API key. Rewrites take a few seconds this way: about 3 with Claude Code and about 4 or 5 with Codex. Clean mode stays instant, because its polish skips these tools.'),
     subHost, apiHost, offHost);
@@ -558,7 +549,7 @@ export async function render(root, { store, arg }) {
         (m) => save((n) => { n.speak.model = m; })));
     } catch (e) { voiceHost.replaceChildren(h('span', { class: 'small', style: { color: 'var(--blue-ink)' } }, errText(e))); }
   }
-  section('voice', 'Voice', 'Hear what you said read back in an ElevenLabs voice: on the Speak page, from History, or with the Speak mode, which reads aloud instead of typing. ElevenLabs counts every character it reads against your plan.',
+  section('voice', 'Voice', 'Hear what you said read back in an ElevenLabs voice, on the Speak page or from History. ElevenLabs counts every character it reads against your plan.',
     setRow('ElevenLabs API key', elKeyState, h('div', { class: 'row' }, elKey, btn('Save', { size: 'sm', onClick: async () => {
       if (!elKey.value.trim()) return;
       try { await invoke('set_secret', { name: 'elevenlabs', value: elKey.value.trim() }); elKey.value = ''; toast('Key saved'); loadVoices(); } catch (e) { toast(errText(e), { error: true }); }
@@ -608,7 +599,7 @@ export async function render(root, { store, arg }) {
   };
   drawExcl();
   section('privacy', 'Context and privacy', 'Navi reads a little of what is on screen to get names and tone right. The reading happens on this computer. When an AI mode runs, the app name, the window title and up to 1,000 characters of the text before your cursor go to your AI with your words.',
-    setRow('Read the window title', 'Lets Navi use the title of the window you are in. Off, Navi still sees which app you are in, to pick a mode, and tells your AI its name.', toggle(S().context.readApp, (v) => save((n) => { n.context.readApp = v; }))),
+    setRow('Read the window title', 'Lets Navi use the title of the window you are in and, in a browser, the site in the address bar (its name only, to pick a mode). Off, Navi still sees which app you are in, to pick a mode, and tells your AI its name.', toggle(S().context.readApp, (v) => save((n) => { n.context.readApp = v; }))),
     setRow('Read the text near my cursor', 'The paragraph you are writing, so names come out right and replies match the thread. Password boxes are never read.', toggle(S().context.readField, (v) => save((n) => { n.context.readField = v; }))),
     setRow('Read the screen', 'Windows’ own on-device text recognition of the window you are in, so the speech engine spells names on screen right. It never goes to your AI. Off by default.', toggle(S().context.ocr, (v) => save((n) => { n.context.ocr = v; }))),
     setRow('Never read these apps', null, excl),
@@ -623,24 +614,10 @@ export async function render(root, { store, arg }) {
 
   // ---------------------------------------------------------------- meeting notes
   const nt = S().notes || { detectCalls: true, systemAudio: true, autoStop: true };
-  const brief = h('textarea', { class: 'textarea n-brief', placeholder: DEFAULT_IDEAS_BRIEF, spellcheck: 'true' });
-  brief.value = nt.ideasBrief ?? DEFAULT_IDEAS_BRIEF;
-  brief.addEventListener('input', debounce(() => save((n) => { n.notes.ideasBrief = brief.value; }), 600));
-  const briefHost = h('div', {});
-  const drawBrief = () => {
-    briefHost.replaceChildren(...(S().notes?.shortIdeas ? [h('div', { class: 'set-row', style: { display: 'block' } },
-      h('div', { class: 'row between', style: { marginBottom: '10px', alignItems: 'flex-start' } },
-        h('div', {}, h('div', { class: 'h3' }, 'What makes a good Short'), h('p', { class: 'small quiet', style: { marginTop: '3px', maxWidth: '520px' } }, 'Your rules, in your own words: who to quote, what to avoid, how long. Your AI follows them every time it looks through a call.')),
-        btn('Use the starting brief', { size: 'sm', variant: 'ghost', onClick: async () => { brief.value = DEFAULT_IDEAS_BRIEF; await save((n) => { n.notes.ideasBrief = DEFAULT_IDEAS_BRIEF; }); toast('Back to the starting brief'); } })),
-      brief)] : []));
-  };
-  drawBrief();
   section('meetings', 'Meeting notes', 'Navi can take notes on your calls: it records both sides, writes down what was said with each line marked You or Them, and turns it into notes with the AI set up above. The audio is transcribed on this computer and never kept. Only words go to that AI: the transcript, anything you typed during the call, and the text on screenshots if those are on.',
     setRow('Offer to take notes when a call starts', 'When Teams, Zoom, Google Meet, Slack, Discord or WhatsApp starts using your microphone, a small card in the corner asks.', toggle(nt.detectCalls, (v) => save((n) => { n.notes.detectCalls = v; }))),
     setRow('Record the other side of the call', 'What your computer plays, so the other people are in the notes too. Off records only your microphone.', toggle(nt.systemAudio, (v) => save((n) => { n.notes.systemAudio = v; }))),
     setRow('Finish when the call ends', 'Navi writes the notes 20 seconds after the call app lets go of the microphone. Notes with no call app to follow finish after 20 minutes with nothing said.', toggle(nt.autoStop, (v) => save((n) => { n.notes.autoStop = v; }))),
-    setRow('Short ideas', 'Every few minutes your AI looks through the call so far for moments worth turning into a Short, with the exact lines to cut and when they were said. They build up on the call’s note as you talk.', toggle(!!nt.shortIdeas, async (v) => { await save((n) => { n.notes.shortIdeas = v; }); drawBrief(); })),
-    briefHost,
     setRow('Jobs on calls', ['Say “', jobsWk(), ', …” on a call (“', jobsWk(), ', draft the follow-up email to Sam”) and your AI does it while you talk. The answer is kept with the notes. It only writes: nothing is sent or booked.'], toggle(nt.callJobs !== false, (v) => save((n) => { n.notes.callJobs = v; }))),
     setRow('Screenshots during calls', 'A look at the screen every 15 seconds, kept when it has changed, so the notes can say what was shown. They stay on this computer; your AI only gets the text on them.', toggle(!!nt.callScreenshots, (v) => save((n) => { n.notes.callScreenshots = v; }))),
     setRow('Send actions to', 'The actions from each call’s notes, once they’re written. Connect ClickUp or Notion under Notes and tasks.', seg([{ value: 'none', label: 'Nowhere' }, { value: 'clickup', label: 'ClickUp' }, { value: 'notion', label: 'Notion' }], nt.actionsTo || 'none', async (v) => { await save((n) => { n.notes.actionsTo = v; }); drawInt(); })),

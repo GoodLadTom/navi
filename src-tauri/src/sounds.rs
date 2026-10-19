@@ -420,7 +420,7 @@ struct Output {
 }
 
 /// Clips converted to the output device's rate. Only cues are kept; a reading is converted as it
-/// plays and dropped, or every Speak reading would stay in memory until Navi quits.
+/// plays and dropped, or every reading would stay in memory until Navi quits.
 struct DeviceClips {
     rate: u32,
     /// Clip id -> samples at `rate`.

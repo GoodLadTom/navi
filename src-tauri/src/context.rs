@@ -3,12 +3,16 @@
 //! OWNER: Windows systems agent. STATUS: implemented.
 //!
 //! Contract:
-//! * `capture` must be fast (target < 40 ms, hard cap ~120 ms; give UI Automation calls a timeout or
-//!   run them on a worker thread and abandon slow ones). It fills hwnd, process name (lower case),
-//!   exe path, window title, a friendly `app_label`, a `category`, and, when `read_field` is on and
+//! * `capture` must be fast (target < 40 ms, hard cap ~120 ms, ~160 ms in a browser; give UI
+//!   Automation calls a timeout or run them on a worker thread and abandon slow ones). It fills
+//!   hwnd, process name (lower case), exe path, window title, a friendly `app_label`, a
+//!   `category`, and, when `read_field` is on and
 //!   the process is not excluded, `field_text` (up to ~1,500 chars before the caret, via UIA
 //!   TextPattern/ValuePattern of the focused element) and `selection` (UIA TextPattern selection).
-//!   Password fields (UIA IsPassword) are never read.
+//!   Password fields (UIA IsPassword) are never read. In a browser, when `read_app` is on and the
+//!   browser is not excluded, it also fills `host` from the address bar (`host_from_address`: the
+//!   host alone, "chatgpt.com", so Auto can pick Prompt in a ChatGPT tab renamed after the chat).
+//!   That read gets at most 150 ms; without it `host` stays empty and the title decides.
 //! * Categories: terminal (windowsterminal, wt, cmd, powershell, pwsh, conhost, alacritty, wezterm,
 //!   warp), editor (code, cursor, windsurf, zed, idea64, pycharm64, devenv, sublime_text, notepad++,
 //!   bb / claude code style agent apps), chat (slack, teams, ms-teams, discord, whatsapp, telegram,
@@ -23,7 +27,12 @@
 //! * UI Automation runs on a worker thread that owns COM (MTA) and one IUIAutomation; `capture`
 //!   waits at most 100 ms for it and moves on without field text if the app is slow. Each UIA call
 //!   also has a Windows-side timeout, and a worker stuck for over 3 s is abandoned and replaced.
-//!   `read_focused_text` uses a second worker so a long read never delays a take.
+//!   `read_focused_text` uses a second worker so a long read never delays a take, and a browser's
+//!   address bar is read on a third, alongside the field. Finding the address bar walks the
+//!   window's UIA tree, so it is done once per window and the element kept; after that each read
+//!   is a single call. A search that outlasts the budget still finishes and is kept for next time,
+//!   and a window with no address bar (an installed web app) is searched again only after a minute.
+//!   The address itself is never logged or kept, only its host.
 //! * Call `warm_up()` at startup: creating the UIA client costs tens of milliseconds and would
 //!   otherwise eat the first take's budget.
 //! * With `read_app` off, the window title is left empty; process name, label and category are still
@@ -37,6 +46,9 @@ use std::time::Duration;
 
 /// How long `capture` waits for UI Automation, from the start of the call.
 const CAPTURE_UIA_BUDGET: Duration = Duration::from_millis(100);
+/// How long `capture` waits for a browser's address, from the start of the call. It is read while
+/// the field is, so this is the most a take in a browser waits, not an extra 150 ms.
+const CAPTURE_ADDRESS_BUDGET: Duration = Duration::from_millis(150);
 /// How long `read_focused_text` waits (it runs in the background, long after the take).
 const READ_UIA_BUDGET: Duration = Duration::from_millis(1_500);
 const FIELD_CHARS: usize = 1_500;
@@ -212,6 +224,32 @@ pub fn categorise(process_name: &str, window_title: &str) -> &'static str {
     } else {
         "other"
     }
+}
+
+/// A web browser (chrome, msedge, firefox, brave and the rest of BROWSERS), whose address bar
+/// `capture` reads.
+pub fn is_browser(process_name: &str) -> bool {
+    BROWSERS.contains(&process_stem(process_name).as_str())
+}
+
+/// The host of what a browser's address bar shows, lower case and without "www.":
+/// "chatgpt.com/c/123" and "https://www.chatgpt.com/c/123" both give "chatgpt.com". None for
+/// anything that isn't a web address: a search being typed, "about:blank", "chrome://settings".
+pub fn host_from_address(address: &str) -> Option<String> {
+    let text = address.trim();
+    if text.is_empty() || text.chars().any(char::is_whitespace) {
+        return None;
+    }
+    // Browsers often hide "https://" while the address isn't being edited (Chrome does).
+    let full = if text.contains("://") { text.to_string() } else { format!("https://{text}") };
+    let url = url::Url::parse(&full).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let host = url.host_str()?.trim_end_matches('.').to_lowercase();
+    let host = host.strip_prefix("www.").unwrap_or(&host);
+    // A single word ("weather") is a search, not a site.
+    host.contains('.').then(|| host.to_string())
 }
 
 /// Whole-word, case-insensitive: "Inbox - Gmail" mentions Gmail, "Outlooking" does not mention Outlook.
@@ -450,10 +488,13 @@ mod win {
     use windows::Win32::System::Threading::{
         GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
     };
+    use windows::Win32::System::Variant::VARIANT;
     use windows::Win32::UI::Accessibility::{
         CUIAutomation, CUIAutomation8, IUIAutomation, IUIAutomation2, IUIAutomationElement, IUIAutomationTextPattern,
-        IUIAutomationTextPattern2, IUIAutomationTextRange, IUIAutomationValuePattern, TextPatternRangeEndpoint_End,
-        TextPatternRangeEndpoint_Start, TextUnit_Character, UIA_TextPattern2Id, UIA_TextPatternId, UIA_ValuePatternId,
+        IUIAutomationTextPattern2, IUIAutomationTextRange, IUIAutomationValuePattern, PropertyConditionFlags_MatchSubstring,
+        TextPatternRangeEndpoint_End, TextPatternRangeEndpoint_Start, TextUnit_Character, TreeScope_Descendants,
+        UIA_AutomationIdPropertyId, UIA_ClassNamePropertyId, UIA_ControlTypePropertyId, UIA_EditControlTypeId, UIA_NamePropertyId,
+        UIA_TextPattern2Id, UIA_TextPatternId, UIA_ValuePatternId,
     };
     use windows::Win32::UI::WindowsAndMessaging::{EnumChildWindows, GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId, IsIconic};
 
@@ -640,16 +681,32 @@ mod win {
             exe_path: info.exe_path.clone(),
             field_text: None,
             selection: None,
+            host: String::new(),
         };
 
         let own = info.pid == unsafe { GetCurrentProcessId() };
         let readable = !info.process_name.is_empty() && !is_excluded(&info.process_name, &settings.excluded_apps);
+        // A browser's address is asked for first, so its worker reads it while the field is read.
+        let address_deadline = started + CAPTURE_ADDRESS_BUDGET;
+        let address = if settings.read_app && readable && !own && is_browser(&info.process_name) {
+            ADDRESS_WORKER.send(Job::Address(hwnd.0 as isize), address_deadline)
+        } else {
+            None
+        };
         if settings.read_field && readable && !own {
             if let Some(Reply::Field { before, selection }) = CAPTURE_WORKER.call(Job::Field, started + CAPTURE_UIA_BUDGET) {
                 // Only trust the answer if the same window is still in front.
                 if unsafe { GetForegroundWindow() } == hwnd {
                     ctx.field_text = before;
                     ctx.selection = selection;
+                }
+            }
+        }
+        if let Some(reply) = address {
+            // Too slow (the first take in a window can be) or unreadable: the title decides.
+            if let Ok(Reply::Address(Some(host))) = reply.recv_timeout(address_deadline.saturating_duration_since(Instant::now())) {
+                if unsafe { GetForegroundWindow() } == hwnd {
+                    ctx.host = host;
                 }
             }
         }
@@ -669,6 +726,7 @@ mod win {
 
     pub(super) fn warm_up() {
         CAPTURE_WORKER.ensure_started();
+        ADDRESS_WORKER.ensure_started();
     }
 
     // ----- UI Automation worker -----
@@ -679,11 +737,14 @@ mod win {
         Field,
         /// The whole focused element, capped.
         FullText,
+        /// The host in the address bar of this browser window.
+        Address(isize),
     }
 
     enum Reply {
         Field { before: Option<String>, selection: Option<String> },
         FullText(Option<String>),
+        Address(Option<String>),
     }
 
     struct Request {
@@ -713,6 +774,7 @@ mod win {
 
     static CAPTURE_WORKER: WorkerSlot = WorkerSlot { name: "navi-uia", worker: parking_lot::const_mutex(None) };
     static READ_WORKER: WorkerSlot = WorkerSlot { name: "navi-uia-read", worker: parking_lot::const_mutex(None) };
+    static ADDRESS_WORKER: WorkerSlot = WorkerSlot { name: "navi-uia-address", worker: parking_lot::const_mutex(None) };
 
     impl WorkerSlot {
         fn ensure_started(&self) {
@@ -732,17 +794,21 @@ mod win {
         }
 
         fn call(&self, job: Job, deadline: Instant) -> Option<Reply> {
+            let reply_rx = self.send(job, deadline)?;
+            reply_rx.recv_timeout(deadline.saturating_duration_since(Instant::now())).ok()
+        }
+
+        /// Hands `job` to the worker without waiting; the reply comes on the receiver.
+        fn send(&self, job: Job, deadline: Instant) -> Option<mpsc::Receiver<Reply>> {
             let (reply_tx, reply_rx) = mpsc::channel();
             self.ensure_started();
-            {
-                let mut slot = self.worker.lock();
-                let worker = slot.as_ref()?;
-                if worker.tx.send(Request { job, deadline, reply: reply_tx }).is_err() {
-                    *slot = None;
-                    return None;
-                }
+            let mut slot = self.worker.lock();
+            let worker = slot.as_ref()?;
+            if worker.tx.send(Request { job, deadline, reply: reply_tx }).is_err() {
+                *slot = None;
+                return None;
             }
-            reply_rx.recv_timeout(deadline.saturating_duration_since(Instant::now())).ok()
+            Some(reply_rx)
         }
     }
 
@@ -765,6 +831,8 @@ mod win {
         if automation.is_none() {
             log::warn!("UI Automation is not available; Navi will work without reading the text field");
         }
+        // Each browser window's address bar, once found (only the address worker fills it).
+        let mut address_bars = AddressBars::default();
         for request in rx {
             // Abandoned requests are skipped rather than worked on for nobody.
             if Instant::now() >= request.deadline {
@@ -777,10 +845,12 @@ mod win {
                     Reply::Field { before, selection }
                 }
                 Job::FullText => Reply::FullText(automation.as_ref().and_then(read_full)),
+                Job::Address(hwnd) => Reply::Address(automation.as_ref().and_then(|a| read_address(a, hwnd, &mut address_bars))),
             };
             busy.store(0, Ordering::Relaxed);
             let _ = request.reply.send(reply);
         }
+        drop(address_bars);
         drop(automation);
         if com.is_ok() {
             unsafe { CoUninitialize() };
@@ -873,6 +943,77 @@ mod win {
             }
         }
         None
+    }
+
+    /// A browser window with no address bar to find (an installed web app, full screen) is looked
+    /// through again only after this long, so its takes don't each wait for a search.
+    const NO_ADDRESS_BAR_RETRY: Duration = Duration::from_secs(60);
+
+    /// The address bars found so far, by window, and the windows that had none.
+    #[derive(Default)]
+    struct AddressBars {
+        found: HashMap<isize, IUIAutomationElement>,
+        missing: HashMap<isize, Instant>,
+    }
+
+    /// The host in the address bar of the browser window `hwnd`. The bar is looked for once per
+    /// window and kept in `bars`; reading a kept one is a single call.
+    fn read_address(automation: &IUIAutomation, hwnd: isize, bars: &mut AddressBars) -> Option<String> {
+        if let Some(bar) = bars.found.get(&hwnd) {
+            match address_text(bar) {
+                Some(text) => return host_from_address(&text),
+                // The window has gone, or the browser made a new address bar: look again.
+                None => {
+                    bars.found.remove(&hwnd);
+                }
+            }
+        }
+        if bars.missing.get(&hwnd).is_some_and(|at| at.elapsed() < NO_ADDRESS_BAR_RETRY) {
+            return None;
+        }
+        if bars.found.len() + bars.missing.len() >= 32 {
+            bars.found.clear();
+            bars.missing.clear();
+        }
+        let Some(bar) = find_address_bar(automation, HWND(hwnd as *mut c_void)) else {
+            bars.missing.insert(hwnd, Instant::now());
+            return None;
+        };
+        bars.missing.remove(&hwnd);
+        let text = address_text(&bar);
+        bars.found.insert(hwnd, bar);
+        host_from_address(&text?)
+    }
+
+    /// What the address bar shows ("" when it is empty), or None when it can't be read.
+    fn address_text(bar: &IUIAutomationElement) -> Option<String> {
+        unsafe {
+            let value = bar.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId).ok()?;
+            Some(value.CurrentValue().ok()?.to_string())
+        }
+    }
+
+    /// A browser window's address bar: an edit box whose class is Chromium's omnibox (Chrome's is
+    /// "OmniboxViewViews", named "Address and search bar" in English), or whose id is Firefox's
+    /// "urlbar-input".
+    fn find_address_bar(automation: &IUIAutomation, window: HWND) -> Option<IUIAutomationElement> {
+        unsafe {
+            let root = automation.ElementFromHandle(window).ok()?;
+            let edit = automation.CreatePropertyCondition(UIA_ControlTypePropertyId, &VARIANT::from(UIA_EditControlTypeId.0)).ok()?;
+            let class = VARIANT::from("OmniboxViewViews");
+            // Part of the class name, so a browser that renames Chromium's class for its own still
+            // matches; where Windows can't match part of a name, the whole one.
+            let omnibox = automation
+                .CreatePropertyConditionEx(UIA_ClassNamePropertyId, &class, PropertyConditionFlags_MatchSubstring)
+                .or_else(|_| automation.CreatePropertyCondition(UIA_ClassNamePropertyId, &class))
+                .ok()?;
+            let named = automation.CreatePropertyCondition(UIA_NamePropertyId, &VARIANT::from("Address and search bar")).ok()?;
+            let firefox = automation.CreatePropertyCondition(UIA_AutomationIdPropertyId, &VARIANT::from("urlbar-input")).ok()?;
+            let chromium = automation.CreateOrCondition(&omnibox, &named).ok()?;
+            let which = automation.CreateOrCondition(&chromium, &firefox).ok()?;
+            let wanted = automation.CreateAndCondition(&edit, &which).ok()?;
+            root.FindFirst(TreeScope_Descendants, &wanted).ok()
+        }
     }
 
     fn selection_ranges(pattern: &IUIAutomationTextPattern) -> Vec<IUIAutomationTextRange> {
@@ -1124,6 +1265,58 @@ mod win {
             name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty())
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, IsWindowVisible};
+
+        /// Reads the address bar of every browser window open on this computer (they needn't be in
+        /// front), timing the first read and one from the kept bar. Prints the host only for an AI
+        /// chat site. Run by hand with a browser open:
+        /// cargo test --lib context::win::tests::live_address_bar -- --ignored --nocapture
+        #[test]
+        #[ignore]
+        fn live_address_bar() {
+            unsafe extern "system" fn visit(hwnd: HWND, lparam: LPARAM) -> BOOL {
+                // SAFETY: lparam is the &mut Vec passed below, alive for the whole enumeration.
+                let found = unsafe { &mut *(lparam.0 as *mut Vec<(HWND, String)>) };
+                if unsafe { IsWindowVisible(hwnd) }.as_bool() && !window_title(hwnd).is_empty() {
+                    let info = window_info(hwnd);
+                    if is_browser(&info.process_name) {
+                        found.push((hwnd, info.process_name));
+                    }
+                }
+                BOOL(1)
+            }
+            let mut found: Vec<(HWND, String)> = Vec::new();
+            unsafe {
+                let _ = EnumWindows(Some(visit), LPARAM(&mut found as *mut Vec<(HWND, String)> as isize));
+            }
+            println!("{} browser window(s)", found.len());
+            // The UI Automation client is made as Navi starts, not on the first take.
+            warm_up();
+            std::thread::sleep(Duration::from_millis(500));
+            for (hwnd, process) in found {
+                let mut times = Vec::new();
+                let mut host = None;
+                for _ in 0..2 {
+                    let t = Instant::now();
+                    host = match ADDRESS_WORKER.call(Job::Address(hwnd.0 as isize), Instant::now() + Duration::from_secs(10)) {
+                        Some(Reply::Address(host)) => host,
+                        _ => None,
+                    };
+                    times.push(t.elapsed().as_millis());
+                }
+                let shown = match host.as_deref() {
+                    Some(h) if crate::text::modes::site_mode(h).is_some() => h.to_string(),
+                    Some(_) => "another site".into(),
+                    None => "no host".into(),
+                };
+                println!("{process}: {shown}, first read {} ms, then {} ms", times[0], times[1]);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1210,6 +1403,30 @@ mod tests {
         assert!(title_mentions("MyGmail and Gmail", "Gmail"), "a later whole-word match still counts");
         assert!(!title_mentions("", "Gmail"));
         assert!(!title_mentions("Gmail", ""));
+    }
+
+    #[test]
+    fn browsers_are_known_by_process() {
+        for p in ["chrome.exe", "MSEDGE.EXE", "firefox.exe", "brave.exe", "C:\\Program Files\\Vivaldi\\vivaldi.exe"] {
+            assert!(is_browser(p), "{p}");
+        }
+        for p in ["chatgpt.exe", "code.exe", "explorer.exe", ""] {
+            assert!(!is_browser(p), "{p}");
+        }
+    }
+
+    #[test]
+    fn only_the_host_is_taken_from_an_address() {
+        // As Chrome, Edge and Firefox show it (no "https://"), and in full.
+        assert_eq!(host_from_address("chatgpt.com/c/68f1a2b3-1234"), Some("chatgpt.com".into()));
+        assert_eq!(host_from_address("https://chatgpt.com/c/68f1a2b3-1234?model=x#top"), Some("chatgpt.com".into()));
+        assert_eq!(host_from_address(" https://www.Claude.ai/chat/abc "), Some("claude.ai".into()));
+        assert_eq!(host_from_address("chat.openai.com"), Some("chat.openai.com".into()));
+        assert_eq!(host_from_address("http://user:secret@example.co.uk:8080/path"), Some("example.co.uk".into()));
+        // Not web addresses: a search being typed, an empty bar, the browser's own pages.
+        for text in ["", "   ", "what is the weather", "weather", "about:blank", "chrome://settings", "edge://newtab", "file:///C:/notes.txt", "view-source:https://chatgpt.com"] {
+            assert_eq!(host_from_address(text), None, "{text:?}");
+        }
     }
 
     #[test]

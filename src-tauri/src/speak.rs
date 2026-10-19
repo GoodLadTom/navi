@@ -1,10 +1,10 @@
 //! Text to speech with ElevenLabs: your words played back in a voice from your ElevenLabs account.
-//! Used by the Speak page, "Hear it" in History and the Speak mode (read aloud, not typed).
+//! Used by the Speak page and "Hear it" in History.
 //!
 //! * The key is saved in the Windows Credential Manager as "elevenlabs" (store::secrets), never in
 //!   settings or logs.
 //! * Audio comes back as raw 16-bit PCM at 24 kHz (`output_format=pcm_24000`, available on every
-//!   ElevenLabs plan), so Navi can play it straight away or wrap it as a WAV for the interface.
+//!   ElevenLabs plan), which Navi wraps as a WAV for the interface to play or save.
 //! * Errors are short sentences: a refused key, an empty character allowance, a missing voice.
 
 use anyhow::{anyhow, bail, Result};
@@ -15,8 +15,7 @@ const API: &str = "https://api.elevenlabs.io/v1";
 pub const SAMPLE_RATE: u32 = 24_000;
 pub const DEFAULT_MODEL: &str = "eleven_v4_turbo";
 /// Navi's own cap: ElevenLabs bills per character, so longer text is cut to this (see `fit`). The
-/// Speak page (ui/js/views/speak.js), History's "Hear it" and the Speak mode's bubble say when only
-/// the first part is read.
+/// Speak page (ui/js/views/speak.js) and History's "Hear it" say when only the first part is read.
 pub const MAX_CHARS: usize = 5_000;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

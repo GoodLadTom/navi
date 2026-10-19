@@ -1,8 +1,8 @@
 // Notes: calls written up, Granola style. Navi records both sides of a call, writes down what was
 // said with each line marked You or Them and, with an AI set up, turns it into notes built on whatever you typed while it listened
 // (meeting.rs); without one the note keeps the transcript and your own notes. Along the way it can
-// find ideas for Shorts (ideas.rs), do jobs you give it with "Navi, ..." (or "Hey Navi, ...",
-// jobs.rs) and keep screenshots (screen.rs). Screen watches (watch.rs) end up here too.
+// do jobs you give it with "Navi, ..." (or "Hey Navi, ...", jobs.rs) and keep screenshots
+// (screen.rs). Screen watches (watch.rs) end up here too.
 import { invoke, listen, copyText, fileSrc } from '../bridge.js';
 import { h, btn, chip, dayLabel, clock, toast, confirmDialog, errText } from '../ui.js';
 
@@ -132,8 +132,7 @@ export async function render(root, { arg, store }) {
         : n.status === 'done' ? null
         : isWatching(n) ? chip('Watching', 'blue', true)
         : chip('Writing up', 'accent', true);
-      const ideas = isLive ? (live.ideas || []).length : n.counts?.ideas || 0;
-      const meta = [n.app, isLive || !n.durationMs ? null : length(n.durationMs), ideas ? `${ideas} Short idea${ideas === 1 ? '' : 's'}` : null].filter(Boolean).join(' · ');
+      const meta = [n.app, isLive || !n.durationMs ? null : length(n.durationMs)].filter(Boolean).join(' · ');
       const summary = summaryOf(n.notesMd);
       listCard.append(h('button', { class: `h-item ${n.id === selected ? 'on' : ''}`, onClick: () => { if (n.id === selected) return; selected = n.id; editing = false; drawList(); drawDetail(); } },
         h('div', { class: 'top' }, h('b', { class: 'n-title' }, n.title || 'Notes'), h('span', { class: 't' }, clock(n.createdAt))),
@@ -231,19 +230,13 @@ export async function render(root, { arg, store }) {
     if (atBottom) box.scrollTop = box.scrollHeight;
   }
 
-  // Jobs, Short ideas and screenshots as they come in.
+  // Jobs and screenshots as they come in.
   function fillExtras() {
     const box = liveView?.extras;
     if (!box) return;
     const parts = [];
     const jobs = live.jobs || [];
     if (jobs.length) parts.push(h('div', { class: 'eyebrow n-label' }, 'Jobs'), jobList(jobs));
-    const ideas = live.ideas || [];
-    const ideasOn = !!store?.settings?.notes?.shortIdeas;
-    if (ideas.length || ideasOn) {
-      parts.push(h('div', { class: 'eyebrow n-label' }, 'Short ideas'));
-      parts.push(ideas.length ? ideaList(ideas) : h('p', { class: 'small faint' }, 'Your AI looks through the call every few minutes. Ideas for Shorts appear here as they turn up.'));
-    }
     const shots = live.shots || [];
     if (shots.length) parts.push(h('div', { class: 'eyebrow n-label' }, `Screenshots · ${shots.length}`), shotStrip(shots.slice(-6)));
     box.replaceChildren(...parts);
@@ -284,7 +277,6 @@ export async function render(root, { arg, store }) {
     head.append(h('div', { class: 'n-actions' }, ...[
       btn('Copy', { size: 'sm', icon: 'copy', title: 'Copy the notes', onClick: async () => { await copyText(n.notesMd); toast('Copied'); } }),
       isWatch ? null : rewriteButton(n),
-      !isWatch && n.transcript.length && !n.ideas.length ? ideasButton(n, 'Find Short ideas') : null,
       !isWatch && actionsTo !== 'none' && hasActions(n.notesMd) ? sendButton(n, actionsTo) : null,
       btn('', { size: 'sm', variant: 'ghost', icon: 'trash', title: 'Delete this note', onClick: async () => {
         // A watch's Markdown copy links to the screenshots in Navi's data folder, which go too.
@@ -298,7 +290,6 @@ export async function render(root, { arg, store }) {
     const tabs = h('div', { class: 'tabs', style: { marginTop: '16px' } });
     const body = h('div', {});
     const views = [['notes', isWatch ? 'What happened' : 'Notes']];
-    if (n.ideas.length) views.push(['ideas', 'Short ideas', n.ideas.length]);
     if (n.jobs.length) views.push(['jobs', 'Jobs', n.jobs.length]);
     // A watch shows its pictures in the write-up itself; one whose notes don't have them gets the tab.
     if (n.shots.length && (!isWatch || !/!\[[^\]]*\]\(/.test(n.notesMd))) views.push(['shots', 'Screenshots', n.shots.length]);
@@ -306,7 +297,6 @@ export async function render(root, { arg, store }) {
     const show = (which) => {
       tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.k === which));
       if (which === 'notes') body.replaceChildren(notesBody(n));
-      if (which === 'ideas') body.replaceChildren(ideasBody(n));
       if (which === 'jobs') body.replaceChildren(jobList(n.jobs));
       if (which === 'shots') body.replaceChildren(shotGrid(n.shots));
       if (which === 'mine') body.replaceChildren(n.myNotes.trim() ? h('div', { class: 'text-body' }, n.myNotes) : h('p', { class: 'faint' }, n.app === 'Ramble' ? 'A ramble is all talk: nothing typed alongside it.' : 'You didn’t type anything during this call.'));
@@ -351,14 +341,6 @@ export async function render(root, { arg, store }) {
     return wrap;
   }
 
-  function ideasBody(n) {
-    return h('div', {},
-      h('div', { class: 'n-tools' },
-        btn('Copy all', { size: 'sm', variant: 'ghost', icon: 'copy', onClick: async () => { await copyText(n.ideas.map(ideaText).join('\n\n')); toast('Copied'); } }),
-        ideasButton(n, 'Look again')),
-      ideaList(n.ideas));
-  }
-
   function rewriteButton(n) {
     const b = btn('Write again', { size: 'sm', icon: 'rerun', title: 'Write the notes again with your AI', disabled: !n.transcript.length });
     b.onclick = async () => {
@@ -370,24 +352,6 @@ export async function render(root, { arg, store }) {
       } catch (e) {
         toast(errText(e), { error: true });
         load();
-      }
-    };
-    return b;
-  }
-
-  // Reads the whole call again for ideas (also on notes taken before Short ideas were on).
-  function ideasButton(n, label) {
-    const b = btn(label, { size: 'sm', variant: label === 'Look again' ? 'ghost' : '', icon: 'spark', title: 'Have your AI look through the whole call for Shorts' });
-    b.onclick = async () => {
-      b.disabled = true;
-      b.lastChild.textContent = 'Looking…';
-      try {
-        const saved = await invoke('find_short_ideas', { id: n.id });
-        toast(`${saved?.ideas?.length || 0} Short ideas`);
-      } catch (e) {
-        toast(errText(e), { error: true });
-        b.disabled = false;
-        b.lastChild.textContent = label;
       }
     };
     return b;
@@ -417,7 +381,7 @@ export async function render(root, { arg, store }) {
       load(callOpen || !typingInDetail());
     } else if (liveView) {
       fillLive();
-      if (was.title !== live.title || (was.ideas || []).length !== (live.ideas || []).length) drawList();
+      if (was.title !== live.title) drawList();
     }
   }));
   offs.push(await listen('note', (n) => {
@@ -455,31 +419,6 @@ function lineRow(l, prev) {
     h('span', { class: 't-text' }, l.text));
 }
 
-// An idea for a Short: what it teaches, the line it opens on, and the exact lines to cut.
-function ideaList(ideas) {
-  return h('div', { class: 'ideas' }, ideas.map((idea, i) => h('div', { class: 'idea' },
-    h('div', { class: 'idea-top' },
-      h('span', { class: 'idea-n' }, String(i + 1)),
-      h('b', {}, idea.title),
-      h('button', { class: 'idea-copy', title: 'Copy this idea', onClick: async () => { await copyText(ideaText(idea)); toast('Copied'); } }, 'Copy')),
-    idea.lesson ? h('p', { class: 'idea-lesson' }, idea.lesson) : null,
-    idea.hook ? h('p', { class: 'idea-hook' }, h('span', {}, 'Opens on'), ` “${idea.hook}”`) : null,
-    h('div', { class: 'idea-lines selectable' }, idea.quotes.map((q) => h('div', { class: 'idea-line' }, h('span', { class: 't-time' }, stamp(q.atMs)), h('span', {}, `“${q.text}”`)))),
-    idea.why ? h('p', { class: 'idea-why small quiet' }, idea.why) : null,
-    idea.seconds || idea.flags?.length ? h('div', { class: 'idea-flags' }, idea.seconds ? h('span', { class: 'idea-len' }, `About ${idea.seconds} s`) : null, (idea.flags || []).map((f) => chip(f, 'blue'))) : null)));
-}
-
-function ideaText(idea) {
-  return [
-    idea.title + (idea.seconds ? ` (about ${idea.seconds} s)` : ''),
-    idea.lesson,
-    idea.hook ? `Opens on: “${idea.hook}”` : '',
-    ...idea.quotes.map((q) => `[${stamp(q.atMs)}] “${q.text}”`),
-    idea.why ? `Why: ${idea.why}` : '',
-    ...(idea.flags || []).map((f) => `Check: ${f}`),
-  ].filter(Boolean).join('\n');
-}
-
 // Jobs given with "Navi, ..." (or "Hey Navi, ...") on the call, and what the AI made of them.
 function jobList(jobs) {
   return h('div', { class: 'jobs' }, jobs.map((job) => {
@@ -491,7 +430,7 @@ function jobList(jobs) {
         h('span', { class: 't-time' }, stamp(job.atMs)),
         h('b', {}, `“${job.ask}”`),
         state,
-        job.status === 'done' ? h('button', { class: 'idea-copy', title: 'Copy the answer', onClick: async () => { await copyText(job.resultMd); toast('Copied'); } }, 'Copy') : null),
+        job.status === 'done' ? h('button', { class: 'job-copy', title: 'Copy the answer', onClick: async () => { await copyText(job.resultMd); toast('Copied'); } }, 'Copy') : null),
       job.status === 'done' ? h('div', { class: 'job-body' }, markdown(job.resultMd)) : null,
       job.status === 'failed' && job.error ? h('p', { class: 'small quiet' }, job.error) : null);
   }));

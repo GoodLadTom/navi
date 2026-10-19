@@ -21,10 +21,9 @@ people with access can read it. Navi runs on Windows. A Mac version is planned
   "don't worry" on its own during a take to throw it away. Every phrase can be changed in Settings >
   Voice commands, to any words you like. The listening happens on your computer, no AI is
   involved, and nothing it hears is kept.
-- **Modes at your fingertips.** Switch between Raw, Clean, Message, Email, Prompt, Interview me,
-  Speak and your own modes from the Modes page, the tray, or a key per mode (F1 to F5, say). The
-  bubble shows which mode you are on. Interview me turns what you want into a prompt that has the
-  AI ask you questions before it starts.
+- **Modes at your fingertips.** Switch between Raw, Clean, Message, Email, Prompt and your own
+  modes from the Modes page, the tray, or a key per mode (F1 to F5, say). The bubble shows which
+  mode you are on.
 - **Ramble mode.** Tap Space while holding the shortcut. Talk for as long as you like and press
   Enter when you are done. Your AI turns it into notes with a title, summary, key points,
   decisions and tasks (with no AI, Navi makes rough notes on your computer). They're kept on the
@@ -34,9 +33,6 @@ people with access can read it. Navi runs on Windows. A Mac version is planned
   marked You and Them, while you type your own notes. Your AI then turns it all into a summary,
   key points, decisions and actions, and the actions can go to ClickUp or Notion. The audio is
   never kept.
-- **Ideas for Shorts as the call happens.** Turn on Short ideas and give Navi your rules for a
-  good Short. Every four minutes your AI looks through the call for moments worth posting, with
-  the exact lines to cut and when they were said.
 - **Jobs on calls.** Say "Navi, draft the follow-up email" on a call (with a pause after the name)
   and your AI writes it while you talk. It only writes: nothing is sent or
   booked. Turn on call screenshots and Navi also looks at the screen every 15 seconds and keeps a
@@ -48,10 +44,12 @@ people with access can read it. Navi runs on Windows. A Mac version is planned
   after an hour. Your AI then keeps up to 20 that matter and writes up what you did (with no AI,
   every screenshot stays, listed by time). Screenshots stay on your computer; the AI only gets the
   text read off them and the window names.
-- **Built for talking to AI agents.** In a terminal, VS Code, Cursor or Windsurf, Navi picks
-  Prompt mode. It turns what you say into a clear brief for a coding agent such as Claude Code,
-  with `@file` references to files in a project folder you've added. With no AI it adds a
-  "Relevant files:" line instead of rewriting.
+- **Built for talking to AI agents.** In a terminal, VS Code, Cursor, Windsurf, BB, the Claude,
+  ChatGPT and Codex apps, or a browser tab on ChatGPT or Claude, Navi picks Prompt mode. It turns
+  what you say into a clear brief for an AI tool such as Claude Code or ChatGPT, with `@file`
+  references to files in a project folder you've added. With no AI it adds a "Relevant files:"
+  line instead of rewriting. A browser tab counts by its title or, once ChatGPT has renamed the
+  tab after your chat, by the site in the address bar.
 - **Learns from your corrections.** Fix a word after Navi pastes it and it notices (this needs
   "Read the text near my cursor", which is on unless you turn it off). Fix the same word twice and
   Navi adds it to your dictionary. A fix to an everyday word waits on the Dictionary page as a
@@ -63,9 +61,10 @@ people with access can read it. Navi runs on Windows. A Mac version is planned
 - **Writes like you.** British spelling and no em dashes (both on unless you turn them off), and a
   style profile that every AI rewrite follows.
 - **Knows where you are typing.** Navi reads the app and the text near your cursor on your
-  computer, which helps it pick the right mode and spell names correctly. When an AI mode runs,
-  the app name, window title and up to 1,000 characters before the cursor go to your AI with your
-  words.
+  computer, which helps it pick the right mode and spell names correctly. In a browser it also
+  looks at the address bar and keeps only the site's name, such as chatgpt.com, to pick the mode;
+  that is never saved or sent anywhere. When an AI mode runs, the app
+  name, window title and up to 1,000 characters before the cursor go to your AI with your words.
 - **Keeps your takes.** Every take is kept with its text, and its recording for 30 days unless you
   choose 7 or 90 days or for ever. While the recording is there you can play it back or re-run
   it through another mode; copying the text works at any time. Turn Save history off and nothing is kept.
@@ -103,17 +102,16 @@ folder.
 
 Navi tidies punctuation, capitals, fillers and spelling on your computer with no AI at all, and
 the AI stays off until you turn it on in Settings > AI. It's used for the rewriting modes
-(Message, Email, Prompt, Interview me), voice edits, ramble notes, call notes, Short ideas, jobs on
-calls, screen watch write-ups and "what's wrong with this?". Only text is sent, never audio or
-pictures.
+(Message, Email, Prompt), voice edits, ramble notes, call notes, jobs on calls, screen watch
+write-ups and "what's wrong with this?". Only text is sent, never audio or pictures.
 
 Settings offers the AI you already pay for first. If Claude Code (your Claude plan) or Codex
 (your ChatGPT plan) is installed, Navi runs it for you and needs no API key. A rewrite takes a few
 seconds this way, so Clean mode skips it and stays instant. You can also use an API key for
 Claude (Anthropic) or OpenAI, which is usually quicker but paid per use. Or use a local Ollama
 model, which needs no key, or any OpenAI-compatible endpoint, where the key is optional. Jobs
-nobody waits on (call notes, Short ideas, screen watches, jobs on calls and "what's wrong with
-this?") can use a stronger model than dictation; through Claude Code that is Sonnet unless you
+nobody waits on (call notes, screen watches, jobs on calls and "what's wrong with this?") can use
+a stronger model than dictation; through Claude Code that is Sonnet unless you
 pick another. Keys are stored in Windows Credential Manager.
 
 Local only blocks AI that runs off this computer (Claude Code and Codex included), ElevenLabs,
@@ -124,9 +122,8 @@ endpoint running on this computer.
 
 ## Voice playback (optional)
 
-Connect an ElevenLabs key and Navi reads your words back in any voice in your account: on the Speak
-page, from History, or with the Speak mode, which reads a take aloud instead of typing it. It reads
-up to 5,000 characters at a time.
+Connect an ElevenLabs key and Navi reads your words back in any voice in your account, on the Speak
+page or from History. It reads up to 5,000 characters at a time.
 
 ## Building from source
 

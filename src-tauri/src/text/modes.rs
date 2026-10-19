@@ -8,14 +8,15 @@
 //!   slack.exe, teams.exe, ms-teams.exe, discord.exe, whatsapp.exe, telegram.exe, signal.exe),
 //!   "email" (Rewrite, "mail", apps: outlook.exe, olk.exe, thunderbird.exe; browsers titled Gmail),
 //!   "prompt" (Prompt, "terminal", apps: windowsterminal.exe, code.exe, cursor.exe, windsurf.exe,
-//!   bb.exe, claude.exe, powershell.exe, pwsh.exe, cmd.exe), "interview" (Rewrite, "bubble", picked by
-//!   hand: a prompt that has the AI question you first), "speak" (Clean, "volume", picked by hand:
-//!   read aloud in the ElevenLabs voice instead of typed), "notes" (Notes, "notes", ramble only).
-//! * Without an AI (Settings > AI is off by default) Message, Email, Prompt and Interview me give
-//!   back the offline tidy (pipeline.rs); the Modes page says so.
-//! * `pick_mode`: `forced` id wins; then (if auto_by_app) a mode whose apps contain the process name,
-//!   or whose category matches (email category -> email, chat -> message, terminal -> prompt);
-//!   else settings.modes.default_mode; else "clean". Ramble always uses "notes".
+//!   bb.exe, claude.exe, codex.exe, chatgpt.exe, powershell.exe, pwsh.exe, cmd.exe; browser tabs on
+//!   ChatGPT or Claude), "notes" (Notes, "notes", ramble only).
+//! * Without an AI (Settings > AI is off by default) Message, Email and Prompt give back the offline
+//!   tidy (pipeline.rs); the Modes page says so.
+//! * `pick_mode`: `forced` id wins; then (if auto_by_app) a mode whose apps contain the process name;
+//!   then a browser on chatgpt.com, chat.openai.com or claude.ai (the address bar's host, see
+//!   `site_mode`) -> prompt; then the category (email category -> email, chat -> message,
+//!   terminal -> prompt, a browser titled ChatGPT or Claude -> prompt); else
+//!   settings.modes.default_mode; else "clean". Ramble always uses "notes".
 //! * `build_messages`: the system prompt says exactly what to output (only the finished text, no
 //!   preamble, no quotes), keeps the speaker's meaning and voice, never invents facts, keeps names
 //!   from the vocabulary exactly as written, British English when settings.writing.british, no em
@@ -87,35 +88,13 @@ pub fn builtin_modes() -> Vec<Mode> {
                 "windsurf.exe",
                 "bb.exe",
                 "claude.exe",
+                "codex.exe",
+                "chatgpt.exe",
                 "powershell.exe",
                 "pwsh.exe",
                 "cmd.exe",
             ]),
             use_ai: true,
-            builtin: true,
-        },
-        // Picked by hand: the AI it is pasted into asks you questions before it starts.
-        Mode {
-            id: "interview".into(),
-            name: "Interview me".into(),
-            icon: "bubble".into(),
-            description: "Turns what you want into a prompt that has the AI ask you questions before it starts.".into(),
-            kind: ModeKind::Rewrite,
-            instructions: String::new(),
-            apps: Vec::new(),
-            use_ai: true,
-            builtin: true,
-        },
-        // Read aloud in your ElevenLabs voice instead of typed (the controller checks the id).
-        Mode {
-            id: "speak".into(),
-            name: "Speak".into(),
-            icon: "volume".into(),
-            description: "Plays what you said back in your ElevenLabs voice instead of typing it.".into(),
-            kind: ModeKind::Clean,
-            instructions: String::new(),
-            apps: Vec::new(),
-            use_ai: false,
             builtin: true,
         },
         Mode {
@@ -175,12 +154,18 @@ pub fn pick_mode(modes: &[Mode], ctx: &AppContext, settings: &Settings, forced: 
                 return m.clone();
             }
         }
+        // A browser on an AI chat site, known by its address even once the tab is renamed after
+        // the conversation ("Trip ideas - Google Chrome").
+        if let Some(m) = site_mode(&ctx.host).and_then(|id| modes.iter().find(|m| m.id == id)) {
+            return m.clone();
+        }
         let title = ctx.window_title.to_lowercase();
         let category = if ctx.category == "browser" && (title.contains("gmail") || title.contains("outlook")) { "email" } else { ctx.category.as_str() };
         let by_category = match category {
             "email" => Some("email"),
             "chat" => Some("message"),
             "terminal" => Some("prompt"),
+            "browser" if AI_CHAT_TITLES.iter().any(|name| crate::context::title_mentions(&ctx.window_title, name)) => Some("prompt"),
             _ => None,
         };
         if let Some(m) = by_category.and_then(|id| modes.iter().find(|m| m.id == id)) {
@@ -198,6 +183,20 @@ pub fn pick_mode(modes: &[Mode], ctx: &AppContext, settings: &Settings, forced: 
 fn app_key(name: &str) -> String {
     let lower = name.trim().to_lowercase();
     lower.strip_suffix(".exe").unwrap_or(&lower).to_string()
+}
+
+/// Sites where you talk to an AI, by the host in the browser's address bar.
+const AI_CHAT_HOSTS: &[&str] = &["chatgpt.com", "chat.openai.com", "claude.ai"];
+/// Browser tabs titled with one of these, as a whole word, are an AI chat too.
+const AI_CHAT_TITLES: &[&str] = &["ChatGPT", "Claude"];
+
+/// The built-in mode for the site a browser is on ("chatgpt.com" -> "prompt"), from the host
+/// context.rs read off the address bar ("www." and letter case don't matter). None for any other
+/// site, or when the address couldn't be read.
+pub fn site_mode(host: &str) -> Option<&'static str> {
+    let host = host.trim().trim_end_matches('.').to_lowercase();
+    let host = host.strip_prefix("www.").unwrap_or(&host);
+    AI_CHAT_HOSTS.contains(&host).then_some("prompt")
 }
 
 /// (system, user) messages for the AI step of `mode`.
@@ -267,9 +266,6 @@ fn mode_section(mode: &Mode, settings: &Settings, mention_style: &str) -> String
     if id == "email" {
         return email_section(settings);
     }
-    if id == "interview" {
-        return INTERVIEW.to_string();
-    }
     match mode.kind {
         ModeKind::Clean => clean_section(settings),
         ModeKind::Prompt => prompt_section(mention_style),
@@ -326,13 +322,6 @@ Turn the transcript into a complete email, ready to send.
 - Plain text only: no Markdown such as headings or bold."
     )
 }
-
-const INTERVIEW: &str = "Mode: Interview me.
-The speaker is describing something they want an AI assistant (such as Claude or ChatGPT) to help with. Turn the transcript into a prompt for that assistant, in the speaker's own words and voice (first person; address the assistant as \"you\").
-- Open with what they want, said plainly. Then give the background, constraints and preferences they mentioned, in the order that reads best.
-- End with a short paragraph asking the assistant, before it starts, to ask the speaker the questions it needs answered to do this really well: one question at a time, waiting for each answer, covering anything not yet said that would change the result. Write that request in the speaker's voice and fit it to their task.
-- Do not answer the questions, do the task or suggest solutions yourself. Never invent requirements, background or details.
-- Plain text in short paragraphs. Use \"- \" bullets only where they listed several things.";
 
 fn prompt_section(mention_style: &str) -> String {
     let example = crate::text::agent::mention("src/app.ts", mention_style);
@@ -441,7 +430,7 @@ mod tests {
     fn builtins_match_the_contract() {
         let modes = builtin_modes();
         let ids: Vec<&str> = modes.iter().map(|m| m.id.as_str()).collect();
-        assert_eq!(ids, vec!["raw", "clean", "message", "email", "prompt", "interview", "speak", "notes"]);
+        assert_eq!(ids, vec!["raw", "clean", "message", "email", "prompt", "notes"]);
         assert_eq!(ids, crate::store::modes::BUILTIN_IDS.to_vec(), "the store's list follows this one");
         let get = |id: &str| modes.iter().find(|m| m.id == id).expect("mode");
         assert_eq!(get("raw").kind, ModeKind::Raw);
@@ -454,9 +443,56 @@ mod tests {
         assert!(get("email").apps.contains(&"olk.exe".to_string()));
         assert_eq!(get("prompt").kind, ModeKind::Prompt);
         assert!(get("prompt").apps.contains(&"bb.exe".to_string()));
+        assert!(get("prompt").apps.contains(&"codex.exe".to_string()) && get("prompt").apps.contains(&"chatgpt.exe".to_string()));
         assert_eq!(get("notes").kind, ModeKind::Notes);
-        assert!(!get("speak").use_ai && get("speak").apps.is_empty(), "Speak is never picked by an app rule");
         assert!(modes.iter().all(|m| m.builtin));
+    }
+
+    #[test]
+    fn the_chatgpt_and_codex_apps_pick_prompt() {
+        let s = Settings::default();
+        let modes = builtin_modes();
+        // The desktop apps, however Windows spells their process names.
+        assert_eq!(pick_mode(&modes, &ctx("chatgpt.exe", "other", "ChatGPT"), &s, None).id, "prompt");
+        assert_eq!(pick_mode(&modes, &ctx("ChatGPT.exe", "other", ""), &s, None).id, "prompt");
+        assert_eq!(pick_mode(&modes, &ctx("Codex.exe", "editor", "Codex"), &s, None).id, "prompt");
+    }
+
+    #[test]
+    fn browser_tabs_on_chatgpt_or_claude_pick_prompt() {
+        let s = Settings::default();
+        let modes = builtin_modes();
+        let tab = |title: &str, host: &str| AppContext { host: host.into(), ..ctx("chrome.exe", "browser", title) };
+        // By the tab's title, as a whole word.
+        assert_eq!(pick_mode(&modes, &ctx("chrome.exe", "browser", "ChatGPT - Google Chrome"), &s, None).id, "prompt");
+        assert_eq!(pick_mode(&modes, &ctx("msedge.exe", "browser", "Claude - Microsoft Edge"), &s, None).id, "prompt");
+        assert_eq!(pick_mode(&modes, &ctx("chrome.exe", "browser", "Claudette's blog - Google Chrome"), &s, None).id, "clean");
+        assert_eq!(pick_mode(&modes, &ctx("chrome.exe", "browser", "BBC News - Google Chrome"), &s, None).id, "clean");
+        // By the address bar, once ChatGPT has renamed the tab after the conversation.
+        assert_eq!(pick_mode(&modes, &tab("Trip ideas - Google Chrome", "chatgpt.com"), &s, None).id, "prompt");
+        assert_eq!(pick_mode(&modes, &tab("Trip ideas - Google Chrome", "chat.openai.com"), &s, None).id, "prompt");
+        assert_eq!(pick_mode(&modes, &tab("Trip ideas - Google Chrome", "claude.ai"), &s, None).id, "prompt");
+        assert_eq!(pick_mode(&modes, &tab("Trip ideas - Google Chrome", "www.bbc.co.uk"), &s, None).id, "clean");
+        // The address wins over a title that names an email app.
+        assert_eq!(pick_mode(&modes, &AppContext { host: "claude.ai".into(), ..ctx("chrome.exe", "email", "Reply to Outlook support - Claude") }, &s, None).id, "prompt");
+        // An email in Gmail that mentions Claude stays an email.
+        assert_eq!(pick_mode(&modes, &tab("Claude pricing - alex@example.com - Gmail", "mail.google.com"), &s, None).id, "email");
+        assert_eq!(pick_mode(&modes, &AppContext { host: "mail.google.com".into(), ..ctx("chrome.exe", "email", "Claude pricing - Gmail") }, &s, None).id, "email");
+        // Only Auto picks from the site: a mode chosen by hand, or app rules turned off, win.
+        assert_eq!(pick_mode(&modes, &tab("x", "chatgpt.com"), &s, Some("email")).id, "email");
+        let mut off = Settings::default();
+        off.modes.auto_by_app = false;
+        assert_eq!(pick_mode(&modes, &tab("ChatGPT - Google Chrome", "chatgpt.com"), &off, None).id, "clean");
+    }
+
+    #[test]
+    fn hosts_map_to_modes() {
+        for host in ["chatgpt.com", "chat.openai.com", "claude.ai", "www.chatgpt.com", "ChatGPT.com", " claude.ai. "] {
+            assert_eq!(site_mode(host), Some("prompt"), "{host}");
+        }
+        for host in ["", "openai.com", "platform.openai.com", "claude.ai.example.com", "notclaude.ai", "chatgpt.com.evil.net", "gmail.com"] {
+            assert_eq!(site_mode(host), None, "{host}");
+        }
     }
 
     #[test]
@@ -500,7 +536,7 @@ mod tests {
         let mut email = mode_by_id("email");
         email.apps = vec!["superhuman.exe".into()];
         let merged = merge(builtin_modes(), vec![email]);
-        assert_eq!(merged.len(), 8);
+        assert_eq!(merged.len(), 6);
         assert_eq!(merged.iter().find(|m| m.id == "email").map(|m| m.apps.clone()), Some(vec!["superhuman.exe".to_string()]));
     }
 
@@ -618,20 +654,5 @@ mod tests {
         let block = context_block(&c);
         assert!(block.contains("END"));
         assert!(block.chars().count() < 1200);
-    }
-
-    /// Interview me through Claude Code: a prompt in the speaker's voice that ends by asking the
-    /// assistant to question them first. Run by hand:
-    /// cargo test --lib text::modes::tests::live_interview -- --ignored --nocapture
-    #[tokio::test]
-    #[ignore]
-    async fn live_interview() {
-        let said = "so I want to plan a birthday party for my mum she's turning sixty in March and she likes jazz and doesn't like big crowds and we've got maybe a thousand pounds";
-        let (system, user) = build_messages(&mode_by_id("interview"), said, &AppContext::default(), &Settings::default(), &[], &[]);
-        let t = std::time::Instant::now();
-        let reply = crate::text::cli_ai::complete("claude-code", "haiku", &system, &user, None).await.expect("a reply");
-        println!("{} ms\n{reply}", t.elapsed().as_millis());
-        let lower = reply.to_lowercase();
-        assert!(lower.contains("jazz") && lower.contains("question"), "keeps the details and asks to be questioned");
     }
 }

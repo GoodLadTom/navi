@@ -1263,7 +1263,7 @@ pub fn make_llm(settings: &Settings) -> Option<Llm> {
     Llm::from_settings(&settings.ai, key, settings.privacy.local_only)
 }
 
-/// The AI for jobs nobody sits waiting on: call notes, Short ideas, watch notes, call jobs and
+/// The AI for jobs nobody sits waiting on: call notes, watch notes, call jobs and
 /// "what's wrong with this?". The model named in Settings > AI for longer jobs, or Sonnet through
 /// Claude Code (quality matters more than speed here), or the dictation model.
 pub fn make_llm_long(settings: &Settings) -> Option<Llm> {
@@ -1491,46 +1491,6 @@ async fn process_take(app: &Arc<App>, mut rec: Recording, mut samples: Vec<f32>,
         Ok(out) => out,
         Err(e) => return Err(keep_failed_take(app, &settings, &rec, &raw, &full_audio, released, rec.kind.as_str(), e)),
     };
-
-    // Speak mode: read it aloud in the ElevenLabs voice instead of typing it.
-    if rec.mode.id == "speak" {
-        let spoken = speak_aloud(app, &settings, &out.text).await;
-        let latency = released.elapsed().as_millis() as u64;
-        let mut meta = serde_json::json!({ "voice": settings.speak.voice_name });
-        match spoken {
-            Ok(()) => {
-                log::info!("spoke {} words in {latency} ms", out.text.split_whitespace().count());
-                save_take(app, &settings, &rec, &raw, &out.text, &full_audio, latency, "spoken", rec.kind.as_str(), meta);
-                // Past Navi's 5,000-character cap (speak::MAX_CHARS) only the start is read: say so,
-                // or the rest just goes missing.
-                if crate::speak::fit(&out.text).1 {
-                    let message = "Read the first part only. Navi reads up to 5,000 characters.".to_string();
-                    let hold = read_ms(&message, 2600);
-                    let gen = app.pill(PillState::Notice { message });
-                    app.hide_pill_later(gen, hold);
-                } else {
-                    let gen = app.pill(PillState::Done { preview: preview(&out.text), outcome: "spoken".into() });
-                    app.hide_pill_later(gen, 1300);
-                }
-            }
-            Err(e) => {
-                // Never lose what was said: it goes on the clipboard and into History instead.
-                log::warn!("speak mode failed: {e:#}");
-                let reason = short_error(&e);
-                let t = out.text.clone();
-                let copied = matches!(tokio::task::spawn_blocking(move || insert::set_clipboard_text(&t)).await, Ok(Ok(())));
-                meta["error"] = serde_json::json!(reason);
-                save_take(app, &settings, &rec, &raw, &out.text, &full_audio, latency, if copied { "clipboard" } else { "error" }, rec.kind.as_str(), meta);
-                app.sounds.play(Cue::Error, &settings.sounds);
-                // The reason is shortened if need be so the clipboard note always shows.
-                let message = if copied { with_note(&reason, "Your words are on the clipboard.") } else { reason };
-                let hold = read_ms(&message, 3500);
-                let gen = app.pill(PillState::Error { message });
-                app.hide_pill_later(gen, hold);
-            }
-        }
-        return Ok(());
-    }
 
     let text = out.text.clone();
     let method = settings.general.paste_method.clone();
@@ -2118,23 +2078,6 @@ fn with_note(reason: &str, note: &str) -> String {
     }
 }
 
-/// Speak mode: reads `text` aloud in the ElevenLabs voice. Its own reasons are short enough to go
-/// beside "Your words are on the clipboard." in the bubble.
-async fn speak_aloud(app: &Arc<App>, settings: &Settings, text: &str) -> Result<()> {
-    if settings.privacy.local_only {
-        return Err(anyhow!(SPEAK_LOCAL_ONLY));
-    }
-    let key = secrets::get("elevenlabs").ok_or_else(|| anyhow!(SPEAK_NO_KEY))?;
-    let samples = crate::speak::speak(&key, &settings.speak.voice_id, &settings.speak.model, text).await?;
-    // Voice commands stop listening while Navi talks, or a sentence starting "Navi, ..." would wake it.
-    crate::wake::hold_off(samples.len() as f32 / crate::speak::SAMPLE_RATE as f32);
-    app.sounds.play_samples(samples, crate::speak::SAMPLE_RATE);
-    Ok(())
-}
-
-const SPEAK_LOCAL_ONLY: &str = "Local only is on, so ElevenLabs is blocked.";
-const SPEAK_NO_KEY: &str = "Add your ElevenLabs key in Settings > Voice.";
-
 fn preview(text: &str) -> String {
     let t: String = text.chars().take(60).collect();
     if text.chars().count() > 60 { format!("{t}…") } else { t }
@@ -2309,17 +2252,6 @@ mod tests {
         assert!(noted.ends_with("… Saved in History."), "{noted}");
         assert!(noted.chars().count() <= 80, "{noted}");
         assert_eq!(short_error(&anyhow!(noted.clone())), noted);
-    }
-
-    #[test]
-    fn the_clipboard_note_survives_every_speak_reason() {
-        for reason in [SPEAK_LOCAL_ONLY, SPEAK_NO_KEY] {
-            assert_eq!(with_note(reason, "Your words are on the clipboard."), format!("{reason} Your words are on the clipboard."));
-        }
-        let long = "ElevenLabs refused the request because the voice you picked is not in this account any more";
-        let noted = with_note(long, "Your words are on the clipboard.");
-        assert!(noted.ends_with("… Your words are on the clipboard."), "{noted}");
-        assert!(noted.chars().count() <= 80, "{noted}");
     }
 
     #[test]

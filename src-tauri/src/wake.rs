@@ -46,7 +46,7 @@ const TIMED_CHECKS: usize = 7;
 /// Quiet kept after Navi's own voice stops, before the listener hears the room again.
 const SPEECH_TAIL: Duration = Duration::from_millis(300);
 
-/// Until when the listener holds off: Navi is reading text aloud (Speak mode, the Speak page).
+/// Until when the listener holds off: Navi is reading text aloud (the Speak page, "Hear it").
 static HOLD_OFF_UNTIL: Mutex<Option<Instant>> = parking_lot::const_mutex(None);
 
 /// Navi is about to play `secs` of its own voice: the listener stops hearing the room until it has

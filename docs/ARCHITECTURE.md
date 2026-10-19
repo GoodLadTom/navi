@@ -23,7 +23,8 @@ shortcut, speak, release: the words appear in whatever app has focus, transcribe
    keystrokes, tagged `NAVI_INPUT_TAG`, never do. The hook reinstalls itself after a quiet minute,
    because Windows silently removes a hook that once keeps it waiting.
 2. `controller` starts `audio` capture at once, captures `context` (app, window title, text near
-   the cursor, selection) and picks a mode (the active mode if one is chosen, else from the app).
+   the cursor, selection and, in a browser, the address bar's host) and picks a mode (the active
+   mode if one is chosen, else from the app or site, see Modes below).
    After a short grace (110 to 180 ms) it plays the start cue (`sounds`: the chosen sound set from
    ui/sounds/sets) and shows the `overlay` pill, so a quick tap or a shortcut that merely starts
    with the talk keys ends silently. At the same moment `media` pauses what's playing (Windows'
@@ -55,6 +56,22 @@ shortcut, speak, release: the words appear in whatever app has focus, transcribe
    isn't everyday English); otherwise it waits as a suggestion on the Dictionary page. This needs
    "Read the text near my cursor" on.
 
+Modes (`text::modes`): the built-ins (Raw, Clean, Message, Email, Prompt, and Notes for rambles)
+come from the code; the `modes` table only holds custom modes and the user's edits of built-ins.
+On Auto, `pick_mode` takes the first of: a mode listing the app's process; Prompt for a browser on
+chatgpt.com, chat.openai.com or claude.ai; then by category (email apps and browsers titled Gmail
+or Outlook get Email, chat apps Message, terminals and browsers titled ChatGPT or Claude Prompt);
+else the default mode. Prompt lists Windows Terminal, VS Code, Cursor, Windsurf, BB, the Claude,
+Codex and ChatGPT apps, PowerShell and Command Prompt. The host comes from the browser's address
+bar, read with UI Automation on a worker of its own while the field is read; the bar is found once
+per window (Chromium's omnibox, or Firefox's `urlbar-input`) and kept, and a take waits at most
+150 ms for it before the title alone decides. Only the host is kept, and it is never logged,
+saved or sent to the AI. Edits of "Interview me" and Speak, built-ins Navi no longer has, stay in
+the table unread; an active mode that was one of them goes back to Auto, a default one to Clean,
+and their mode keys go (`forget_missing_modes`). A Prompt mode the user edited before Codex and
+ChatGPT joined its list gets them once (`store::modes::add_new_prompt_apps`, marked done in
+`meta`).
+
 Mode keys (HotkeySettings::mode_keys) fire `HotkeyEvent::ModeKey(n)`; `controller::switch_mode`
 saves the active mode, ticks the tray and shows "Mode: Email" in the bubble (or switches a take
 being recorded hands-free).
@@ -81,11 +98,6 @@ you typed; with no AI the note keeps the transcript and your own notes. They are
 never kept.
 
 Along the way, as Settings > Meeting notes allows:
-- Short ideas (`ideas`): every four minutes of call, the AI for longer jobs reads the last nine
-  minutes with the user's brief and suggests new Shorts, each with the exact lines to cut. When the
-  call ends one more pass reads the whole transcript and returns the final list. Every quote is
-  checked against the transcript and takes the time of the line it came from; anything not in the
-  transcript is dropped.
 - Jobs (`jobs`): a line from your side that opens with the wake word ("Navi," with a pause by
   default, or "Hey Navi"; a greeting and the name always count) and carries an instruction of three
   or more words goes straight to the AI for longer jobs with the call so far; the answer is kept
@@ -93,7 +105,8 @@ Along the way, as Settings > Meeting notes allows:
 - Screenshots (`screen`): every 15 seconds a look at the screen, kept when enough of it changed,
   its text read with Windows OCR. Only that text goes to the AI writing the notes.
 - Actions: the bullets under the notes' Actions heading go to ClickUp or Notion.
-Ideas, jobs and screenshots live in the note's `extras` JSON (schema version 3). Jobs can finish
+Jobs and screenshots live in the note's `extras` JSON (schema version 3); the Short ideas that
+notes saved by older versions keep there are skipped when read. Jobs can finish
 after the call, so a note's jobs are always read, merged and saved under `NOTE_LOCK`, and a finished
 job is never overwritten by an older copy that still says "working".
 
@@ -134,8 +147,7 @@ asset protocol may read, so the interface shows them with `convertFileSrc`.
 "What's wrong with this?" (`VoiceCommand::Critique`): the selection (or the last insertion) goes to
 the AI with a prompt that asks for flaws, never praise, and the answer appears on the `prompt`
 card (`PromptState::Answer`) to read and copy. It runs in the background so the next take is never
-held up. The "Interview me" mode turns what you say in a take into a prompt that has the AI
-question you first.
+held up.
 
 Updates (`update`): tauri-plugin-updater reads `latest.json` from the latest GitHub release of
 GoodLadTom/navi (20 seconds after start, then every six hours, unless Settings or Local only says
@@ -179,7 +191,7 @@ file but main.rs) describes it.
 | Windows systems | hotkey.rs, insert.rs, overlay.rs, context.rs |
 | Audio and the speech engine | audio.rs, sounds.rs, media.rs, engine.rs, models.rs |
 | Text | text/*.rs (pipeline, cleanup, britishise, spans, modes, voice, learn, ramble, agent, llm, cli_ai; testkit for tests), integrations.rs |
-| Calls, voice and screen | meeting.rs, ideas.rs, jobs.rs, screen.rs, watch.rs, wake.rs, speak.rs |
+| Calls, voice and screen | meeting.rs, jobs.rs, screen.rs, watch.rs, wake.rs, speak.rs |
 | Updates | update.rs |
 | Storage | store/*.rs (db, history, notes, dictionary, modes, packs, secrets) |
 | Interface | ui/** (plain HTML, CSS and JavaScript; ui/js/mock.js supplies sample data in a browser) |

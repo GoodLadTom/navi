@@ -20,7 +20,6 @@
 //! * The transcript is saved every 20 seconds, so a crash loses at most that much. Notes left
 //!   unfinished are closed at the next start (`recover`).
 //! * Along the way, if switched on in Settings > Meeting notes:
-//!   - Short ideas (ideas.rs): a pass every few minutes, and a final one when the call ends.
 //!   - Jobs (jobs.rs): "Navi, ..." (or "Hey Navi, ...", following the wake words in Settings >
 //!     Voice commands) from your side of the call goes to the AI straight away and the answer is
 //!     kept with the note. A voice command said that way ("Navi, stop taking notes") is not a job;
@@ -33,9 +32,9 @@
 
 use crate::engine::TranscribeOptions;
 use crate::state::App;
-use crate::store::notes::{CallJob, Line, MeetingNote, Shot, ShortIdea};
+use crate::store::notes::{CallJob, Line, MeetingNote, Shot};
 use crate::types::{Settings, VoiceCommandSettings};
-use crate::{audio, ideas, integrations, jobs, screen};
+use crate::{audio, integrations, jobs, screen};
 use anyhow::{anyhow, bail, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use parking_lot::Mutex;
@@ -477,14 +476,10 @@ pub struct Session {
     pub stop_app: String,
     /// Stop was pressed: the rest is being transcribed.
     pub finishing: bool,
-    pub ideas: Vec<ShortIdea>,
     pub jobs: Vec<CallJob>,
     /// A "Hey Navi" at the end of the last piece, waiting for the rest of its job (jobs::find).
     pub held_job: Option<Line>,
     pub shots: Vec<Shot>,
-    /// Call time of the last Short ideas pass, and whether one is running now.
-    pub ideas_at_ms: u64,
-    pub ideas_busy: bool,
     stop: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
@@ -501,7 +496,6 @@ impl Session {
             my_notes: self.my_notes.clone(),
             notes_md: String::new(),
             file_path: None,
-            ideas: self.ideas.clone(),
             jobs: self.jobs.clone(),
             shots: self.shots.clone(),
             counts: None,
@@ -550,7 +544,6 @@ pub struct MeetingStatus {
     pub lines: Vec<Line>,
     pub my_notes: String,
     pub system_audio: bool,
-    pub ideas: Vec<ShortIdea>,
     pub jobs: Vec<CallJob>,
     /// The screenshots so far (without their text, which only the AI needs).
     pub shots: Vec<Shot>,
@@ -574,7 +567,6 @@ pub fn status(app: &App) -> MeetingStatus {
                 lines: s.lines.clone(),
                 my_notes: s.my_notes.clone(),
                 system_audio: s.system_audio,
-                ideas: s.ideas.clone(),
                 jobs: s.jobs.clone(),
                 shots: s.shots.iter().map(|sh| Shot { text: String::new(), ..sh.clone() }).collect(),
                 warning: warning.into(),
@@ -616,12 +608,9 @@ pub fn start(app: &Arc<App>, source: Option<String>) -> Result<String> {
         heard_at_ms: 0,
         stop_app,
         finishing: false,
-        ideas: Vec::new(),
         jobs: Vec::new(),
         held_job: None,
         shots: Vec::new(),
-        ideas_at_ms: 0,
-        ideas_busy: false,
         stop: None,
     };
     let first = session.snapshot("recording");
@@ -749,7 +738,6 @@ async fn run(app: Arc<App>, id: String, audio: MeetingAudio, mut stop_rx: tokio:
         missed |= dropped;
         let settings = app.settings();
         let mut new_jobs = Vec::new();
-        let mut ideas_pass = None;
         // "Navi, stop taking notes" heard in this piece (split_commands).
         let mut stop_asked = false;
         let (snapshot, quiet, card) = {
@@ -793,11 +781,6 @@ async fn run(app: Arc<App>, id: String, audio: MeetingAudio, mut stop_rx: tokio:
                 s.heard_at_ms = now_ms;
             }
             merge_lines(&mut s.lines, lines);
-            // Short ideas: a pass after every few minutes of call, one at a time.
-            if settings.notes.short_ideas && !last && !s.ideas_busy && now_ms >= s.ideas_at_ms + ideas::EVERY_MS && s.lines.len() >= 6 {
-                s.ideas_busy = true;
-                ideas_pass = Some(now_ms);
-            }
             // Notes left running after the call: nobody has said anything for a long while. Not
             // while the call app followed still holds the microphone (a muted call, a long silent
             // screen share): its letting go finishes them.
@@ -813,9 +796,6 @@ async fn run(app: Arc<App>, id: String, audio: MeetingAudio, mut stop_rx: tokio:
         app.emit("meeting", status(&app));
         for job in new_jobs {
             spawn_job(app.clone(), id.clone(), job);
-        }
-        if let Some(now_ms) = ideas_pass {
-            spawn_ideas_pass(app.clone(), id.clone(), now_ms);
         }
         // The backstop for when the listener is off or missed it: the notes stop at the end of
         // the piece they heard you ask in.
@@ -841,13 +821,10 @@ async fn run(app: Arc<App>, id: String, audio: MeetingAudio, mut stop_rx: tokio:
     let Some(session) = app.meeting.lock().take() else { return };
     app.emit("meeting", MeetingStatus::default());
     let (note, actions, failed) = write_up(&app, session.snapshot("writing"), missed).await;
-    log::info!("meeting notes written: {} lines over {} min, {} Short ideas, {} jobs", note.transcript.len(), note.duration_ms / 60_000, note.ideas.len(), note.jobs.len());
+    log::info!("meeting notes written: {} lines over {} min, {} jobs", note.transcript.len(), note.duration_ms / 60_000, note.jobs.len());
     let mut extra: Vec<String> = Vec::new();
     if failed {
         extra.push("not written up (see the note)".into());
-    }
-    if !note.ideas.is_empty() {
-        extra.push(format!("{} Short idea{}", note.ideas.len(), if note.ideas.len() == 1 { "" } else { "s" }));
     }
     // A send that failed says why on the card, never only in the log.
     let mut unsent = None;
@@ -1032,11 +1009,10 @@ pub fn transcript_text(lines: &[Line]) -> String {
 // Writing the notes
 // ---------------------------------------------------------------------------------------------
 
-/// Writes the notes for a finished meeting (with the AI if there is one) and the final list of
-/// Short ideas, saves them in the database and the notes folder, tells the interface, and sends
-/// the actions on if that is set up. `missed`: some of the call was never transcribed. Returns the
-/// note, where its actions went and what came of it (None when there were none to send), and
-/// whether the AI failed to write it.
+/// Writes the notes for a finished meeting (with the AI if there is one), saves them in the
+/// database and the notes folder, tells the interface, and sends the actions on if that is set up.
+/// `missed`: some of the call was never transcribed. Returns the note, where its actions went and
+/// what came of it (None when there were none to send), and whether the AI failed to write it.
 async fn write_up(app: &Arc<App>, mut note: MeetingNote, missed: bool) -> (MeetingNote, Option<(&'static str, Result<String, String>)>, bool) {
     note.status = "writing".into();
     save_merged(app, &mut note);
@@ -1061,11 +1037,8 @@ async fn write_up(app: &Arc<App>, mut note: MeetingNote, missed: bool) -> (Meeti
         let md = if missed { under_title(&md, "Part of this call couldn't be written down: the speech engine wasn't available.") } else { md };
         (md, failed)
     };
-    let ((md, failed), final_ideas) = tokio::join!(notes, final_ideas(&note, &settings));
+    let (md, failed) = notes.await;
     note.notes_md = md;
-    if let Some(list) = final_ideas {
-        note.ideas = list;
-    }
     settle_title(&mut note);
     note.status = "done".into();
     if !still_there(app, &note.id) {
@@ -1098,7 +1071,7 @@ fn save_merged(app: &App, note: &mut MeetingNote) {
 }
 
 /// Changes the saved note as it is now and saves it, all under NOTE_LOCK, so nothing saved while
-/// an AI was busy (a job's result, Short ideas) is lost. Rewrites its Markdown file once the note
+/// an AI was busy (a job's result) is lost. Rewrites its Markdown file once the note
 /// is done.
 fn change_note(app: &App, id: &str, change: impl FnOnce(&mut MeetingNote)) -> Result<MeetingNote> {
     let _guard = NOTE_LOCK.lock();
@@ -1204,75 +1177,6 @@ fn spawn_job(app: Arc<App>, note_id: String, mut job: CallJob) {
             app.hide_pill_later(gen, 4000);
         }
     });
-}
-
-/// A Short ideas pass over the latest stretch of the call, adding what it finds.
-fn spawn_ideas_pass(app: Arc<App>, note_id: String, now_ms: u64) {
-    tauri::async_runtime::spawn(async move {
-        let settings = app.settings();
-        let input = app.meeting.lock().as_ref().filter(|s| s.id == note_id).map(|s| (ideas::window(&s.lines, now_ms), s.ideas.clone()));
-        let found = match (input, crate::controller::make_llm_long(&settings)) {
-            (Some((window, existing)), Some(llm)) if !window.is_empty() => {
-                let (system, user) = ideas::live_messages(&settings.notes.ideas_brief, &window, &existing, &settings);
-                match tokio::time::timeout(AI_DEADLINE, llm.complete(&system, &user, 3000, 0.4)).await {
-                    Ok(Ok(reply)) => ideas::parse_ideas(&reply, &window, ideas::LIVE_LIMIT),
-                    Ok(Err(e)) => {
-                        log::warn!("short ideas: {e:#}");
-                        Vec::new()
-                    }
-                    Err(_) => {
-                        log::warn!("short ideas: the AI took too long");
-                        Vec::new()
-                    }
-                }
-            }
-            _ => Vec::new(),
-        };
-        let added = {
-            let mut slot = app.meeting.lock();
-            let Some(s) = slot.as_mut().filter(|s| s.id == note_id) else { return };
-            let before = s.ideas.len();
-            ideas::merge_new(&mut s.ideas, found);
-            s.ideas_busy = false;
-            s.ideas_at_ms = now_ms;
-            s.ideas.len() - before
-        };
-        if added > 0 {
-            log::info!("short ideas: {added} new");
-        }
-        app.emit("meeting", status(&app));
-    });
-}
-
-/// The final list of Short ideas for a finished call, or None to keep the ideas found live.
-async fn final_ideas(note: &MeetingNote, settings: &Settings) -> Option<Vec<ShortIdea>> {
-    if !settings.notes.short_ideas || note.transcript.is_empty() {
-        return None;
-    }
-    find_ideas_for(note, settings).await.ok().filter(|list| !list.is_empty())
-}
-
-async fn find_ideas_for(note: &MeetingNote, settings: &Settings) -> anyhow::Result<Vec<ShortIdea>> {
-    let llm = crate::controller::make_llm_long(settings).ok_or_else(|| anyhow!("Short ideas need an AI. Turn one on in Settings > AI."))?;
-    let (system, user) = ideas::final_messages(&settings.notes.ideas_brief, &note.transcript, &note.ideas, settings);
-    let reply = tokio::time::timeout(AI_DEADLINE, llm.complete(&system, &user, 6000, 0.3)).await.map_err(|_| anyhow!("{} took too long", llm.display_name()))??;
-    Ok(ideas::parse_ideas(&reply, &note.transcript, ideas::FINAL_LIMIT))
-}
-
-/// "Find Short ideas" on a finished note: the whole call read again for ideas.
-pub async fn find_ideas(app: &Arc<App>, id: &str) -> anyhow::Result<MeetingNote> {
-    let note = app.db.get_note(id)?.ok_or_else(|| anyhow!("That note has gone."))?;
-    if note.transcript.is_empty() {
-        bail!("Nothing was heard on this call, so there is nothing to look through.");
-    }
-    let settings = app.settings();
-    let list = find_ideas_for(&note, &settings).await?;
-    if list.is_empty() {
-        bail!("The AI didn't find a Short in this one.");
-    }
-    let note = change_note(app, id, |note| note.ideas = list)?;
-    app.emit("note", note.clone());
-    Ok(note)
 }
 
 /// Looks at the screen every SHOT_EVERY while the call goes on, keeping the screenshots that show
@@ -1460,7 +1364,7 @@ pub async fn rewrite(app: &Arc<App>, id: &str) -> Result<MeetingNote> {
     save_merged(app, &mut note);
     app.emit("note", note.clone());
     let result = write_with_ai(&note, &settings).await;
-    // Only the notes change: Short ideas found and jobs done meanwhile stay as saved. A note
+    // Only the notes change: jobs done meanwhile stay as saved. A note
     // deleted meanwhile stays deleted.
     let md = result.as_ref().ok().cloned().flatten();
     let saved = change_note(app, id, |saved| {
@@ -1591,15 +1495,11 @@ fn notes_dir(app: &App, settings: &Settings) -> PathBuf {
     settings.ramble.notes_dir.clone().filter(|d| !d.trim().is_empty()).map(PathBuf::from).unwrap_or_else(|| app.paths.notes_default.clone())
 }
 
-/// The note as a Markdown file: the notes, any Short ideas and jobs, then the transcript. Rewrites
-/// its file when it has one.
+/// The note as a Markdown file: the notes, any jobs, then the transcript. Rewrites its file when it
+/// has one.
 pub fn save_file(app: &App, settings: &Settings, note: &mut MeetingNote) {
     let transcript = if note.transcript.is_empty() { "Nothing was heard.".to_string() } else { transcript_text(&note.transcript) };
     let mut body = note.notes_md.trim().to_string();
-    if !note.ideas.is_empty() {
-        body.push_str("\n\n## Short ideas\n");
-        body.push_str(&ideas::to_markdown(&note.ideas));
-    }
     if !note.jobs.is_empty() {
         body.push_str("\n\n## Jobs Navi did on the call\n");
         body.push_str(&jobs::to_markdown(&note.jobs));
@@ -1788,7 +1688,7 @@ pub enum PromptState {
     #[serde(rename_all = "camelCase")]
     Recording { app: String, system_audio: bool, elapsed_ms: u64, warning: String, warning_detail: String },
     Writing,
-    /// `detail`: what else came of it ("3 Short ideas · 4 actions to ClickUp").
+    /// `detail`: what else came of it ("4 actions to ClickUp").
     #[serde(rename_all = "camelCase")]
     Done { id: String, title: String, detail: String },
     /// "What's wrong with this?" while the AI looks (controller.rs).
@@ -2401,12 +2301,9 @@ mod tests {
             heard_at_ms: 0,
             stop_app: String::new(),
             finishing: false,
-            ideas: Vec::new(),
             jobs: Vec::new(),
             held_job: None,
             shots: Vec::new(),
-            ideas_at_ms: 0,
-            ideas_busy: false,
             stop: None,
         }
     }

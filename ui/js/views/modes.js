@@ -3,9 +3,8 @@ import { h, ico, btn, chip, toggle, select, seg, setRow, field, toast, confirmDi
 
 const ICONS = ['clean', 'pen', 'mail', 'chat', 'terminal', 'notes', 'spark', 'wand'];
 const KIND_LABEL = { raw: 'As said', clean: 'Tidy', rewrite: 'Rewrite', prompt: 'Agent prompt', notes: 'Notes' };
-// What a mode does, under its name. Speak is a Clean mode that reads your words aloud instead of
-// typing them (controller.rs checks its id).
-const kindLabel = (m) => (m.id === 'speak' ? 'Read aloud' : KIND_LABEL[m.kind] || m.kind);
+// What a mode does, under its name.
+const kindLabel = (m) => KIND_LABEL[m.kind] || m.kind;
 
 // True when no AI can run (controller.rs make_llm gives None): none chosen in Settings > AI, or
 // Local only blocking one that runs off this computer. A missing key isn't known here.
@@ -186,7 +185,6 @@ export async function render(root, { store, arg, go }) {
 function aiHelp(m) {
   if (m.kind === 'raw') return 'This mode never uses AI: your words go in as said.';
   if (m.kind === 'notes') return 'Rambles are written up by your AI whenever one is set up in Settings > AI, and get rough notes on this computer when not.';
-  if (m.id === 'speak') return 'Speak always sends your words to ElevenLabs to be read aloud. This switch only adds a light AI polish first, and not through Claude Code or Codex.';
   if (m.kind === 'clean') return 'Off keeps everything on this computer and uses Navi’s own tidy-up rules. On adds a light AI polish, except through Claude Code or Codex, which are too slow for it.';
   return 'Off keeps everything on this computer and uses Navi’s own tidy-up rules.';
 }

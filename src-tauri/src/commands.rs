@@ -1064,12 +1064,6 @@ pub fn delete_note(app: State<'_, Arc<App>>, id: String) -> Res<()> {
     Ok(())
 }
 
-/// "Find Short ideas" on a finished note: reads the whole call again for ideas.
-#[tauri::command]
-pub async fn find_short_ideas(app: State<'_, Arc<App>>, id: String) -> Res<MeetingNote> {
-    meeting::find_ideas(app.inner(), &id).await.map_err(err)
-}
-
 /// Sends a note's actions to ClickUp or Notion, as Settings > Meeting notes says.
 #[tauri::command]
 pub async fn send_note_actions(app: State<'_, Arc<App>>, id: String) -> Res<String> {

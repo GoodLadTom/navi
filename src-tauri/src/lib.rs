@@ -6,7 +6,6 @@ pub mod context;
 pub mod controller;
 pub mod engine;
 pub mod hotkey;
-pub mod ideas;
 pub mod insert;
 pub mod integrations;
 pub mod jobs;
@@ -140,7 +139,6 @@ pub fn run() {
             commands::dismiss_meeting_prompt,
             commands::open_note,
             commands::reveal_note_file,
-            commands::find_short_ideas,
             commands::send_note_actions,
             commands::watch_status,
             commands::start_watch,
@@ -222,7 +220,14 @@ fn setup(handle: &AppHandle, started_hidden: bool) -> anyhow::Result<()> {
     std::thread::spawn(move || media::recover(data_dir));
     let mut settings = settings::load(&paths);
     let db = Arc::new(store::Db::open(&paths.db)?);
-    // Mode keys (and the active or default mode) left pointing at a mode that has since gone.
+    // A Prompt mode the user edited before Prompt knew the Codex and ChatGPT apps gets them, once.
+    match db.add_new_prompt_apps() {
+        Ok(true) => log::info!("modes: added the Codex and ChatGPT apps to your edited Prompt mode"),
+        Ok(false) => {}
+        Err(e) => log::warn!("modes: couldn't add the Codex and ChatGPT apps to Prompt mode: {e:#}"),
+    }
+    // Mode keys (and the active or default mode) left pointing at a mode that has since gone,
+    // "Interview me" and Speak among them.
     if let Some((modes, unreadable)) = modes_for_tidy(&db) {
         if forget_missing_modes(&mut settings, &modes, &unreadable) {
             if let Err(e) = settings::save(&paths, &settings) {
@@ -962,6 +967,29 @@ mod tests {
         assert_eq!(s.hotkeys.mode_keys.len(), 1);
         assert_eq!(s.modes.active, "from-newer-navi");
         assert_eq!(s.modes.default_mode, "from-newer-navi");
+    }
+
+    #[test]
+    fn interview_me_and_speak_fall_back_to_auto_even_with_a_saved_edit() {
+        let db = store::Db::open_memory().unwrap();
+        // An edit of each, saved while they were built-ins.
+        for id in ["interview", "speak"] {
+            let json = serde_json::to_string(&Mode { id: id.into(), name: id.into(), ..text::modes::builtin_modes()[1].clone() }).unwrap();
+            db.conn.lock().execute("INSERT INTO modes (id, source, json) VALUES (?1, 'manual', ?2)", [id, json.as_str()]).unwrap();
+        }
+        let (modes, unreadable) = modes_for_tidy(&db).unwrap();
+        assert!(!modes.iter().any(|m| m.id == "interview" || m.id == "speak"), "the saved edits are ignored");
+        assert!(unreadable.is_empty());
+        for id in ["interview", "speak"] {
+            let mut s = Settings::default();
+            s.hotkeys.mode_keys = vec![key(id, "F4"), key("email", "F2")];
+            s.modes.active = id.into();
+            s.modes.default_mode = id.into();
+            assert!(forget_missing_modes(&mut s, &modes, &unreadable), "{id}");
+            assert_eq!(s.modes.active, "", "{id}: the active mode goes back to Auto");
+            assert_eq!(s.modes.default_mode, "clean", "{id}: the default goes back to the one Navi ships with");
+            assert_eq!(s.hotkeys.mode_keys.iter().map(|k| k.mode.as_str()).collect::<Vec<_>>(), ["email"], "{id}: its key goes");
+        }
     }
 
     #[test]
