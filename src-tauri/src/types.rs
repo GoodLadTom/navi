@@ -600,11 +600,13 @@ pub struct SoundSettings {
     pub volume: f32,
     /// Cue name ("talk", "ramble", "stop", "done", "cancel", "error", "learn") -> path of a user WAV.
     pub custom: HashMap<String, String>,
+    /// Other apps' sound while you talk: "keep", "pause", "mute" or "both" (see media.rs).
+    pub while_talking: String,
 }
 
 impl Default for SoundSettings {
     fn default() -> Self {
-        Self { enabled: true, set: "hush".into(), volume: 0.7, custom: HashMap::new() }
+        Self { enabled: true, set: "hush".into(), volume: 0.7, custom: HashMap::new(), while_talking: "pause".into() }
     }
 }
 

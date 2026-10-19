@@ -10,6 +10,7 @@ pub mod ideas;
 pub mod insert;
 pub mod integrations;
 pub mod jobs;
+pub mod media;
 pub mod meeting;
 pub mod models;
 pub mod overlay;
@@ -216,6 +217,9 @@ fn startup_failure_text(e: &anyhow::Error) -> String {
 
 fn setup(handle: &AppHandle, started_hidden: bool) -> anyhow::Result<()> {
     let paths = paths::Paths::init(handle)?;
+    // Other apps' sound a crash left muted mid-take (media.rs).
+    let data_dir = paths.data.clone();
+    std::thread::spawn(move || media::recover(data_dir));
     let mut settings = settings::load(&paths);
     let db = Arc::new(store::Db::open(&paths.db)?);
     // Mode keys (and the active or default mode) left pointing at a mode that has since gone.

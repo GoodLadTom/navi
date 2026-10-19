@@ -26,7 +26,12 @@ shortcut, speak, release: the words appear in whatever app has focus, transcribe
    the cursor, selection) and picks a mode (the active mode if one is chosen, else from the app).
    After a short grace (110 to 180 ms) it plays the start cue (`sounds`: the chosen sound set from
    ui/sounds/sets) and shows the `overlay` pill, so a quick tap or a shortcut that merely starts
-   with the talk keys ends silently.
+   with the talk keys ends silently. At the same moment `media` pauses what's playing (Windows'
+   media sessions) or mutes other apps' audio sessions, as Settings > Sound > While you talk says
+   (Pause by default), and puts back only what it changed once the take stops recording. Muting
+   sets each session's mute flag and never its volume, Navi's own sounds are never muted, and
+   nothing changes during call notes. What it muted is kept in `media-muted.json` until it's
+   unmuted, so the next start can unmute it after a crash.
 3. On `TalkUp` (or, in hands-free, the next press of the talk keys or Enter), audio stops. The
    audio recorded while the start cue played (at most about 0.1 s: the cue's length, capped at
    160 ms, less its last 60 ms) is cut out so speaker bleed never becomes text; anything said
@@ -172,7 +177,7 @@ file but main.rs) describes it.
 | App setup, tray, shared state and types | lib.rs, main.rs, state.rs, types.rs, paths.rs, settings.rs |
 | Takes and the interface's commands | controller.rs, commands.rs |
 | Windows systems | hotkey.rs, insert.rs, overlay.rs, context.rs |
-| Audio and the speech engine | audio.rs, sounds.rs, engine.rs, models.rs |
+| Audio and the speech engine | audio.rs, sounds.rs, media.rs, engine.rs, models.rs |
 | Text | text/*.rs (pipeline, cleanup, britishise, spans, modes, voice, learn, ramble, agent, llm, cli_ai; testkit for tests), integrations.rs |
 | Calls, voice and screen | meeting.rs, ideas.rs, jobs.rs, screen.rs, watch.rs, wake.rs, speak.rs |
 | Updates | update.rs |

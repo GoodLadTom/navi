@@ -298,6 +298,7 @@ export async function render(root, { store, arg }) {
     h('div', { style: { margin: '6px 0 16px' } }, sounds.el),
     setRow('Sounds', 'Turn every cue off.', toggle(S().sounds.enabled, (v) => save((n) => { n.sounds.enabled = v; }))),
     setRow('Volume', null, vol),
+    setRow('While you talk', 'What happens to music and videos playing on this computer while Navi listens. Pause stops them and plays them again when you finish. Mute silences other apps and brings them back at the same volume. Nothing changes while Navi takes call notes.', seg([{ value: 'keep', label: 'Keep playing' }, { value: 'pause', label: 'Pause' }, { value: 'mute', label: 'Mute' }, { value: 'both', label: 'Both' }], S().sounds.whileTalking || 'pause', (v) => save((n) => { n.sounds.whileTalking = v; }))),
     setRow('Your own sounds', 'Use any WAV file for a cue. Only its first 3 seconds play. Built-in sounds are used for the rest.', btn('Choose a file…', { size: 'sm', icon: 'folder', onClick: async () => {
       const path = await pickFile({ filters: [{ name: 'WAV audio', extensions: ['wav'] }] });
       if (!path) return;

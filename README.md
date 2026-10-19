@@ -74,6 +74,11 @@ people with access can read it. Navi runs on Windows. A Mac version is planned
 Sound cues: eleven sets of soft, low sounds (Hush, Felt, Oak, Kalimba, Bubble, Bowl and more)
 made to be heard all day. Or use your own WAV files, or none at all.
 
+While you talk, Navi pauses music and videos and plays them again when you finish, so you can
+hear yourself. You can have it mute other apps instead (they come back at the same
+volume), do both, or leave everything playing (Settings > Sound > While you talk). Nothing
+changes while Navi takes call notes.
+
 ## Speech engine
 
 Navi starts a [whisper.cpp](https://github.com/ggml-org/whisper.cpp) server in the background and

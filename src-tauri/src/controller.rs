@@ -486,6 +486,7 @@ pub async fn start_from_wake(app: &Arc<App>, preroll: Vec<f32>) -> Result<Option
         seq
     };
     app.reveal_pill_window(hwnd);
+    crate::media::hold(app, seq);
     spawn_wake_finish(app.clone(), seq, preroll.len());
     spawn_mic_watch(app.clone(), seq);
     Ok(Some(seq))
@@ -553,6 +554,8 @@ fn announce_locked(app: &Arc<App>, rec: &mut Recording, settings: &Settings) -> 
     rec.cue_word = None;
     app.sounds.play(Cue::Talk, &settings.sounds);
     app.pill(PillState::Listening { kind: rec.kind.as_str().into(), mode_name: rec.mode.name.clone(), app_label: rec.ctx.app_label.clone() });
+    // Pause or mute other apps' sound until this take stops recording (Settings > Sound).
+    crate::media::hold(app, rec.seq);
     rec.ctx.hwnd
 }
 

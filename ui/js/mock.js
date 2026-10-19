@@ -270,7 +270,7 @@ const state = {
   settings: {
     version: 1, onboarded: true, userName: 'Alex',
     hotkeys: { talk: ['Ctrl', 'Win'], rambleKey: 'Space', doubleTapHandsFree: true, cancelKey: 'Escape', modeKeys: [{ mode: 'email', keys: ['F4'] }] },
-    sounds: { enabled: true, set: 'hush', volume: 0.7, custom: {} },
+    sounds: { enabled: true, set: 'hush', volume: 0.7, custom: {}, whileTalking: 'pause' },
     mic: { device: null, trimCue: true },
     engine: { model: 'large-v3-turbo', language: 'en', useGpu: true, serverPath: null, modelPath: null, vad: true },
     // Claude Code on the Claude plan the sample user already has: no API key (text/cli_ai.rs).
