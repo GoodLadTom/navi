@@ -5,7 +5,10 @@
    The second colour is a deep sea blue (recording dots, warnings, delete), with no orange or
    brown anywhere.
    The few extra tones are mixes of those tokens, never new hues. Surfaces stay light; separation
-   comes from small tonal steps and quiet elevation, not dark panels or big blurred shadows. */
+   comes from small tonal steps and quiet elevation, not dark panels or big blurred shadows.
+   Lilac is the first of six colours (Settings > General > Colour, or "Navi, turn gold"): the
+   others, at the end of this file, follow the same rules in light and dark. theme.js sets
+   data-colour on the root of every window. */
 
 @font-face { font-family: "Poppins"; font-weight: 300; font-style: normal; font-display: block; src: url("../fonts/Poppins-Light.ttf") format("truetype"); }
 @font-face { font-family: "Poppins"; font-weight: 400; font-style: normal; font-display: block; src: url("../fonts/Poppins-Regular.ttf") format("truetype"); }
@@ -32,6 +35,22 @@
   --blue-ink: #1F466F;
   --slate: #2A2340;
   --paper: #FBFAFD;
+
+  /* The same in light and dark: the logo's tile and the firefly on it (colours.rs keeps the tile
+     and mark for the tray icon), the bubble's deeper accent while it listens, and the firefly that
+     flies in, which is over the desktop rather than the app. */
+  --tile: #8064D6;
+  --tile-mark: #FFFFFF;
+  --live-accent: #8A6CD6;
+  --live-ink: #4E3391;
+  --live-wash: #F1EBFD;
+  --ff-halo: #EEE6FF;
+  --ff-halo-edge: #E6DBFF;
+  --ff-body: #F6F1FF;
+  --ff-body-edge: #BFA8F0;
+  --ff-wing: #F2EBFF;
+  --ff-wing-edge: #C2ABF1;
+  --ff-line: #A68CE6;
 
   /* Mixes of the tokens above */
   --card: color-mix(in oklab, var(--paper) 64%, var(--surface));
@@ -98,4 +117,106 @@
   --e2: 0 1px 2px rgba(0, 0, 0, .3), 0 6px 16px rgba(0, 0, 0, .35);
   --e3: 0 2px 5px rgba(0, 0, 0, .35), 0 14px 34px rgba(0, 0, 0, .45);
   --kbd-shine: rgba(255, 255, 255, .07);
+}
+
+/* The other colours. Each sets every colour token for light, then again for dark, with the
+   neutrals leaning slightly towards its hue. The tile, live and firefly tokens set for light hold
+   in dark too. The sea blue stays the warning colour except in Sky, where it would read as the
+   accent, so warnings there take a deeper ultramarine. The mixes above follow by themselves. */
+
+/* Gold: a clear yellow gold, never amber. A gold bright enough to look like gold can't reach 3:1
+   on the light paper, so switches and dots there take a deeper gold, and the bright one fills the
+   logo, the firefly and the washes. Dark mode can use the bright gold throughout. */
+:root[data-colour="gold"] {
+  --surface: #F3F3F1; --surface-raised: #EBEAE6; --surface-sunk: #DADAD3; --paper: #FBFBFA;
+  --ink: #24231C; --ink-quiet: #4E4D44; --ink-faint: #616056; --slate: #2A291F;
+  --rule: #DEDED8; --rule-strong: #C0BFB6;
+  --accent: #A28E03; --accent-ink: #605406; --accent-soft: #F7EDB3; --accent-light: #EDD14D;
+  /* The deep gold faded on the paper turns khaki, so rings and fills fade the bright one. */
+  --accent-tint: color-mix(in oklab, var(--accent-light) 35%, transparent);
+  --tile: #ECC825; --tile-mark: #2A2715;
+  --live-accent: #A28C01; --live-ink: #594D04; --live-wash: #FAF2C4;
+  --ff-halo: #FAF0BA; --ff-halo-edge: #F9E99A; --ff-body: #FDF8D6; --ff-body-edge: #EED04C;
+  --ff-wing: #FBF5CF; --ff-wing-edge: #F0D45D; --ff-line: #DDBC28;
+}
+:root[data-colour="gold"][data-theme="dark"] {
+  --surface: #141310; --surface-raised: #1B1B17; --surface-sunk: #0F0F0C; --paper: #1C1C17;
+  --ink: #EBEBE7; --ink-quiet: #B1B1A9; --ink-faint: #94938B; --slate: #0F0F0C;
+  --rule: #2A2A24; --rule-strong: #3B3A32;
+  --accent: #EAC932; --accent-ink: #F2DC70; --accent-soft: #342E0D; --accent-light: #EDD14D;
+  --accent-tint: color-mix(in oklab, var(--accent) 12%, transparent);
+}
+
+/* Teal: a glassy teal green. */
+:root[data-colour="teal"] {
+  --surface: #EFF4F4; --surface-raised: #E2EDEC; --surface-sunk: #CDDDDC; --paper: #F9FBFB;
+  --ink: #112726; --ink-quiet: #385351; --ink-faint: #496663; --slate: #0C2F2D;
+  --rule: #D2E1DF; --rule-strong: #ACC5C3;
+  --accent: #16A090; --accent-ink: #00625A; --accent-soft: #C8F2EA; --accent-light: #72DAC9;
+  --tile: #01877D; --tile-mark: #FFFFFF;
+  --live-accent: #089487; --live-ink: #015651; --live-wash: #DAF6F0;
+  --ff-halo: #D3F8EF; --ff-halo-edge: #BAF2E6; --ff-body: #E4FBF6; --ff-body-edge: #6BD3C2;
+  --ff-wing: #DDF9F2; --ff-wing-edge: #75D5C5; --ff-line: #3AB8A9;
+}
+:root[data-colour="teal"][data-theme="dark"] {
+  --surface: #0B1515; --surface-raised: #101E1D; --surface-sunk: #081010; --paper: #101F1E;
+  --ink: #E2EDEC; --ink-quiet: #A0B6B4; --ink-faint: #7F9997; --slate: #081010;
+  --rule: #1C2D2C; --rule-strong: #25403E;
+  --accent: #52CFBA; --accent-ink: #90E4D3; --accent-soft: #09322F; --accent-light: #72DAC9;
+}
+
+/* Sky: a clear sky blue, with warnings in ultramarine. */
+:root[data-colour="sky"] {
+  --surface: #EFF4F7; --surface-raised: #E3ECF1; --surface-sunk: #CEDCE5; --paper: #F9FBFD;
+  --ink: #14252F; --ink-quiet: #3A505D; --ink-faint: #4C6371; --slate: #112C3B;
+  --rule: #D3DFE7; --rule-strong: #AEC2CF;
+  --accent: #1998CB; --accent-ink: #005B88; --accent-soft: #CEEEFE; --accent-light: #85CFF3;
+  --blue: #2C4999; --blue-ink: #203779;
+  --tile: #0383BD; --tile-mark: #FFFFFF;
+  --live-accent: #068DC6; --live-ink: #014F7A; --live-wash: #DEF2FC;
+  --ff-halo: #DBF3FF; --ff-halo-edge: #C4ECFF; --ff-body: #E9F8FF; --ff-body-edge: #7EC9ED;
+  --ff-wing: #E2F5FF; --ff-wing-edge: #86CCEE; --ff-line: #4FADDA;
+}
+:root[data-colour="sky"][data-theme="dark"] {
+  --surface: #0C1419; --surface-raised: #111C23; --surface-sunk: #091014; --paper: #121D25;
+  --ink: #E2ECF2; --ink-quiet: #A1B4BF; --ink-faint: #8197A4; --slate: #091014;
+  --rule: #1D2B34; --rule-strong: #273D4A;
+  --accent: #64C4F0; --accent-ink: #9EDBF9; --accent-soft: #0F2F41; --accent-light: #85CFF3;
+  --blue: #6F8FDC; --blue-ink: #A6BDF2;
+}
+
+/* Rose: a soft rose pink, kept on the pink side so it never turns coral. */
+:root[data-colour="rose"] {
+  --surface: #F5F2F3; --surface-raised: #EFE8EA; --surface-sunk: #E0D6DA; --paper: #FCFAFB;
+  --ink: #2B1F23; --ink-quiet: #57484D; --ink-faint: #6A5A60; --slate: #332329;
+  --rule: #E3DBDE; --rule-strong: #C9BABF;
+  --accent: #D76590; --accent-ink: #8F2E54; --accent-soft: #FFDEE9; --accent-light: #F6ABC6;
+  --tile: #C64A7D; --tile-mark: #FFFFFF;
+  --live-accent: #CD5484; --live-ink: #822149; --live-wash: #FFEAF1;
+  --ff-halo: #FEE5EE; --ff-halo-edge: #FFD6E4; --ff-body: #FFF1F6; --ff-body-edge: #EFA0BD;
+  --ff-wing: #FFEAF1; --ff-wing-edge: #EEA3BE; --ff-line: #DE7A9F;
+}
+:root[data-colour="rose"][data-theme="dark"] {
+  --surface: #171113; --surface-raised: #20191B; --surface-sunk: #120D0F; --paper: #21191C;
+  --ink: #EFE8EB; --ink-quiet: #B9ADB1; --ink-faint: #9D8F94; --slate: #120D0F;
+  --rule: #30262A; --rule-strong: #43363A;
+  --accent: #F193B7; --accent-ink: #FABDD3; --accent-soft: #401E29; --accent-light: #F6ABC6;
+}
+
+/* Graphite: quiet greys with no colour to speak of; the sea blue is the only hue left. */
+:root[data-colour="graphite"] {
+  --surface: #F2F3F4; --surface-raised: #E9EAEC; --surface-sunk: #D7D9DD; --paper: #FAFBFB;
+  --ink: #212327; --ink-quiet: #4A4D52; --ink-faint: #5C5F65; --slate: #26292E;
+  --rule: #DCDDE0; --rule-strong: #BCBFC4;
+  --accent: #737984; --accent-ink: #474D58; --accent-soft: #E1E3E7; --accent-light: #B9BEC6;
+  --tile: #5D646F; --tile-mark: #FFFFFF;
+  --live-accent: #6B727C; --live-ink: #414853; --live-wash: #EBEDF0;
+  --ff-halo: #ECEFF3; --ff-halo-edge: #E1E5EB; --ff-body: #F3F5F8; --ff-body-edge: #B8BEC8;
+  --ff-wing: #F0F2F5; --ff-wing-edge: #BBC1CB; --ff-line: #979FAB;
+}
+:root[data-colour="graphite"][data-theme="dark"] {
+  --surface: #121315; --surface-raised: #191B1D; --surface-sunk: #0E0F10; --paper: #1A1C1F;
+  --ink: #E9EAED; --ink-quiet: #AEB1B5; --ink-faint: #909398; --slate: #0E0F10;
+  --rule: #27292D; --rule-strong: #373A3F;
+  --accent: #ABB1BC; --accent-ink: #CDD1D8; --accent-soft: #2B2E32; --accent-light: #B9BEC6;
 }

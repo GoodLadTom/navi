@@ -1,27 +1,32 @@
 // The listening companion: Navi's own firefly (chosen on 15 Oct 2026). A small bright body and
-// one pair of rounded wings that beat together, glowing in the Mist lilac. Inline SVG keeps the wings
-// animatable.
+// one pair of rounded wings that beat together, glowing in Navi's colour: the --ff-* tokens in
+// tokens.css (lilac to start with), so it changes with Settings > General > Colour. Inline SVG
+// keeps the wings animatable.
 let nextId = 0;
+
+// A gradient stop or a line in one of the --ff-* colours.
+const stop = (token) => `style="stop-color: var(--ff-${token})"`;
+const LINE = 'style="stroke: var(--ff-line)"';
 
 export function createFirefly() {
   const id = `navi-firefly-${++nextId}`;
   const el = document.createElement('div');
   el.className = 'navi-firefly';
   el.setAttribute('aria-hidden', 'true');
-  const wing = `<path d="M124 114C112 96 92 78 74 76C62 75 56 84 62 93C72 108 96 118 118 122Q127 121 124 114Z" fill="url(#${id}-wing)" stroke="#A68CE6" stroke-opacity=".75" stroke-width="1.4"/><path d="M119 116C104 104 87 93 69 86" fill="none" stroke="#A68CE6" stroke-opacity=".6" stroke-width="1.1" stroke-linecap="round"/>`;
+  const wing = `<path d="M124 114C112 96 92 78 74 76C62 75 56 84 62 93C72 108 96 118 118 122Q127 121 124 114Z" fill="url(#${id}-wing)" ${LINE} stroke-opacity=".75" stroke-width="1.4"/><path d="M119 116C104 104 87 93 69 86" fill="none" ${LINE} stroke-opacity=".6" stroke-width="1.1" stroke-linecap="round"/>`;
   el.innerHTML = `<div class="ff-flight"><div class="ff-hover">
     <svg viewBox="0 0 256 256" focusable="false" aria-hidden="true">
       <defs>
-        <radialGradient id="${id}-halo"><stop offset="0" stop-color="#EEE6FF" stop-opacity=".6"/><stop offset=".45" stop-color="#E6DBFF" stop-opacity=".24"/><stop offset="1" stop-color="#E6DBFF" stop-opacity="0"/></radialGradient>
+        <radialGradient id="${id}-halo"><stop offset="0" ${stop('halo')} stop-opacity=".6"/><stop offset=".45" ${stop('halo-edge')} stop-opacity=".24"/><stop offset="1" ${stop('halo-edge')} stop-opacity="0"/></radialGradient>
         <radialGradient id="${id}-core"><stop offset="0" stop-color="#FFFFFF" stop-opacity=".78"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/></radialGradient>
-        <radialGradient id="${id}-body" cx="37%" cy="31%" r="79%"><stop offset="0" stop-color="#FFFFFF"/><stop offset=".45" stop-color="#F6F1FF"/><stop offset="1" stop-color="#BFA8F0"/></radialGradient>
-        <linearGradient id="${id}-wing" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFFFFF" stop-opacity=".98"/><stop offset=".55" stop-color="#F2EBFF" stop-opacity=".96"/><stop offset="1" stop-color="#C2ABF1" stop-opacity=".96"/></linearGradient>
+        <radialGradient id="${id}-body" cx="37%" cy="31%" r="79%"><stop offset="0" stop-color="#FFFFFF"/><stop offset=".45" ${stop('body')}/><stop offset="1" ${stop('body-edge')}/></radialGradient>
+        <linearGradient id="${id}-wing" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFFFFF" stop-opacity=".98"/><stop offset=".55" ${stop('wing')} stop-opacity=".96"/><stop offset="1" ${stop('wing-edge')} stop-opacity=".96"/></linearGradient>
       </defs>
       <circle class="ff-glow" cx="134" cy="122" r="104" fill="url(#${id}-halo)"/>
       <circle cx="134" cy="122" r="46" fill="url(#${id}-core)"/>
       <g class="ff-wing">${wing}</g>
       <g transform="translate(268 0) scale(-1 1)"><g class="ff-wing">${wing}</g></g>
-      <circle cx="134" cy="122" r="24" fill="url(#${id}-body)" stroke="#A68CE6" stroke-opacity=".8" stroke-width="1.6"/>
+      <circle cx="134" cy="122" r="24" fill="url(#${id}-body)" ${LINE} stroke-opacity=".8" stroke-width="1.6"/>
     </svg>
   </div></div>`;
   return el;

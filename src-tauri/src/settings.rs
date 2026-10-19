@@ -146,6 +146,22 @@ mod tests {
     }
 
     #[test]
+    fn a_file_from_before_colours_loads_as_lilac() {
+        let paths = Paths::for_tests("settings-colour");
+        std::fs::write(&paths.settings, r#"{ "onboarded": true, "general": { "theme": "dark", "showFirefly": false } }"#).unwrap();
+        let s = load(&paths);
+        assert_eq!(s.general.colour, "lilac");
+        assert_eq!((s.general.theme.as_str(), s.general.show_firefly), ("dark", false), "the rest of General is kept");
+        assert_eq!(s.voice_commands.phrases("colour"), ["turn", "change to", "switch to", "make it"], "the colour command gets its phrases");
+        // A colour picked since is kept; one Navi doesn't have still loads, and shows as Lilac.
+        save(&paths, &Settings { general: crate::types::GeneralSettings { colour: "gold".into(), ..Default::default() }, ..Default::default() }).unwrap();
+        assert_eq!(load(&paths).general.colour, "gold");
+        std::fs::write(&paths.settings, r#"{ "general": { "colour": "orange" } }"#).unwrap();
+        assert_eq!(crate::colours::find(&load(&paths).general.colour).id, "lilac");
+        let _ = std::fs::remove_dir_all(&paths.data);
+    }
+
+    #[test]
     fn a_file_missing_a_command_gets_it_back_on_load() {
         let paths = Paths::for_tests("settings-complete");
         let text = r#"{ "voiceCommands": { "enabled": true, "commands": [{ "action": "wake", "phrases": ["Hey"] }, { "action": "finish", "phrases": [] }] } }"#;

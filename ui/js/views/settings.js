@@ -3,6 +3,7 @@ import { h, ico, btn, chip, toggle, select, seg, setRow, field, keycaps, toast, 
 import { prettyModel } from '../app.js';
 import { shortcutPicker } from '../shortcut.js';
 import { soundPicker, playCue } from '../soundpicker.js';
+import { COLOURS, colourId } from '../theme.js';
 
 const SECTIONS = [
   ['general', 'General'], ['shortcuts', 'Shortcuts'], ['commands', 'Voice commands'], ['sound', 'Sound'], ['mic', 'Microphone'], ['engine', 'Speech engine'],
@@ -74,8 +75,22 @@ export async function render(root, { store, arg }) {
   // ---------------------------------------------------------------- general
   const nameInput = h('input', { class: 'input', style: { width: '220px' }, value: S().userName || '' });
   nameInput.addEventListener('change', () => save((n) => { n.userName = nameInput.value.trim(); }));
+  // Navi's colour. "Navi, turn gold" changes it from outside this page, so the swatches follow.
+  const colourPick = h('div', { class: 'swatches', role: 'radiogroup', 'aria-label': 'Colour' });
+  let colourDrawn = '';
+  const drawColour = () => {
+    colourDrawn = colourId(S().general.colour);
+    colourPick.replaceChildren(...COLOURS.map((c) => h('button', {
+      class: `swatch ${c.id === colourDrawn ? 'on' : ''}`, role: 'radio', 'aria-checked': String(c.id === colourDrawn),
+      onClick: async () => { if (c.id !== colourId(S().general.colour)) await save((n) => { n.general.colour = c.id; }); drawColour(); },
+    }, h('i', { style: { background: c.tile } }), c.name)));
+  };
+  drawColour();
+  cleanups.push(store.on(() => { if (colourId(S().general.colour) !== colourDrawn) drawColour(); }));
+  const sayColour = vcPhrases(S().voiceCommands, 'colour')[0] ? `${sayFor(S().voiceCommands, 'colour')} gold` : null;
   section('general', 'General', null,
     setRow('Appearance', 'Light, dark, or the same as Windows.', seg([{ value: 'light', label: 'Light' }, { value: 'dark', label: 'Dark' }, { value: 'system', label: 'Match Windows' }], S().general.theme || 'light', (v) => save((n) => { n.general.theme = v; }))),
+    setRow('Colour', ['Navi’s colour in this window, the bubble, the firefly and the tray icon.', sayColour ? [' Or say ', h('span', { style: { whiteSpace: 'nowrap' } }, `“${sayColour}”`), '.'] : null], colourPick),
     setRow('Your name', 'For the greeting on the home page, and so your AI spells your name right.', nameInput),
     setRow('Start Navi when Windows starts', 'It sits in the tray, ready for your shortcut.', toggle(S().general.launchAtLogin, (v) => save((n) => { n.general.launchAtLogin = v; }))),
     setRow('Open in the tray', 'When Windows starts Navi, it stays in the tray without opening this window. Opening Navi yourself always shows it.', toggle(S().general.startMinimised, (v) => save((n) => { n.general.startMinimised = v; }))),
@@ -222,7 +237,7 @@ export async function render(root, { store, arg }) {
     });
     vcInputs[action] = input;
     const say = !first ? h('div', { class: 'vc-off' }, 'Off. Add a phrase to use it.')
-      : h('div', { class: 'vc-say' }, action === 'wake' ? `Say “${first}” and keep talking` : IN_TAKE.includes(action) ? `Say “${first}” on its own` : `Say “${sayFor(vc, action)}”`);
+      : h('div', { class: 'vc-say' }, action === 'wake' ? `Say “${first}” and keep talking` : IN_TAKE.includes(action) ? `Say “${first}” on its own` : `Say “${sayFor(vc, action)}${action === 'colour' ? ' gold' : ''}”`);
     const cancel = vcPhrases(vc, 'cancel')[0];
     const warns = action === 'wake' ? phrases.filter(commonWake).map((p) => h('div', { class: 'vc-warn' },
       `“${p}” is short and common, so Navi may wake when you didn’t mean it to. ${cancel ? `Say “${cancel}” or press Esc to send it away.` : 'Press Esc to send it away.'}`)) : [];
@@ -249,7 +264,8 @@ export async function render(root, { store, arg }) {
         vcRow(vc, 'watch_on', 'Watch my screen', 'Looks at your screen every few seconds, then writes up what you did.'),
         vcRow(vc, 'watch_off', 'Stop watching', 'Stops watching and writes it up on the Notes page.'),
         vcRow(vc, 'notes_on', 'Take notes', 'Starts call notes, like Take notes now on the Notes page.'),
-        vcRow(vc, 'notes_off', 'Stop taking notes', 'Finishes the notes and writes them up. Works during a call.')),
+        vcRow(vc, 'notes_off', 'Stop taking notes', 'Finishes the notes and writes them up. Works during a call.'),
+        vcRow(vc, 'colour', 'Change colour', `Say the phrase, then a colour: ${COLOURS.slice(0, -1).map((c) => c.name).join(', ')} or ${COLOURS[COLOURS.length - 1].name}. Navi changes colour at once.`)),
       vcGroup('While you’re dictating', 'Say it on its own, with a short pause before and after, so “don’t worry about the deadline” is still typed.',
         vcRow(vc, 'cancel', 'Cancel', 'Throws the take away, like Esc. If Navi gets it wrong, the recording is kept in History so you can re-run it. With History off, a long take or a ramble asks you to say it twice.'),
         vcRow(vc, 'finish', 'Finish', 'Stops listening and types what you said, without the phrase.')));

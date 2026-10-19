@@ -7,7 +7,9 @@
 //!   floor, frame by frame).
 //! * `Matcher`: what the words mean. Whisper spells the name many ways ("Navi", "Navie", "Naavi",
 //!   "Navy"), so wake phrases and commands are matched token by token, with fuzzy spelling, and
-//!   with no punctuation rule for the name at the start of an utterance.
+//!   with no punctuation rule for the name at the start of an utterance. A colour phrase ("turn")
+//!   is a command only with one of the colours' words after it ("turn gold"; colours.rs), heard
+//!   exactly.
 //! * `IdleListener` (wake.rs, no take running): sliding checks every 0.3 s of new speech over the
 //!   first 3 s of each utterance, one at a time, the first with the wake words as Whisper's prompt
 //!   and the rest without. Only a check that heard the whole utterance gives it up on words that
@@ -22,6 +24,7 @@
 //!
 //! Privacy: what the listeners hear is never logged or kept. Only which command fired is logged.
 
+use crate::colours;
 use crate::text::cleanup;
 use crate::types::{phrase_key, VoiceCommandSettings, PHRASE_FOLDS as FOLDS};
 use std::collections::VecDeque;
@@ -86,10 +89,16 @@ pub enum Action {
     NotesOff,
     Cancel,
     Finish,
+    /// "Navi, turn gold": the id of the colour heard (colours.rs). In the lists below, and in the
+    /// `allowed` lists Matcher takes, ANY_COLOUR stands for all of them (Action::is_in).
+    Colour(&'static str),
 }
 
+/// The colour command, whatever the colour, in lists of actions.
+pub const ANY_COLOUR: Action = Action::Colour("");
+
 /// Said straight after the wake word.
-pub const AFTER_WAKE: &[Action] = &[Action::ScratchThat, Action::WatchOn, Action::WatchOff, Action::NotesOn, Action::NotesOff];
+pub const AFTER_WAKE: &[Action] = &[Action::ScratchThat, Action::WatchOn, Action::WatchOff, Action::NotesOn, Action::NotesOff, ANY_COLOUR];
 /// Said on their own inside a take.
 pub const IN_TAKE: &[Action] = &[Action::Cancel, Action::Finish];
 /// All Navi listens for while it takes call notes.
@@ -107,28 +116,35 @@ impl Action {
             Action::NotesOff => "notes_off",
             Action::Cancel => "cancel",
             Action::Finish => "finish",
+            Action::Colour(_) => "colour",
         }
     }
 
+    /// ANY_COLOUR for "colour".
     pub fn from_id(id: &str) -> Option<Action> {
         ALL_ACTIONS.iter().copied().find(|a| a.id() == id.trim())
     }
 
+    /// Whether this action is one of `list`, any colour counting as the colour command.
+    pub fn is_in(self, list: &[Action]) -> bool {
+        list.iter().any(|a| a.id() == self.id())
+    }
+
     pub fn after_wake(self) -> bool {
-        AFTER_WAKE.contains(&self)
+        self.is_in(AFTER_WAKE)
     }
 
     pub fn in_take(self) -> bool {
-        IN_TAKE.contains(&self)
+        self.is_in(IN_TAKE)
     }
 
     pub fn in_call(self) -> bool {
-        IN_CALL.contains(&self)
+        self.is_in(IN_CALL)
     }
 }
 
 /// In types::VOICE_ACTIONS order, which is also the order ties are settled in.
-const ALL_ACTIONS: &[Action] = &[Action::Wake, Action::ScratchThat, Action::WatchOn, Action::WatchOff, Action::NotesOn, Action::NotesOff, Action::Cancel, Action::Finish];
+const ALL_ACTIONS: &[Action] = &[Action::Wake, Action::ScratchThat, Action::WatchOn, Action::WatchOff, Action::NotesOn, Action::NotesOff, Action::Cancel, Action::Finish, ANY_COLOUR];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ListenMode {
@@ -474,9 +490,10 @@ fn tok_eq(phrase: &str, heard: &str) -> Option<bool> {
         return Some(false);
     }
     // Fuzzy, for longer words only, and never a longer word that merely starts with the phrase
-    // word: "computers" is not "computer", "watches" is not "watch".
+    // word: "computers" is not "computer", "watches" is not "watch". Never a colour's name either:
+    // "Greek" is not "green", "graphic" is not "graphite".
     let len = phrase.chars().count();
-    if len < 5 || heard.chars().next() != phrase.chars().next() || heard.starts_with(phrase) {
+    if len < 5 || heard.chars().next() != phrase.chars().next() || heard.starts_with(phrase) || colours::by_word(phrase).is_some() {
         return None;
     }
     let max = if len >= 8 { 2 } else { 1 };
@@ -590,7 +607,18 @@ impl Matcher {
         for &action in ALL_ACTIONS.iter().filter(|a| **a != Action::Wake) {
             for p in vc.phrases(action.id()) {
                 let keys = keys_of(&p);
-                if !keys.is_empty() {
+                if keys.is_empty() {
+                    continue;
+                }
+                if action == ANY_COLOUR {
+                    // A colour phrase is said with a colour after it: "turn" becomes "turn gold",
+                    // "turn yellow", "turn teal" and so on, each a command with its colour.
+                    for c in colours::COLOURS {
+                        for w in c.words {
+                            commands.push((Action::Colour(c.id), [keys.clone(), vec![w.to_string()]].concat()));
+                        }
+                    }
+                } else {
                     commands.push((action, keys));
                 }
             }
@@ -673,7 +701,7 @@ impl Matcher {
         }
         let trimmed = strip_fillers(&keys, false);
         let candidates: Vec<&[String]> = if trimmed.len() == keys.len() { vec![&keys[..]] } else { vec![&keys[..], trimmed] };
-        let allowed_phrases = || self.commands.iter().filter(move |(a, _)| allowed.contains(a));
+        let allowed_phrases = || self.commands.iter().filter(move |(a, _)| a.is_in(allowed));
         for cand in &candidates {
             if let Some((a, _)) = allowed_phrases().find(|(_, p)| p.as_slice() == *cand) {
                 return Some(*a);
@@ -700,7 +728,7 @@ impl Matcher {
         }
         let cand = strip_fillers(&keys, true);
         let n = cand.len();
-        self.commands.iter().filter(|(a, _)| allowed.contains(a)).any(|(_, p)| {
+        self.commands.iter().filter(|(a, _)| a.is_in(allowed)).any(|(_, p)| {
             n <= p.len()
                 && cand[..n - 1].iter().zip(p).all(|(h, w)| tok_eq(w, h).is_some())
                 && ((n < p.len() && tok_eq(&p[n - 1], &cand[n - 1]).is_some()) || is_partial(&p[n - 1], &cand[n - 1]))
@@ -718,7 +746,7 @@ impl Matcher {
         if keys.is_empty() {
             return None;
         }
-        let allowed_phrases = || self.commands.iter().filter(move |(a, _)| allowed.contains(a));
+        let allowed_phrases = || self.commands.iter().filter(move |(a, _)| a.is_in(allowed));
         if let Some((a, _)) = allowed_phrases().find(|(_, p)| *p == keys) {
             return Some(*a);
         }
@@ -737,7 +765,7 @@ impl Matcher {
         let Some((last, before)) = keys.split_last() else { return false };
         let before = strip_fillers(before, true);
         let n = before.len();
-        self.commands.iter().filter(|(a, _)| allowed.contains(a)).any(|(_, p)| {
+        self.commands.iter().filter(|(a, _)| a.is_in(allowed)).any(|(_, p)| {
             n < p.len() && before.iter().zip(p).all(|(h, w)| tok_eq(w, h).is_some()) && last.len() > p[n].len() && last.starts_with(p[n].as_str())
         })
     }
@@ -1786,6 +1814,88 @@ mod tests {
     }
 
     #[test]
+    fn turn_gold() {
+        // The launch film says "Navi, turn gold". Every way to say it gives the colour heard.
+        let m = m();
+        let n = ListenMode::Normal;
+        for (t, id) in [
+            ("Navi, turn gold", "gold"),
+            ("Navi, turn gold.", "gold"),
+            ("Navi turn gold", "gold"),
+            ("Hey Navi, change to teal.", "teal"),
+            ("Navi, switch to rose", "rose"),
+            ("Navi, make it sky.", "sky"),
+            ("Navi, turn graphite please", "graphite"),
+            ("Navi, turn lilac", "lilac"),
+            ("Navi, make it yellow", "gold"),
+            ("Navi, can you turn pink", "rose"),
+            ("Navi. Navi, turn gold.", "gold"),
+        ] {
+            assert_eq!(ended(&m, t, n), Verdict::Command(Action::Colour(id)), "{t}");
+        }
+        // Heard while still talking, "Navi, turn" may yet be "Navi, turn gold"; the colour runs once
+        // 200 ms of quiet follow it.
+        assert_eq!(sliding(&m, "Navi, turn", n, 0, true), Verdict::Wait);
+        assert_eq!(sliding(&m, "Navi, turn go", n, 0, true), Verdict::Wait);
+        assert_eq!(sliding(&m, "Navi, turn gold", n, 5, true), Verdict::Wait);
+        assert_eq!(sliding(&m, "Navi, turn gold", n, QUIET_FOR_COMMAND, true), Verdict::Command(Action::Colour("gold")));
+        // Said straight after the wake word, never alone in a take or on a call.
+        assert_eq!(m.match_command("Turn gold.", AFTER_WAKE), Some(Action::Colour("gold")));
+        let gold = Action::Colour("gold");
+        assert!(gold.after_wake() && !gold.in_take() && !gold.in_call());
+        assert_eq!(gold.id(), "colour");
+        assert_eq!(Action::from_id("colour"), Some(ANY_COLOUR));
+        // Phrases from Settings: a colour after each.
+        let mut vc = VoiceCommandSettings::default();
+        vc.set_phrases("colour", &["go"]);
+        let go = Matcher::new(&vc);
+        assert_eq!(ended(&go, "Navi, go gold", n), Verdict::Command(Action::Colour("gold")));
+        assert_eq!(ended(&go, "Navi, turn gold", n), Verdict::Wake, "the old phrase is dictation now");
+        vc.set_phrases("colour", &[]);
+        assert_eq!(ended(&Matcher::new(&vc), "Navi, turn gold", n), Verdict::Wake, "turned off");
+    }
+
+    #[test]
+    fn an_unknown_colour_changes_nothing() {
+        // Not a colour Navi has: the words are dictation, as anything else after the wake word.
+        let m = m();
+        let n = ListenMode::Normal;
+        for t in ["Navi, turn orange", "Navi, make it brown", "Navi, switch to purple rain", "Navi, turn"] {
+            assert_eq!(ended(&m, t, n), Verdict::Wake, "{t}");
+            assert_eq!(m.match_command(&m.strip_wake(t).unwrap(), AFTER_WAKE), None, "{t}");
+        }
+        // A colour's name is heard exactly: "make it Greek" is never green.
+        assert_eq!(m.match_command("make it greek", AFTER_WAKE), None);
+        assert_eq!(m.match_command("make it graphic", AFTER_WAKE), None);
+        assert_eq!(ended(&m, "Navi, make it shorter", n), Verdict::Wake);
+        // A colour saved by hand that Navi doesn't have shows as Lilac.
+        assert_eq!(colours::find("orange").id, "lilac");
+    }
+
+    #[test]
+    fn dictation_with_gold_in_it_never_changes_the_colour() {
+        let m = m();
+        for t in [
+            "Turn gold.",
+            "The gold price is up again",
+            "We should turn gold into cash",
+            "Navi, the gold price is up again",
+            "Navi, turn gold into cash",
+            "Navi turns gold in the film",
+            "Navi, gold",
+            "Gold",
+        ] {
+            assert!(!matches!(ended(&m, t, ListenMode::Normal), Verdict::Command(_)), "{t}");
+        }
+        // Inside a take only cancel and finish count, and on a call only the call's commands.
+        assert_eq!(m.match_in_take("Turn gold."), None);
+        assert_eq!(m.match_in_take("Navi, turn gold."), None);
+        assert_eq!(ended(&m, "Navi, turn gold", ListenMode::Call), Verdict::Ignore);
+        // Not mistaken for Whisper reading out a list of commands.
+        assert!(!m.is_echo("Navi, turn gold.") && !m.is_echo("Navi, switch to teal."));
+    }
+
+    #[test]
     fn call_mode() {
         let m = m();
         assert_eq!(ended(&m, "Navi, stop taking notes", ListenMode::Call), Verdict::Command(Action::NotesOff));
@@ -2428,6 +2538,34 @@ mod tests {
         ring.push(&quiet(0.3));
         l.advance(&ring);
         assert!(matches!(l.on_result(&checks[0], "Navi. Stop taking notes.", &m, ring.end()), Some(TakeAction::Command { action: Action::NotesOff, .. })));
+    }
+
+    #[test]
+    fn a_colour_said_after_a_pause_ends_the_take_and_changes_colour() {
+        // "Navi" [pause] "turn gold": the take the wake word started gives way to the colour.
+        let m = m();
+        let preroll = (RATE * 4 / 5) as u64;
+        let mut audio = quiet(0.2);
+        audio.extend(tone(0.35, 0.2)); // "Navi", inside the preroll
+        audio.extend(quiet(0.7));
+        audio.extend(tone(0.6, 0.2)); // "turn gold"
+        audio.extend(quiet(0.35));
+        for said in ["Navi. Turn gold.", "Turn gold."] {
+            let (mut ring, mut l) = (Ring::new(), TakeListener::new(true, preroll));
+            l.arm(0);
+            let c = take_feed(&mut l, &mut ring, &audio)[0];
+            ring.push(&quiet(0.3));
+            l.advance(&ring);
+            assert_eq!(l.on_result(&c, said, &m, ring.end()), Some(TakeAction::Command { action: Action::Colour("gold"), heard: said.into() }), "{said}");
+        }
+        // Later in a take it is dictation: only cancel and finish are listened for there.
+        let (mut ring, mut l) = (Ring::new(), TakeListener::new(false, 0));
+        l.arm(0);
+        let mut audio = quiet(0.3);
+        audio.extend(tone(0.6, 0.2));
+        audio.extend(quiet(0.6));
+        let c = take_feed(&mut l, &mut ring, &audio)[0];
+        assert_eq!(l.on_result(&c, "Turn gold.", &m, ring.end()), None);
     }
 
     #[test]

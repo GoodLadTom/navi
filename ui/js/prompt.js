@@ -159,7 +159,7 @@ function showLive(m) {
   else liveSub.removeAttribute('title');
 }
 
-const followTheme = () => invoke('get_settings').then((s) => applyTheme(s?.general?.theme)).catch(() => {});
+const followTheme = () => invoke('get_settings').then((s) => applyTheme(s?.general?.theme, s?.general?.colour)).catch(() => {});
 followTheme();
 listen('settings-changed', followTheme);
 

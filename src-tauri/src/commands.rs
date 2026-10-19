@@ -94,9 +94,12 @@ pub async fn save_settings(app: State<'_, Arc<App>>, settings: Settings) -> Res<
     if before.privacy.keep_audio_days != settings.privacy.keep_audio_days {
         crate::purge_old_audio(&app);
     }
-    // The bubble and the meeting card switch between light and dark too.
-    if before.general.theme != settings.general.theme || before.general.show_firefly != settings.general.show_firefly {
+    // The bubble and the meeting card switch between light and dark, and change colour, too.
+    if before.general.theme != settings.general.theme || before.general.colour != settings.general.colour || before.general.show_firefly != settings.general.show_firefly {
         app.emit("settings-changed", ());
+    }
+    if before.general.colour != settings.general.colour {
+        crate::colours::set_tray(&app);
     }
     if before.voice_commands != settings.voice_commands {
         crate::sync_tray_toggles(&app);

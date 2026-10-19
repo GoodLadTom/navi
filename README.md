@@ -17,7 +17,8 @@ people with access can read it. Navi runs on Windows. A Mac version is planned
 - **Voice commands.** Turn them on and talk to Navi without touching the keyboard. Say "Navi"
   (or "Hey Navi") and keep talking, and Navi types what you say; it finishes after six seconds of
   quiet, when you say "that's all", or when you press Enter. Say the wake word and a command and it
-  happens straight away: "Navi, watch my screen", "Navi, take notes", "Navi, scratch that". Say
+  happens straight away: "Navi, watch my screen", "Navi, take notes", "Navi, scratch that",
+  "Navi, turn gold". Say
   "don't worry" on its own during a take to throw it away. Every phrase can be changed in Settings >
   Voice commands, to any words you like. The listening happens on your computer, no AI is
   involved, and nothing it hears is kept.
@@ -60,6 +61,11 @@ people with access can read it. Navi runs on Windows. A Mac version is planned
   list of its problems in a card you can copy from.
 - **Writes like you.** British spelling and no em dashes (both on unless you turn them off), and a
   style profile that every AI rewrite follows.
+- **Six colours.** Lilac, Gold, Teal, Sky, Rose or Graphite, each in light and dark. Pick one in
+  Settings > General, or say "Navi, turn gold" with the shortcut held or listening switched on
+  ("change to teal", "switch to rose" and "make it sky" work too). The window, the bubble, the
+  firefly, the card in the corner and the tray icon change together. Navi's own icon on the
+  taskbar stays lilac.
 - **Knows where you are typing.** Navi reads the app and the text near your cursor on your
   computer, which helps it pick the right mode and spell names correctly. In a browser it also
   looks at the address bar and keeps only the site's name, such as chatgpt.com, to pick the mode;

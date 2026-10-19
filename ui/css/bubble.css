@@ -22,13 +22,14 @@
 .bubble.hidden { opacity: 0; transform: scale(.6); pointer-events: none; transition: opacity .18s ease, transform .22s ease; }
 .bubble[data-state="listening"],
 .bubble[data-state="handsFree"],
-.bubble[data-state="ramble"] { --accent: #8A6CD6; --accent-ink: #4E3391; --accent-wash: #F1EBFD; }
+.bubble[data-state="ramble"] { --accent: var(--live-accent); --accent-ink: var(--live-ink); --accent-wash: var(--live-wash); }
 .bubble.enter { animation: bubbleIn .46s var(--spring) both; }
 .bubble.popout { animation: bubblePop .34s cubic-bezier(.2, .9, .3, 1.2) both; }
 @keyframes bubbleIn { 0% { opacity: 0; transform: scale(.5); } 55% { opacity: 1; transform: scale(1.05); } 100% { transform: scale(1); } }
 @keyframes bubblePop { 0% { transform: scale(1); opacity: 1; } 45% { transform: scale(1.16); opacity: 1; } 100% { transform: scale(1.32); opacity: 0; } }
 
-/* Navi's firefly keeps the small 78px footprint chosen for the screen corner. */
+/* Navi's firefly keeps the small 78px footprint chosen for the screen corner. Its colours are the
+   --ff-* tokens (tokens.css), so it changes with Settings > General > Colour. */
 .navi-firefly { position: absolute; z-index: 2; left: 50%; bottom: 52px; width: 78px; height: 78px; margin-left: -39px; pointer-events: none; opacity: 0; visibility: hidden; }
 .navi-firefly.ramble { bottom: 96px; }
 .navi-firefly.active, .navi-firefly.departing { opacity: 1; visibility: visible; }

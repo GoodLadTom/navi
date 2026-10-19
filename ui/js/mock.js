@@ -150,9 +150,12 @@ const DEFAULT_VOICE_COMMANDS = [
   { action: 'notes_off', phrases: ['stop taking notes'] },
   { action: 'cancel', phrases: ["don't worry"] },
   { action: 'finish', phrases: ["that's all"] },
+  { action: 'colour', phrases: ['turn', 'change to', 'switch to', 'make it'] },
 ];
 const VOICE_ACTIONS = DEFAULT_VOICE_COMMANDS.map((c) => c.action);
-const VOICE_LABELS = { wake: 'Wake word', scratch_that: 'Scratch that', watch_on: 'Watch my screen', watch_off: 'Stop watching', notes_on: 'Take notes', notes_off: 'Stop taking notes', cancel: 'Cancel', finish: 'Finish' };
+const VOICE_LABELS = { wake: 'Wake word', scratch_that: 'Scratch that', watch_on: 'Watch my screen', watch_off: 'Stop watching', notes_on: 'Take notes', notes_off: 'Stop taking notes', cancel: 'Cancel', finish: 'Finish', colour: 'Change colour' };
+// What "Navi, turn ..." listens for after the phrase. Keep in step with COLOURS in src-tauri/src/colours.rs.
+const COLOUR_WORDS = ['lilac', 'purple', 'lavender', 'gold', 'golden', 'yellow', 'teal', 'green', 'sky', 'blue', 'rose', 'pink', 'graphite', 'grey', 'gray'];
 // What Whisper writes for silence and noise, so no phrase may be one of them (types.rs BLOCKED).
 const VOICE_BLOCKED = ['thank you', 'thanks', 'thank you very much', 'thank you so much', 'thanks for watching', 'thank you for watching', 'you', 'bye', 'bye bye', 'ok', 'okay', 'yes', 'no', 'so', 'um', 'uh', 'hmm', 'the', 'a', 'i'];
 // types.rs phrase_key: "Don't worry!" -> "dont worry".
@@ -221,6 +224,13 @@ function normaliseVoiceCommands(vc, before = null) {
       return cleanPhrase(afterWords(p, keyWords(wake)));
     }));
   }
+  // 3b. "turn gold" typed into Change colour is saved as "turn": the colour is said after it.
+  lists.set('colour', lists.get('colour').map((p) => {
+    const words = phraseKey(p).split(' ');
+    if (!COLOUR_WORDS.includes(words[words.length - 1])) return p;
+    if (words.length === 1) throw `“${p}” is a colour. Type what you say before it, such as “turn”.`;
+    return cleanPhrase(p.slice(0, p.length - afterWords(p, words.length - 1).length));
+  }));
   // 4. Each phrase on its own.
   for (const a of VOICE_ACTIONS) {
     for (const p of lists.get(a)) {
@@ -276,7 +286,7 @@ const state = {
     agent: { projects: [{ id: 'p1', name: 'navi', path: 'C:\\Users\\you\\Projects\\Navi' }], activeProject: 'p1', mentionStyle: 'at' },
     ramble: { notesDir: null, pasteNotes: false, tasksTo: 'clickup', clickupListId: '901204', notionDatabaseId: null },
     privacy: { localOnly: false, keepAudioDays: 30, saveHistory: true },
-    general: { launchAtLogin: true, startMinimised: true, pasteMethod: 'paste', restoreClipboard: true, showPill: true, showFirefly: true, closeToTray: true, trayTipShown: false, checkUpdates: true, theme: 'light' },
+    general: { launchAtLogin: true, startMinimised: true, pasteMethod: 'paste', restoreClipboard: true, showPill: true, showFirefly: true, closeToTray: true, trayTipShown: false, checkUpdates: true, theme: 'light', colour: 'lilac' },
     speak: { voiceId: 'v2', voiceName: 'George', model: 'eleven_v4_turbo' },
     notes: { detectCalls: true, systemAudio: true, autoStop: true, callJobs: true, callScreenshots: false, actionsTo: 'clickup' },
     voiceCommands: { enabled: true, commands: structuredClone(DEFAULT_VOICE_COMMANDS) },
@@ -312,6 +322,13 @@ const state = {
   ],
   devices: [{ name: 'Microphone (USB microphone)', isDefault: true }, { name: 'Laptop microphone array', isDefault: false }],
 };
+// Any preview page can open in a colour and a mode: index.html?colour=gold&theme=dark, and the same
+// for pill.html and prompt.html, whose sample settings are their own.
+{
+  const q = new URLSearchParams(location.search);
+  if (q.get('colour')) state.settings.general.colour = q.get('colour');
+  if (q.get('theme')) state.settings.general.theme = q.get('theme');
+}
 
 let levelTimer = null;
 function startLevels() {
@@ -383,7 +400,10 @@ const handlers = {
       voiceCommands = settings.voiceCommands;
     }
     const next = { ...settings, voiceCommands };
+    const was = state.settings.general;
     state.settings = next;
+    // As commands.rs: a new theme, colour or firefly setting goes to every window at once.
+    if (was.theme !== next.general.theme || was.colour !== next.general.colour || was.showFirefly !== next.general.showFirefly) setTimeout(() => emit('settings-changed', null), 0);
     return structuredClone(next);
   },
   voice_command_defaults: () => ({ enabled: false, commands: structuredClone(DEFAULT_VOICE_COMMANDS) }),
