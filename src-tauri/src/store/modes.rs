@@ -9,6 +9,11 @@
 //!   taken. A custom mode can never take a built-in id (it would silently become an override of
 //!   that built-in); `BUILTIN_IDS` lists them and must follow `text::modes::builtin_modes`.
 //! * Saving a built-in (builtin: true) stores an override; `delete_mode` on it restores the default.
+//! * Edits of the built-ins Navi has dropped ("Interview me" and Speak, `RETIRED_IDS`) stay in the
+//!   table but are skipped when modes are listed, and those ids are never given out again.
+//! * `add_new_prompt_apps` (called at every start, acts only once, ever) gives a saved Prompt mode
+//!   the apps the built-in one gained later, the Codex and ChatGPT desktop apps, without taking any
+//!   of the user's away.
 //! * Process names in `apps` are stored lower case, trimmed and without repeats, because that is how
 //!   `pick_mode` compares them.
 //! * Modes installed from a pack carry the pack id as their `source`. If the user edits one it
@@ -22,7 +27,18 @@ use std::collections::HashSet;
 
 /// Ids of the built-in modes, which the UI and settings refer to. Keep in step with
 /// `text::modes::builtin_modes`.
-pub const BUILTIN_IDS: [&str; 8] = ["raw", "clean", "message", "email", "prompt", "interview", "speak", "notes"];
+pub const BUILTIN_IDS: [&str; 6] = ["raw", "clean", "message", "email", "prompt", "notes"];
+
+/// Built-in modes Navi no longer has: "Interview me" and Speak. A stored edit of one is left in
+/// the table but never read, and no new mode gets one of these ids, so an old edit can never come
+/// back as a mode.
+pub const RETIRED_IDS: [&str; 2] = ["interview", "speak"];
+
+/// Apps the built-in Prompt mode gained after some users had saved their own copy of it: the
+/// Codex and ChatGPT desktop apps. `add_new_prompt_apps` adds them to that copy once.
+const NEW_PROMPT_APPS: [&str; 2] = ["codex.exe", "chatgpt.exe"];
+/// Set in `meta` once the apps above have been added, so they are never added again.
+const NEW_PROMPT_APPS_DONE: &str = "modes.prompt_apps_chatgpt_codex";
 
 /// Longest slug made from a name.
 const MAX_SLUG_LEN: usize = 40;
@@ -35,6 +51,9 @@ impl Db {
         let mut modes = Vec::new();
         for row in rows {
             let (id, json) = row?;
+            if RETIRED_IDS.contains(&id.as_str()) {
+                continue;
+            }
             match serde_json::from_str::<Mode>(&json) {
                 Ok(mode) => modes.push(mode),
                 // One unreadable row must not stop Navi from loading every other mode.
@@ -46,11 +65,12 @@ impl Db {
 
     /// The id of every stored row, including any `list_stored_modes` skips because it can't be
     /// read (saved by a newer Navi, or damaged). The settings tidy-up keeps those modes' keys.
+    /// Edits of retired built-ins are left out: those modes are gone, not unreadable.
     pub fn list_mode_ids(&self) -> Result<Vec<String>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare("SELECT id FROM modes ORDER BY seq")?;
         let ids = stmt.query_map([], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(ids)
+        Ok(ids.into_iter().filter(|id| !RETIRED_IDS.contains(&id.as_str())).collect())
     }
 
     /// Insert or replace by id. A new custom mode with an empty id gets a slug from its name.
@@ -73,6 +93,9 @@ impl Db {
             if !mode.builtin && BUILTIN_IDS.contains(&wanted_id) {
                 bail!("\"{wanted_id}\" is the id of a built-in mode. Choose a different name for your mode.");
             }
+            if RETIRED_IDS.contains(&wanted_id) {
+                bail!("\"{wanted_id}\" belonged to a mode Navi no longer has. Choose a different name for your mode.");
+            }
             stored.id = wanted_id.to_string();
         }
         let json = serde_json::to_string(&stored)?;
@@ -90,6 +113,42 @@ impl Db {
     pub fn delete_mode(&self, id: &str) -> Result<()> {
         self.conn.lock().execute("DELETE FROM modes WHERE id = ?1", [id.trim()])?;
         Ok(())
+    }
+
+    /// Once ever: adds the Codex and ChatGPT apps to a Prompt mode the user has edited (the
+    /// built-in one has them in the code). Every app the user listed stays, one already there (with
+    /// or without ".exe", in any case) isn't added again, and the rest of the saved mode is left
+    /// exactly as it was. True when the saved Prompt mode changed.
+    pub fn add_new_prompt_apps(&self) -> Result<bool> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if tx.query_row("SELECT 1 FROM meta WHERE key = ?1", [NEW_PROMPT_APPS_DONE], |_| Ok(())).optional()?.is_some() {
+            return Ok(false);
+        }
+        let stem = |app: &str| {
+            let app = app.trim().to_lowercase();
+            app.strip_suffix(".exe").unwrap_or(&app).to_string()
+        };
+        let mut changed = false;
+        let saved: Option<String> = tx.query_row("SELECT json FROM modes WHERE id = 'prompt'", [], |r| r.get(0)).optional()?;
+        // Changed as JSON, so fields this copy of Navi doesn't know (a newer Navi's) survive. A row
+        // it can't read is left alone.
+        if let Some(mut value) = saved.and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok()) {
+            if let Some(apps) = value.get_mut("apps").and_then(|a| a.as_array_mut()) {
+                for app in NEW_PROMPT_APPS {
+                    if !apps.iter().any(|a| a.as_str().is_some_and(|a| stem(a) == stem(app))) {
+                        apps.push(app.into());
+                        changed = true;
+                    }
+                }
+            }
+            if changed {
+                tx.execute("UPDATE modes SET json = ?1 WHERE id = 'prompt'", [serde_json::to_string(&value)?])?;
+            }
+        }
+        tx.execute("INSERT INTO meta (key, value) VALUES (?1, ?2)", [NEW_PROMPT_APPS_DONE, &super::db::now_rfc3339()])?;
+        tx.commit()?;
+        Ok(changed)
     }
 }
 
@@ -159,9 +218,9 @@ pub(crate) fn tidy_apps(apps: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// True when `id` is a built-in id or is already stored.
+/// True when `id` is a built-in id (or a retired one) or is already stored.
 pub(crate) fn mode_id_taken(conn: &Connection, id: &str) -> Result<bool> {
-    if BUILTIN_IDS.contains(&id) {
+    if BUILTIN_IDS.contains(&id) || RETIRED_IDS.contains(&id) {
         return Ok(true);
     }
     Ok(conn.query_row("SELECT 1 FROM modes WHERE id = ?1", [id], |_| Ok(())).optional()?.is_some())
@@ -373,6 +432,60 @@ mod tests {
         db.save_mode(&Mode { instructions: "My tweak".into(), ..mode("pack-mode", "From a pack") }).unwrap();
         let source: String = db.conn.lock().query_row("SELECT source FROM modes WHERE id = 'pack-mode'", [], |r| r.get(0)).unwrap();
         assert_eq!(source, "manual");
+    }
+
+    #[test]
+    fn edits_of_retired_built_ins_are_ignored_and_their_ids_stay_taken() {
+        let db = db();
+        for id in RETIRED_IDS {
+            let json = serde_json::to_string(&Mode { builtin: true, ..mode(id, "Old built-in") }).unwrap();
+            db.conn.lock().execute("INSERT INTO modes (id, source, json) VALUES (?1, 'manual', ?2)", [id, json.as_str()]).unwrap();
+        }
+        db.save_mode(&mode("", "Mine")).unwrap();
+        assert_eq!(ids(&db), ["mine"], "the old edits are never listed");
+        assert_eq!(db.list_mode_ids().unwrap(), ["mine"], "nor counted as modes Navi can't read");
+        // A new mode named like one gets an id of its own.
+        assert_eq!(db.save_mode(&mode("", "Interview")).unwrap().id, "interview-2");
+        assert_eq!(db.save_mode(&mode("", "Speak")).unwrap().id, "speak-2");
+        assert!(db.save_mode(&mode("speak", "Speak")).is_err());
+        assert!(db.save_mode(&Mode { builtin: true, ..mode("interview", "Interview me") }).is_err());
+    }
+
+    fn saved_prompt(db: &Db, apps: &[&str]) {
+        let prompt = Mode { builtin: true, kind: ModeKind::Prompt, apps: apps.iter().map(|a| a.to_string()).collect(), ..mode("prompt", "Prompt") };
+        db.save_mode(&prompt).unwrap();
+    }
+
+    fn prompt_apps(db: &Db) -> Vec<String> {
+        db.list_stored_modes().unwrap().into_iter().find(|m| m.id == "prompt").expect("the saved Prompt mode").apps
+    }
+
+    #[test]
+    fn a_saved_prompt_mode_gets_the_chatgpt_and_codex_apps_once() {
+        let db = db();
+        saved_prompt(&db, &["windowsterminal.exe", "code.exe", "warp.exe"]);
+        assert!(db.add_new_prompt_apps().unwrap());
+        assert_eq!(prompt_apps(&db), ["windowsterminal.exe", "code.exe", "warp.exe", "codex.exe", "chatgpt.exe"], "the user's own apps all stay, in order");
+        let back = db.list_stored_modes().unwrap().remove(0);
+        assert_eq!((back.instructions.as_str(), back.builtin), ("Be brief.", true), "nothing else changes");
+        // Never again, even after the user takes one out.
+        saved_prompt(&db, &["windowsterminal.exe", "chatgpt.exe"]);
+        assert!(!db.add_new_prompt_apps().unwrap());
+        assert_eq!(prompt_apps(&db), ["windowsterminal.exe", "chatgpt.exe"]);
+    }
+
+    #[test]
+    fn the_prompt_apps_are_not_added_twice_or_to_a_prompt_mode_that_was_never_edited() {
+        let db = db();
+        saved_prompt(&db, &["Codex", "cmd.exe"]);
+        assert!(db.add_new_prompt_apps().unwrap());
+        assert_eq!(prompt_apps(&db), ["codex", "cmd.exe", "chatgpt.exe"], "Codex was there already, as \"codex\"");
+
+        let untouched = Db::open_memory().unwrap();
+        assert!(!untouched.add_new_prompt_apps().unwrap(), "the built-in Prompt mode has them already");
+        assert!(untouched.list_stored_modes().unwrap().is_empty(), "no edit is made up");
+        // Done all the same: a Prompt mode edited later starts from the built-in list, which has them.
+        assert!(untouched.meta_get(NEW_PROMPT_APPS_DONE).unwrap().is_some());
     }
 
     #[test]

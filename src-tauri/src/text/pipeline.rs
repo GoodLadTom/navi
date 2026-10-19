@@ -24,7 +24,6 @@
 //!   unwrapped rather than thrown away. Clean, Message and Email must keep a question a question.
 //! * A heading or closing line the speaker said ("So here are the dates", "let me know when...")
 //!   is theirs, wherever they said it, so it is never taken for the AI's wrapping.
-//! * Interview me may run longer than other rewrites: it ends with a request to be questioned.
 //! * Dictionary terms are protected from britishise (a brand spelt the American way stays).
 //! * When the text before the cursor stops mid-sentence ("I went to the shop and"), a common first
 //!   word loses its capital ("then we left"); names keep theirs. Raw mode is never changed.
@@ -304,10 +303,7 @@ fn reply_problem(reply: &str, input: &str, mode: &Mode) -> Option<String> {
         }
         return None;
     }
-    // Interview me adds a closing request to be questioned, so a ten-word ask comes back as fifty
-    // or more words by design. Doing the task instead (a whole cover letter) is still caught.
-    let allowance = if mode.id == "interview" { 120 } else { 20 };
-    if words_out > words_in * 2 + allowance {
+    if words_out > words_in * 2 + 20 {
         return Some(format!("The AI added far more than you said, {KEPT}"));
     }
     let keeps_questions = mode.kind == ModeKind::Clean || mode.id == "message" || mode.id == "email";
@@ -623,19 +619,6 @@ mod tests {
         assert!(reply_problem("I can't make Friday.", "so I can't make Friday", &mode("message")).is_none());
     }
 
-    #[test]
-    fn interview_me_may_add_its_closing_request() {
-        let m = mode("interview");
-        let ask = "help me write a cover letter for a marketing job";
-        let prompt = "I want help writing a cover letter for a marketing job.\n\nBefore you start, please ask me the questions you need answered to write this really well. Ask one question at a time and wait for my answer before the next. Cover anything I haven't said yet that would change the letter, such as the company, the role and my experience.";
-        assert!(prompt.split_whitespace().count() > ask.split_whitespace().count() * 2 + 20, "the old cap would have refused this");
-        assert!(reply_problem(prompt, ask, &m).is_none());
-        // Writing the whole letter instead is still refused.
-        assert!(reply_problem(&"word ".repeat(300), ask, &m).is_some());
-        // Other modes keep the tight cap.
-        assert!(reply_problem(prompt, ask, &mode("message")).is_some());
-    }
-
     #[tokio::test]
     async fn email_keeps_a_closing_paragraph_end_to_end() {
         let said = "hi sam thanks for sending the proposal over I've had a look and it all seems fine let me know when you want to talk it through";
@@ -666,7 +649,7 @@ mod tests {
         println!("provider {provider} / {model}");
         for (label, raw) in said {
             println!("\n=============== {label}: {raw}");
-            for id in ["raw", "clean", "message", "email", "prompt", "interview", "speak", "notes"] {
+            for id in ["raw", "clean", "message", "email", "prompt", "notes"] {
                 let m = mode(id);
                 let t = std::time::Instant::now();
                 let out = run(PipelineInput { raw, mode: &m, ctx: &AppContext::default(), settings: &settings, words: &[], snippets: &[], llm: Some(&llm), project_files: &[] })

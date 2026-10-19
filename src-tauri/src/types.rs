@@ -43,10 +43,6 @@ pub struct NotesSettings {
     pub system_audio: bool,
     /// Finish by itself when the call app lets go of the microphone.
     pub auto_stop: bool,
-    /// Come up with ideas for Shorts while the call goes on (see ideas.rs).
-    pub short_ideas: bool,
-    /// What makes a good Short, in the user's words. Given to the AI with every pass.
-    pub ideas_brief: String,
     /// "Navi, ..." (or "Hey Navi, ...", following the wake words in Settings > Voice commands) said
     /// on a call gives the AI a job, done while the call goes on.
     pub call_jobs: bool,
@@ -58,23 +54,12 @@ pub struct NotesSettings {
     pub actions_to: String,
 }
 
-/// The starting brief for Short ideas: what makes a clip worth posting, in plain words.
-pub const DEFAULT_IDEAS_BRIEF: &str = "A Short is under a minute and teaches one thing that someone scrolling past, who has never heard of us, would find useful.
-- One clear lesson per Short, stated in a sentence.
-- Built only from the main speaker's own words, in whole sentences.
-- Open on a strong hook line taken from what was said.
-- Never name or show the other people on the call. A question someone else asked can become a short on-screen setup line with no name.
-- Flag anything that needs the speaker's OK before it goes out (clients, deals, prices, private details) and anything said somewhere noisy.
-- Leave out topics that only make sense to people who were on the call.";
-
 impl Default for NotesSettings {
     fn default() -> Self {
         Self {
             detect_calls: true,
             system_audio: true,
             auto_stop: true,
-            short_ideas: false,
-            ideas_brief: DEFAULT_IDEAS_BRIEF.into(),
             call_jobs: true,
             call_screenshots: false,
             actions_to: "none".into(),
@@ -662,7 +647,7 @@ pub struct AiSettings {
     /// Required for "ollama" (default http://localhost:11434) and "custom". For "claude-code" and
     /// "codex": the path to the tool, only when Navi can't find it.
     pub base_url: Option<String>,
-    /// The model for jobs nobody waits on (call notes, Short ideas, watch notes, call jobs).
+    /// The model for jobs nobody waits on (call notes, watch notes, call jobs).
     /// Empty, or one that doesn't suit the provider: Sonnet through Claude Code, otherwise the
     /// same model as dictation (controller.rs make_llm_long).
     pub long_model: String,
@@ -918,8 +903,9 @@ pub struct Take {
     pub model: String,
     /// From key release to text delivered.
     pub latency_ms: u64,
-    /// "pasted" | "typed" | "clipboard" | "notes" | "command" | "spoken" (Speak mode read it aloud)
-    /// | "cancelled" | "error" | "rerun" (a failed take transcribed again from History)
+    /// "pasted" | "typed" | "clipboard" | "notes" | "command" | "spoken" (read aloud by the Speak
+    /// mode older versions had) | "cancelled" | "error" | "rerun" (a failed take transcribed again
+    /// from History)
     pub status: String,
     /// "talk" | "handsFree" | "ramble" | "command"
     pub kind: String,
@@ -1108,6 +1094,9 @@ pub struct AppContext {
     pub category: String,
     /// Friendly app name for the UI, e.g. "Outlook".
     pub app_label: String,
+    /// In a browser, the host in its address bar ("chatgpt.com"), for picking the mode. Only the
+    /// host is ever kept, never the rest of the address. Empty when unknown.
+    pub host: String,
 }
 
 /// What the recording pill shows. Emitted as the "pill" event.

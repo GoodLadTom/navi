@@ -1,5 +1,5 @@
 // The card in the corner of the screen: offers to take notes when a call starts, shows the time
-// while Navi listens (with how many Short ideas and jobs so far), says when the notes are saved,
+// while Navi listens (with any jobs it is working on), says when the notes are saved,
 // and shows the answer to "Navi, what's wrong with this?". meeting.rs decides what it shows and
 // sizes the window to fit.
 import { invoke, listen, isTauri, copyText } from './bridge.js';
@@ -11,7 +11,7 @@ const card = document.getElementById('card');
 let tick = null;
 let autoHide = null;
 let startedAt = Date.now();
-// The "Taking notes" card's second line, kept so meeting updates can add ideas and jobs to it.
+// The "Taking notes" card's second line, kept so meeting updates can add jobs to it.
 let liveSub = null;
 let liveBase = '';
 
@@ -138,18 +138,15 @@ function inline(text) {
   return parts;
 }
 
-// "Both sides of the call", then "2 Short ideas · working on a job" once there is news. A problem
-// with the recording ("Your microphone stopped") comes before either.
+// "Both sides of the call", or "working on a job" while there is one. A problem with the
+// recording ("Your microphone stopped") comes before both.
 function liveLine(m) {
   // The speakers can stop being recorded mid-call (no output device left).
   if (typeof m?.systemAudio === 'boolean') liveBase = m.systemAudio ? 'Both sides of the call' : 'Your microphone only';
   if (m?.warning) return m.warning;
-  const bits = [];
-  const ideas = (m?.ideas || []).length;
-  if (ideas) bits.push(`${ideas} Short idea${ideas === 1 ? '' : 's'}`);
   const working = (m?.jobs || []).filter((j) => j.status === 'working').length;
-  if (working) bits.push(working === 1 ? 'working on a job' : `working on ${working} jobs`);
-  return bits.length ? bits.join(' · ') : liveBase;
+  if (working) return working === 1 ? 'working on a job' : `working on ${working} jobs`;
+  return liveBase;
 }
 
 // Fills the "Taking notes" card's second line. A warning may take two lines (meeting.rs makes the
@@ -184,9 +181,9 @@ if (isTauri) {
     recording: { state: 'recording', app: 'Microsoft Teams', systemAudio: true, elapsedMs: 754000 },
     warning: { state: 'recording', app: 'Microsoft Teams', systemAudio: true, elapsedMs: 754000, warning: 'Speech engine not ready, holding audio', warningDetail: 'The speech engine isn’t running yet. Navi keeps the audio and writes it down once it is.' },
     writing: { state: 'writing' },
-    done: { state: 'done', id: 'n1', title: 'Weekly marketing plan', detail: '3 Short ideas · 4 actions to ClickUp' },
+    done: { state: 'done', id: 'n1', title: 'Weekly marketing plan', detail: '4 actions to ClickUp' },
     thinking: { state: 'thinking', title: 'Looking for problems' },
     answer: { state: 'answer', title: 'What\u2019s wrong with it', body: '- **The opening buries the point.** "I wanted to reach out" says nothing; lead with the 15% saving.\n- **"Best in class" is unsupported.** Name the result or cut it.\n- **No ask.** It ends without saying what you want Sam to do next.\n- **Two typos:** "recieve" and "it\u2019s" for "its" in the last line.' },
   }[which]);
-  if (which === 'recording') liveSub.textContent = liveLine({ ideas: [{}, {}], jobs: [{ status: 'working' }] });
+  if (which === 'recording') liveSub.textContent = liveLine({ jobs: [{ status: 'working' }] });
 }

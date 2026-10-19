@@ -2,10 +2,12 @@
 //! its labelled transcript, the notes you typed during it and the notes Navi wrote afterwards.
 //!
 //! * Stored in the `notes` table (schema version 2). The transcript is JSON (a list of lines).
-//!   Short ideas, call jobs and screenshots live together as JSON in `extras` (version 3).
+//!   Call jobs and screenshots live together as JSON in `extras` (version 3). Notes saved while
+//!   Navi still found Short ideas may hold an `ideas` list there too: it is ignored when read and
+//!   goes the next time the note is saved.
 //! * `save_note` is an upsert by id, so a note being taken can be saved again as it grows.
 //! * Newest first in `list_notes`; `list_notes` leaves the transcript and extras out (they can be
-//!   long) but counts the ideas, jobs and kept screenshots for the list.
+//!   long) but counts the jobs and kept screenshots for the list.
 
 use super::Db;
 use anyhow::Result;
@@ -41,8 +43,6 @@ pub struct MeetingNote {
     /// The finished notes, in Markdown.
     pub notes_md: String,
     pub file_path: Option<String>,
-    /// Ideas for Shorts that came up on the call (ideas.rs).
-    pub ideas: Vec<ShortIdea>,
     /// Jobs given on the call with "Navi, ..." or "Hey Navi, ..." (jobs.rs).
     pub jobs: Vec<CallJob>,
     /// Screenshots taken on the call or while watching (screen.rs, watch.rs).
@@ -54,36 +54,8 @@ pub struct MeetingNote {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Counts {
-    pub ideas: usize,
     pub jobs: usize,
     pub shots: usize,
-}
-
-/// An idea for a Short: what it teaches and the exact lines to cut it from.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", default)]
-pub struct ShortIdea {
-    pub id: String,
-    pub title: String,
-    /// The line it opens on.
-    pub hook: String,
-    /// What a viewer learns, in a sentence.
-    pub lesson: String,
-    /// The lines to cut, in the order the Short uses them, with where they are in the call.
-    pub quotes: Vec<IdeaQuote>,
-    /// Why it would work, briefly.
-    pub why: String,
-    /// Things to check first ("needs the speaker's OK: a client is named").
-    pub flags: Vec<String>,
-    /// Rough length in seconds.
-    pub seconds: u32,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", default)]
-pub struct IdeaQuote {
-    pub at_ms: u64,
-    pub text: String,
 }
 
 /// A job given on a call ("Navi, draft the proposal") and what the AI made of it.
@@ -115,11 +87,11 @@ pub struct Shot {
     pub caption: String,
 }
 
-/// The JSON kept in the `extras` column.
+/// The JSON kept in the `extras` column. Anything else in it (the `ideas` of older notes) is
+/// skipped when it is read.
 #[derive(Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct Extras {
-    ideas: Vec<ShortIdea>,
     jobs: Vec<CallJob>,
     shots: Vec<Shot>,
 }
@@ -128,7 +100,7 @@ impl Db {
     pub fn save_note(&self, note: &MeetingNote) -> Result<()> {
         let ts = chrono::DateTime::parse_from_rfc3339(&note.created_at).map(|d| d.timestamp()).unwrap_or_else(|_| chrono::Local::now().timestamp());
         let transcript = serde_json::to_string(&note.transcript)?;
-        let extras = serde_json::to_string(&Extras { ideas: note.ideas.clone(), jobs: note.jobs.clone(), shots: note.shots.clone() })?;
+        let extras = serde_json::to_string(&Extras { jobs: note.jobs.clone(), shots: note.shots.clone() })?;
         self.conn.lock().execute(
             "INSERT INTO notes (id, created_at, ts, title, app, duration_ms, status, transcript, my_notes, notes_md, file_path, extras)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
@@ -159,7 +131,7 @@ impl Db {
                 my_notes: r.get(6)?,
                 notes_md: r.get(7)?,
                 file_path: r.get(8)?,
-                counts: Some(Counts { ideas: extras.ideas.len(), jobs: extras.jobs.len(), shots: extras.shots.len() }),
+                counts: Some(Counts { jobs: extras.jobs.len(), shots: extras.shots.len() }),
                 ..Default::default()
             })
         })?;
@@ -186,7 +158,6 @@ impl Db {
                         my_notes: r.get(7)?,
                         notes_md: r.get(8)?,
                         file_path: r.get(9)?,
-                        ideas: extras.ideas,
                         jobs: extras.jobs,
                         shots: extras.shots,
                         counts: None,
@@ -224,20 +195,39 @@ mod tests {
     }
 
     #[test]
-    fn ideas_jobs_and_screenshots_are_kept() {
+    fn jobs_and_screenshots_are_kept() {
         let db = Db::open_memory().unwrap();
         let mut n = note("a", "2026-10-14T10:00:00+01:00");
-        n.ideas.push(ShortIdea { id: "i1".into(), title: "Open later on Fridays".into(), quotes: vec![IdeaQuote { at_ms: 61_000, text: "Half our Friday trade comes in after six.".into() }], ..Default::default() });
         n.jobs.push(CallJob { id: "j1".into(), ask: "draft the proposal".into(), status: "done".into(), result_md: "# Proposal".into(), ..Default::default() });
         n.shots.push(Shot { at_ms: 5_000, path: "C:\\shots\\1.jpg".into(), text: "Pricing".into(), ..Default::default() });
         db.save_note(&n).unwrap();
         let back = db.get_note("a").unwrap().unwrap();
-        assert_eq!((back.ideas.len(), back.jobs.len(), back.shots.len()), (1, 1, 1));
-        assert_eq!(back.ideas[0].quotes[0].at_ms, 61_000);
+        assert_eq!((back.jobs.len(), back.shots.len()), (1, 1));
         assert_eq!(back.jobs[0].result_md, "# Proposal");
         let listed = &db.list_notes(5).unwrap()[0];
-        assert!(listed.ideas.is_empty(), "the list leaves extras out");
-        assert_eq!(listed.counts, Some(Counts { ideas: 1, jobs: 1, shots: 1 }));
+        assert!(listed.jobs.is_empty() && listed.shots.is_empty(), "the list leaves extras out");
+        assert_eq!(listed.counts, Some(Counts { jobs: 1, shots: 1 }));
+    }
+
+    #[test]
+    fn a_note_saved_with_short_ideas_still_loads() {
+        let db = Db::open_memory().unwrap();
+        db.save_note(&note("old", "2026-10-14T10:00:00+01:00")).unwrap();
+        // The extras an older Navi wrote, Short ideas and all.
+        let extras = r##"{"ideas":[{"id":"i1","title":"Open later on Fridays","hook":"Half our trade","lesson":"x","quotes":[{"atMs":61000,"text":"Half our Friday trade comes in after six."}],"why":"","flags":["Check the figure"],"seconds":30}],
+            "jobs":[{"id":"j1","atMs":4000,"ask":"draft the proposal","status":"done","resultMd":"# Proposal","error":""}],
+            "shots":[{"atMs":5000,"path":"C:\\shots\\1.jpg","app":"Chrome","window":"Pricing","text":"Pricing","caption":""}]}"##;
+        db.conn.lock().execute("UPDATE notes SET extras = ?1 WHERE id = 'old'", [extras]).unwrap();
+        let back = db.get_note("old").unwrap().expect("the note loads");
+        assert_eq!(back.jobs[0].result_md, "# Proposal", "its jobs are kept");
+        assert_eq!(back.shots[0].window, "Pricing", "and its screenshots");
+        assert_eq!(db.list_notes(5).unwrap()[0].counts, Some(Counts { jobs: 1, shots: 1 }));
+        // As the interface gets it: no ideas anywhere.
+        assert!(!serde_json::to_string(&back).unwrap().contains("ideas"));
+        // Saved again, the ideas are gone and nothing else is lost.
+        db.save_note(&back).unwrap();
+        let stored: String = db.conn.lock().query_row("SELECT extras FROM notes WHERE id = 'old'", [], |r| r.get(0)).unwrap();
+        assert!(!stored.contains("ideas") && stored.contains("draft the proposal"), "{stored}");
     }
 
     #[test]

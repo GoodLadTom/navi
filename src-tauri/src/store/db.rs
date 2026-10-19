@@ -5,7 +5,7 @@
 //! Contract: WAL mode, foreign keys on, a `meta` table with schema_version and forward-only
 //! migrations. Tables: takes, words, snippets, suggestions, dismissed_pairs, modes (custom and
 //! overridden built-ins as JSON), packs (summary + installed_at) and notes (meeting notes, schema
-//! version 2; their ideas, jobs and screenshots in `extras` since version 3). Words/snippets/modes carry
+//! version 2; their jobs and screenshots in `extras` since version 3). Words/snippets/modes carry
 //! `source` so removing a pack removes exactly what it installed. Full-text search over takes (FTS5 on
 //! raw_text, final_text, app_name, window_title) when the bundled SQLite has it, else LIKE.
 //!
@@ -154,7 +154,7 @@ CREATE TABLE notes (
 CREATE INDEX notes_ts ON notes (ts DESC);
 "#;
 
-/// Short ideas, call jobs and screenshots for each note, as one JSON object (see store/notes.rs).
+/// Call jobs and screenshots for each note, as one JSON object (see store/notes.rs).
 const MIGRATION_3: &str = r#"
 ALTER TABLE notes ADD COLUMN extras TEXT NOT NULL DEFAULT '{}';
 "#;

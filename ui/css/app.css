@@ -499,30 +499,14 @@ body:has(.onb) .titlebar { background: none; }
 .tabs.n-tabs button { flex: none; white-space: nowrap; padding: 0 11px; }
 .tabs.n-tabs.more { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent); }
 
-/* Short ideas found on a call: a numbered card each, with the lines to cut. */
-.ideas { display: grid; gap: 10px; }
-.idea { padding: 14px 16px 12px; border-radius: var(--r-md); background: var(--card-strong); border: 1px solid var(--line-soft); box-shadow: var(--e1); }
-.idea-top { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
-.idea-top b { flex: 1; min-width: 0; padding-top: 1px; font-size: 14px; font-weight: 600; letter-spacing: -.01em; line-height: 1.4; }
-.idea-n { flex: none; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: var(--accent-wash); color: var(--accent-ink); font-size: 11.5px; font-weight: 600; }
-.idea-len { font-size: 11.5px; color: var(--ink-faint); white-space: nowrap; align-self: center; }
-.idea-copy { flex: none; height: 26px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-pill); background: transparent; color: var(--ink-quiet); font: inherit; font-size: 12px; font-weight: 500; transition: background .15s, color .15s; }
-.idea-copy:hover { background: var(--hover); color: var(--ink); }
-.idea-lesson { margin: 8px 0 0; font-size: 13.5px; line-height: 1.5; color: var(--ink); }
-.idea-hook { margin: 6px 0 0; font-size: 13px; line-height: 1.5; color: var(--ink-quiet); }
-.idea-hook span { font-size: 11px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-faint); }
-.idea-lines { margin: 9px 0 0; padding: 8px 12px; border-radius: var(--r-sm); background: var(--well); display: grid; gap: 3px; }
-.idea-line { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 8px; font-size: 13px; line-height: 1.55; }
-.idea-why { margin: 8px 0 0; line-height: 1.5; }
-.idea-flags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 9px 0 0; }
-.idea-flags .chip { height: auto; min-height: 22px; padding: 3px 9px; white-space: normal; line-height: 1.35; }
-
 /* Jobs given with "Navi, ..." (or "Hey Navi, ...") on a call. */
 .jobs { display: grid; gap: 10px; }
 .job { padding: 12px 16px; border-radius: var(--r-md); background: var(--card-strong); border: 1px solid var(--line-soft); box-shadow: var(--e1); }
 .job-top { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .job-top b { flex: 1; min-width: 0; font-size: 13.5px; font-weight: 600; line-height: 1.4; }
 .job-top .t-time { flex: none; }
+.job-copy { flex: none; height: 26px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-pill); background: transparent; color: var(--ink-quiet); font: inherit; font-size: 12px; font-weight: 500; transition: background .15s, color .15s; }
+.job-copy:hover { background: var(--hover); color: var(--ink); }
 .job-state { flex: none; display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--ink-quiet); }
 .n-spin.small { width: 14px; height: 14px; border-width: 2px; }
 .job-body { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line-soft); }
@@ -547,9 +531,6 @@ body:has(.onb) .titlebar { background: none; }
 .shot-view figcaption span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .shot-strip img { cursor: zoom-in; }
 @keyframes shotIn { from { opacity: 0; } }
-
-/* Settings: the Short ideas brief. */
-.textarea.n-brief { min-height: 168px; font-size: 13px; line-height: 1.55; }
 
 /* Settings: Voice commands. Each action with its phrases as chips and a box to add one. Small text
    stays on --ink-quiet for 4.5:1 contrast. */

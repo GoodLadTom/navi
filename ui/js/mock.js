@@ -20,9 +20,7 @@ const modes = [
   { id: 'clean', name: 'Clean', icon: 'clean', kind: 'clean', description: 'Your words, tidied: punctuation, capitals, no fillers.', instructions: '', apps: [], useAi: false, builtin: true },
   { id: 'message', name: 'Message', icon: 'chat', kind: 'rewrite', description: 'Short and natural, ready for Slack, Teams or WhatsApp.', instructions: '', apps: ['slack.exe', 'teams.exe', 'ms-teams.exe', 'discord.exe', 'whatsapp.exe', 'telegram.exe', 'signal.exe'], useAi: true, builtin: true },
   { id: 'email', name: 'Email', icon: 'mail', kind: 'rewrite', description: 'Clear paragraphs, ready to send. Greetings and sign-offs only if you say them.', instructions: '', apps: ['outlook.exe', 'olk.exe', 'thunderbird.exe'], useAi: true, builtin: true },
-  { id: 'prompt', name: 'Prompt', icon: 'terminal', kind: 'prompt', description: "A clear brief for a coding agent, with references to your project's files.", instructions: '', apps: ['windowsterminal.exe', 'code.exe', 'cursor.exe', 'windsurf.exe', 'bb.exe', 'claude.exe', 'powershell.exe', 'pwsh.exe', 'cmd.exe'], useAi: true, builtin: true },
-  { id: 'interview', name: 'Interview me', icon: 'bubble', kind: 'rewrite', description: 'Turns what you want into a prompt that has the AI ask you questions before it starts.', instructions: '', apps: [], useAi: true, builtin: true },
-  { id: 'speak', name: 'Speak', icon: 'volume', kind: 'clean', description: 'Plays what you said back in your ElevenLabs voice instead of typing it.', instructions: '', apps: [], useAi: false, builtin: true },
+  { id: 'prompt', name: 'Prompt', icon: 'terminal', kind: 'prompt', description: "A clear, direct brief for an AI tool such as Claude Code, Cursor or ChatGPT, with references to your project's files.", instructions: '', apps: ['windowsterminal.exe', 'code.exe', 'cursor.exe', 'windsurf.exe', 'bb.exe', 'claude.exe', 'codex.exe', 'chatgpt.exe', 'powershell.exe', 'pwsh.exe', 'cmd.exe'], useAi: true, builtin: true },
   { id: 'notes', name: 'Notes', icon: 'notes', kind: 'notes', description: 'Ramble freely, get tidy notes and tasks.', instructions: '', apps: [], useAi: true, builtin: true },
 ];
 
@@ -71,10 +69,6 @@ A run through this week’s newsletter and the Navi launch. The spring newslette
 - [ ] Alex: captions on both clips by Wednesday.
 - [ ] Them: send the final wording for the launch post.
 - [ ] Alex: recut the first ten seconds of the launch film.`,
-    ideas: [
-      { id: 'i1', title: 'Your header image has to work at the size of a stamp', hook: 'I went with the warmer one because it reads better small.', lesson: 'Judge an image at the size people see it in their inbox, not full screen.', quotes: [{ atMs: 15500, text: 'I went with the warmer header image because it reads better small.' }, { atMs: 22000, text: 'Agreed, keep that one.' }], why: 'A quick, visual lesson anyone sending a newsletter can use today.', flags: [], seconds: 30 },
-      { id: 'i2', title: 'Why we moved our launch back a week', hook: 'I would rather move it back a week so the film is properly finished.', lesson: 'A launch only happens once: finish the thing people see first.', quotes: [{ atMs: 99000, text: 'I would rather move it back a week so the film is properly finished.' }], why: 'Honest and relatable for anyone shipping something.', flags: ['Says the launch date is moving: fine to post?'], seconds: 25 },
-    ],
     jobs: [
       { id: 'j1', atMs: 108000, ask: 'draft a short post saying the launch is moving back a week', status: 'done', error: '', resultMd: `**The Navi launch is moving back a week**
 
@@ -112,7 +106,7 @@ Navi kept the full transcript. To have it written up with a summary, decisions a
   },
 ];
 sampleNotes.push({
-  id: 'w1', createdAt: iso(60 * 5), title: 'Set up the new pricing page', app: 'Watch', durationMs: 14 * 60000, status: 'done', filePath: null, myNotes: '', transcript: [], ideas: [], jobs: [],
+  id: 'w1', createdAt: iso(60 * 5), title: 'Set up the new pricing page', app: 'Watch', durationMs: 14 * 60000, status: 'done', filePath: null, myNotes: '', transcript: [], jobs: [],
   shots: [
     { atMs: 0, path: sampleShot('Pricing - Notion', '#C9B6F5'), app: 'Notion', window: 'Pricing', text: '', caption: 'The three plans drafted in Notion' },
     { atMs: 310000, path: sampleShot('Products - Stripe', '#A9A2E6'), app: 'Chrome', window: 'Products - Stripe', text: '', caption: 'The Pro plan created in Stripe at £19 a month' },
@@ -140,8 +134,8 @@ let mockUpdate = { state: 'current', current: '0.1.0', version: '', notes: '', p
 
 function meetingStatus() {
   const s = mockLive.session;
-  if (!s) return { recording: false, finishing: false, id: '', title: '', app: '', elapsedMs: 0, lines: [], myNotes: '', systemAudio: false, ideas: [], jobs: [], shots: [], warning: '', warningDetail: '' };
-  return { recording: true, finishing: s.finishing, id: s.id, title: s.title, app: s.app, elapsedMs: Date.now() - s.startedAt, lines: s.lines.slice(), myNotes: s.myNotes, systemAudio: true, ideas: s.ideas.slice(), jobs: s.jobs.slice(), shots: s.shots.slice(), warning: '', warningDetail: '' };
+  if (!s) return { recording: false, finishing: false, id: '', title: '', app: '', elapsedMs: 0, lines: [], myNotes: '', systemAudio: false, jobs: [], shots: [], warning: '', warningDetail: '' };
+  return { recording: true, finishing: s.finishing, id: s.id, title: s.title, app: s.app, elapsedMs: Date.now() - s.startedAt, lines: s.lines.slice(), myNotes: s.myNotes, systemAudio: true, jobs: s.jobs.slice(), shots: s.shots.slice(), warning: '', warningDetail: '' };
 }
 let mockWatch = { watching: false, id: '', elapsedMs: 0, shots: 0 };
 
@@ -284,7 +278,7 @@ const state = {
     privacy: { localOnly: false, keepAudioDays: 30, saveHistory: true },
     general: { launchAtLogin: true, startMinimised: true, pasteMethod: 'paste', restoreClipboard: true, showPill: true, showFirefly: true, closeToTray: true, trayTipShown: false, checkUpdates: true, theme: 'light' },
     speak: { voiceId: 'v2', voiceName: 'George', model: 'eleven_v4_turbo' },
-    notes: { detectCalls: true, systemAudio: true, autoStop: true, shortIdeas: true, ideasBrief: '', callJobs: true, callScreenshots: false, actionsTo: 'clickup' },
+    notes: { detectCalls: true, systemAudio: true, autoStop: true, callJobs: true, callScreenshots: false, actionsTo: 'clickup' },
     voiceCommands: { enabled: true, commands: structuredClone(DEFAULT_VOICE_COMMANDS) },
     watch: { everySecs: 10 },
   },
@@ -511,7 +505,7 @@ const handlers = {
     if (mockLive.session) throw 'Navi is already taking notes.';
     await wait(400);
     const id = 'live' + Date.now();
-    mockLive.session = { id, title: 'Notes, 14 October, 15:02', app: source || '', startedAt: Date.now(), lines: [], myNotes: '', finishing: false, ideas: [], jobs: [], shots: [] };
+    mockLive.session = { id, title: 'Notes, 14 October, 15:02', app: source || '', startedAt: Date.now(), lines: [], myNotes: '', finishing: false, jobs: [], shots: [] };
     let i = 0;
     mockLive.timer = setInterval(() => {
       const s = mockLive.session;
@@ -519,10 +513,7 @@ const handlers = {
       const [who, text] = mockLive.script[i++];
       s.lines.push({ atMs: Date.now() - s.startedAt, who, text });
       if (i === 4) s.jobs.push({ id: 'lj1', atMs: Date.now() - s.startedAt, ask: 'list what the client needs from me for the menu', status: 'working', resultMd: '', error: '' });
-      if (i === 5) {
-        s.jobs[0] = { ...s.jobs[0], status: 'done', resultMd: '- The Friday specials, each week\n- Photos of the dishes\n- Who updates the site from a phone' };
-        s.ideas.push({ id: 'li1', title: 'Let clients change their own specials from a phone', hook: 'Can it be done from a phone?', lesson: 'Build small sites so the owner can make weekly changes without you.', quotes: [{ atMs: s.lines[2].atMs, text: 'We want the specials on the home page, changed every Friday.' }, { atMs: s.lines[4].atMs, text: 'Can it be done from a phone?' }], why: 'A practical point for anyone building sites for small businesses.', flags: [], seconds: 35 });
-      }
+      if (i === 5) s.jobs[0] = { ...s.jobs[0], status: 'done', resultMd: '- The Friday specials, each week\n- Photos of the dishes\n- Who updates the site from a phone' };
       emit('meeting', meetingStatus());
     }, 2500);
     emit('meeting', meetingStatus());
@@ -535,7 +526,7 @@ const handlers = {
     emit('meeting', meetingStatus());
     await wait(1200);
     clearInterval(mockLive.timer);
-    const note = { id: s.id, createdAt: new Date(s.startedAt).toISOString(), title: 'Menu and specials for the new site', app: s.app, durationMs: Date.now() - s.startedAt, status: 'done', filePath: null, myNotes: s.myNotes, transcript: s.lines, ideas: s.ideas, jobs: s.jobs, shots: s.shots,
+    const note = { id: s.id, createdAt: new Date(s.startedAt).toISOString(), title: 'Menu and specials for the new site', app: s.app, durationMs: Date.now() - s.startedAt, status: 'done', filePath: null, myNotes: s.myNotes, transcript: s.lines, jobs: s.jobs, shots: s.shots,
       notesMd: `# Menu and specials for the new site
 ## Summary
 The specials go on the home page and change every Friday, updated from a phone.
@@ -548,15 +539,8 @@ The specials go on the home page and change every Friday, updated from a phone.
   },
   set_my_notes: ({ text }) => { if (mockLive.session) mockLive.session.myNotes = text; },
   set_meeting_title: ({ title }) => { if (mockLive.session) { mockLive.session.title = title; emit('meeting', meetingStatus()); } },
-  list_notes: () => state.notes.map((n) => ({ ...n, transcript: [], ideas: [], jobs: [], shots: [], counts: { ideas: (n.ideas || []).length, jobs: (n.jobs || []).length, shots: (n.shots || []).length } })),
-  get_note: ({ id }) => { const n = state.notes.find((x) => x.id === id); return n ? structuredClone({ ideas: [], jobs: [], shots: [], ...n }) : null; },
-  find_short_ideas: async ({ id }) => {
-    await wait(1400);
-    const n = state.notes.find((x) => x.id === id);
-    n.ideas = [{ id: 'f1', title: 'Ask who will update the site before you build it', hook: 'Who will update them?', lesson: 'The person keeping a site up to date decides how it should be built.', quotes: [{ atMs: (n.transcript[1] || { atMs: 0 }).atMs, text: (n.transcript[1] || { text: '' }).text }], why: 'One question that saves a rebuild.', flags: [], seconds: 30 }];
-    emit('note', n);
-    return structuredClone(n);
-  },
+  list_notes: () => state.notes.map((n) => ({ ...n, transcript: [], jobs: [], shots: [], counts: { jobs: (n.jobs || []).length, shots: (n.shots || []).length } })),
+  get_note: ({ id }) => { const n = state.notes.find((x) => x.id === id); return n ? structuredClone({ jobs: [], shots: [], ...n }) : null; },
   send_note_actions: async () => { await wait(700); return '3 actions to ClickUp'; },
   watch_status: () => ({ ...mockWatch }),
   start_watch: () => { mockWatch = { watching: true, id: 'mw', elapsedMs: 0, shots: 0 }; emit('watch', { ...mockWatch }); },

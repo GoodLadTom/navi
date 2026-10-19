@@ -29,8 +29,8 @@ use serde_json::{json, Value};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-/// A short reply (a dictation's clean-up, the Settings test) gets this long. Call notes and Short
-/// ideas ask for thousands of tokens, so each request also gets time per token of reply.
+/// A short reply (a dictation's clean-up, the Settings test) gets this long. Call notes and screen
+/// watch write-ups ask for thousands of tokens, so each request also gets time per token of reply.
 const TIMEOUT: Duration = Duration::from_secs(20);
 const TIMEOUT_PER_TOKEN: Duration = Duration::from_millis(50);
 /// A model on this computer may need loading first, and writes slowly without a big graphics card.
@@ -144,7 +144,7 @@ impl Llm {
     }
 
     /// How long one request may take. A model writes a few dozen tokens a second, so a reply of
-    /// thousands of tokens (call notes, Short ideas) needs minutes where a dictation needs seconds.
+    /// thousands of tokens (call notes, jobs on calls) needs minutes where a dictation needs seconds.
     fn request_timeout(&self, max_tokens: u32) -> Duration {
         // Reasoning models think before they answer (see `body`).
         let tokens = if self.provider == "openai" && is_reasoning_model(&self.model) { max_tokens.saturating_add(2048) } else { max_tokens };
@@ -543,7 +543,7 @@ mod tests {
         let claude = Llm::from_settings(&ai("anthropic", "claude-haiku-4-5-20251001", None), key(), false).expect("llm");
         // A dictation keeps the old 20 seconds, give or take its reply.
         assert!(claude.request_timeout(10) < Duration::from_secs(21));
-        // Call notes and Short ideas (3,000 and 6,000 tokens) get minutes, not 20 seconds.
+        // Long replies (call notes ask for 3,000 tokens) get minutes, not 20 seconds.
         assert!(claude.request_timeout(3000) >= Duration::from_secs(150));
         assert!(claude.request_timeout(6000) >= Duration::from_secs(300));
         assert!(claude.request_timeout(u32::MAX) <= TIMEOUT_MAX);

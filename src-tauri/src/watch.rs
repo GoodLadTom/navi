@@ -341,7 +341,7 @@ struct Step {
 
 /// The AI's write-up with its picks checked: real screenshot numbers, each once, at most KEEP_MAX.
 fn parse(reply: &str, count: usize) -> Option<Written> {
-    let json = crate::ideas::json_object(reply)?;
+    let json = json_object(reply)?;
     let mut w: Written = serde_json::from_str(json).ok()?;
     let mut seen = std::collections::HashSet::new();
     w.steps.retain(|s| s.shot >= 1 && s.shot <= count && seen.insert(s.shot));
@@ -351,6 +351,13 @@ fn parse(reply: &str, count: usize) -> Option<Written> {
         return None;
     }
     Some(w)
+}
+
+/// The JSON object in a reply that may wrap it in a code fence or a sentence.
+fn json_object(reply: &str) -> Option<&str> {
+    let start = reply.find('{')?;
+    let end = reply.rfind('}')?;
+    (end > start).then(|| &reply[start..=end])
 }
 
 /// The screenshots to keep, with the AI's captions. When none of its picks is a real screenshot (it
