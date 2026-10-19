@@ -94,7 +94,11 @@ job is never overwritten by an older copy that still says "working".
 
 Voice commands (`wake` and `spoken`, off by default; Settings > Voice commands). Every action has
 a list of phrases the user can change: wake ("Navi", "Hey Navi"), scratch that, watch my screen,
-stop watching, take notes, stop taking notes, cancel ("don't worry") and finish ("that's all").
+stop watching, take notes, stop taking notes, cancel ("don't worry"), finish ("that's all") and
+change colour ("turn", "change to", "switch to", "make it"). A colour phrase only counts with a
+colour after it: `Matcher` adds each colour's words from `colours` (its name, plus yellow, green,
+blue, pink, purple, grey and a few more) and hears them exactly, so "make it Greek" is never heard
+as green.
 `spoken.rs` holds the logic as plain state machines (a segmenter, the phrase `Matcher`, an
 `IdleListener` and a `TakeListener`); `wake.rs` and `controller.rs` are thin shells around them,
 and the unit tests and the live measurement run the same code.
@@ -116,6 +120,16 @@ and the unit tests and the live measurement run the same code.
   wakes itself. Measured on the owner's PC (18 Oct 2026, generated speech): the bubble about 0.3 s
   after the wake word, one-breath commands in 0.2 to 0.3 s, cancel and finish about 0.5 s after the
   phrase.
+
+Colours (`colours`): Lilac (the default), Gold, Teal, Sky, Rose and Graphite, saved as
+`general.colour`. `ui/css/tokens.css` holds each palette for light and dark, and `ui/js/theme.js`
+puts `data-colour` on the root of every window. Picking one in Settings or saying "Navi, turn gold"
+saves it and emits `settings-changed`, so the bubble, its firefly and the corner card change at
+once; the voice command shows "Colour: Gold" in the bubble and types nothing. The logo in the
+sidebar and on the welcome screen is drawn in CSS: the firefly from one mask
+(`ui/img/firefly-mark.png`) on a tile in the colour. `colours::tray_icon` redraws
+`src-tauri/icons/tray.png` in the colour's tile and mark, at start-up and, through the tray's
+`set_icon`, whenever the colour changes; the installed app icon on the taskbar stays lilac.
 
 "Watch my screen" (`watch`): started by "Navi, watch" (said with the shortcut or to the wake-word
 listener), the tray or the Notes page. Every 10 seconds by default (Settings: 5, 10, 20 or 30) it
@@ -169,7 +183,7 @@ file but main.rs) describes it.
 
 | Area | Files |
 |---|---|
-| App setup, tray, shared state and types | lib.rs, main.rs, state.rs, types.rs, paths.rs, settings.rs |
+| App setup, tray, shared state and types | lib.rs, main.rs, state.rs, types.rs, paths.rs, settings.rs, colours.rs |
 | Takes and the interface's commands | controller.rs, commands.rs |
 | Windows systems | hotkey.rs, insert.rs, overlay.rs, context.rs |
 | Audio and the speech engine | audio.rs, sounds.rs, engine.rs, models.rs |

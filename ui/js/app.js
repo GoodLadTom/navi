@@ -18,7 +18,7 @@ export const store = {
     try {
       const saved = await invoke('save_settings', { settings: next });
       this.set({ settings: saved || next });
-      applyTheme(this.settings.general?.theme);
+      applyTheme(this.settings.general?.theme, this.settings.general?.colour);
       await refreshKeyLabels();
       renderShortcut();
       return true;
@@ -208,7 +208,7 @@ async function boot() {
   wireWindow();
   const [info, settings] = await Promise.all([invoke('app_info'), invoke('get_settings')]);
   store.set({ info, settings, engine: info?.engine || store.engine });
-  applyTheme(settings.general?.theme);
+  applyTheme(settings.general?.theme, settings.general?.colour);
   await Promise.all([refreshKeyLabels(), refreshModeNames()]);
   renderShortcut();
   renderStatus();
@@ -233,7 +233,7 @@ async function boot() {
   listen('navigate', (where) => { const [id, arg] = String(where).split('/'); go(id, arg); });
   listen('update', renderUpdate);
   invoke('update_status').then(renderUpdate).catch(() => {});
-  listen('settings-changed', async () => { store.set({ settings: await invoke('get_settings') }); applyTheme(store.settings.general?.theme); await Promise.all([refreshKeyLabels(), refreshModeNames()]); renderShortcut(); });
+  listen('settings-changed', async () => { store.set({ settings: await invoke('get_settings') }); applyTheme(store.settings.general?.theme, store.settings.general?.colour); await Promise.all([refreshKeyLabels(), refreshModeNames()]); renderShortcut(); });
 
   refreshSuggestions();
 

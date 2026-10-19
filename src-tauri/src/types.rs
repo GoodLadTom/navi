@@ -104,8 +104,9 @@ pub struct VoiceCommandEntry {
     pub phrases: Vec<String>,
 }
 
-/// Every action, in the order Settings shows them.
-pub const VOICE_ACTIONS: &[&str] = &["wake", "scratch_that", "watch_on", "watch_off", "notes_on", "notes_off", "cancel", "finish"];
+/// Every action, in the order settings.json keeps them. Settings shows "colour" with the other
+/// commands said after the wake word.
+pub const VOICE_ACTIONS: &[&str] = &["wake", "scratch_that", "watch_on", "watch_off", "notes_on", "notes_off", "cancel", "finish", "colour"];
 
 /// What Whisper writes for silence and noise. Listening for any of these would set Navi off in a
 /// quiet room, so Settings refuses them.
@@ -151,6 +152,8 @@ fn default_phrases(action: &str) -> &'static [&'static str] {
         // Two words, natural, and rarely a whole sentence on its own in the middle of dictation
         // (when it ends a message, finishing is what you wanted anyway).
         "finish" => &["that's all"],
+        // Followed by a colour's name: "turn gold", "make it sky" (colours.rs, spoken.rs).
+        "colour" => &["turn", "change to", "switch to", "make it"],
         _ => &[],
     }
 }
@@ -176,6 +179,7 @@ pub fn voice_action_label(action: &str) -> &str {
         "notes_off" => "Stop taking notes",
         "cancel" => "Cancel",
         "finish" => "Finish",
+        "colour" => "Change colour",
         other => other,
     }
 }
@@ -333,18 +337,20 @@ impl VoiceCommandSettings {
 
     /// The non-wake action whose phrase is all of `said`, comparing phrase_key, after dropping
     /// "please", "can you", "could you", "just", "now" from the front and "please", "now",
-    /// "thanks", "thank you" from the end. "stop taking notes." -> Some("notes_off").
+    /// "thanks", "thank you" from the end. "stop taking notes." -> Some("notes_off"). A colour
+    /// phrase counts with a colour after it: "turn gold" -> Some("colour").
     pub fn action_for(&self, said: &str) -> Option<String> {
         let key = phrase_key(said);
         let bare = without_fillers(&key);
         if key.is_empty() {
             return None;
         }
+        let with_colour = |p: &str| [&bare, &key].iter().any(|k| k.strip_prefix(p).and_then(|w| w.strip_prefix(' ')).is_some_and(|w| crate::colours::by_word(w).is_some()));
         VOICE_ACTIONS
             .iter()
             .filter(|a| **a != "wake")
             // A phrase that itself starts with a filler ("just stop") still matches as typed.
-            .find(|a| self.phrases(a).iter().map(|p| phrase_key(p)).any(|p| p == bare || p == key))
+            .find(|a| self.phrases(a).iter().map(|p| phrase_key(p)).any(|p| if **a == "colour" { with_colour(&p) } else { p == bare || p == key }))
             .map(|a| a.to_string())
     }
 
@@ -428,6 +434,22 @@ impl VoiceCommandSettings {
                         *p = clean_phrase(after_words(p, wake.split(' ').count()));
                         break;
                     }
+                }
+            }
+        }
+
+        // 3b. "turn gold" typed into Change colour is saved as "turn": the listener hears the colour
+        // after the phrase. A colour on its own has nothing before it to listen for.
+        for e in known.iter_mut().filter(|e| e.action == "colour") {
+            for p in e.phrases.iter_mut() {
+                let key = phrase_key(p);
+                let words = key.split(' ').count();
+                if key.rsplit(' ').next().is_some_and(|w| crate::colours::by_word(w).is_some()) {
+                    if words == 1 {
+                        return Err(format!("\u{201c}{p}\u{201d} is a colour. Type what you say before it, such as \u{201c}turn\u{201d}."));
+                    }
+                    let colour = after_words(p, words - 1);
+                    *p = clean_phrase(&p[..p.len() - colour.len()]);
                 }
             }
         }
@@ -841,6 +863,9 @@ pub struct GeneralSettings {
     pub check_updates: bool,
     /// "light", "dark" or "system" (follow Windows).
     pub theme: String,
+    /// Navi's colour, one of colours.rs COLOURS: "lilac" (the default), "gold", "teal", "sky",
+    /// "rose" or "graphite".
+    pub colour: String,
 }
 
 impl Default for GeneralSettings {
@@ -856,6 +881,7 @@ impl Default for GeneralSettings {
             tray_tip_shown: false,
             check_updates: true,
             theme: "light".into(),
+            colour: crate::colours::DEFAULT.into(),
         }
     }
 }
@@ -1196,6 +1222,7 @@ mod tests {
             ("notes_off", vec!["stop taking notes"]),
             ("cancel", vec!["don't worry"]),
             ("finish", vec!["that's all"]),
+            ("colour", vec!["turn", "change to", "switch to", "make it"]),
         ]
         .into_iter()
         .map(|(a, p)| (a.to_string(), p.into_iter().map(String::from).collect()))
@@ -1240,6 +1267,7 @@ mod tests {
         assert_eq!(voice_action_label("notes_off"), "Stop taking notes");
         assert_eq!(voice_action_label("cancel"), "Cancel");
         assert_eq!(voice_action_label("finish"), "Finish");
+        assert_eq!(voice_action_label("colour"), "Change colour");
         assert_eq!(voice_action_label("open_app"), "open_app", "an unknown action is named by its id");
         for action in VOICE_ACTIONS {
             assert_ne!(voice_action_label(action), *action, "{action} has a label");
@@ -1267,6 +1295,20 @@ mod tests {
         // Your own wake word counts too.
         let vc = vc_with(&[("wake", &["Computer"]), ("finish", &["computer, that's all"])]).normalised().unwrap();
         assert_eq!(vc.phrases("finish"), ["that's all"]);
+    }
+
+    #[test]
+    fn a_colour_typed_into_change_colour_is_dropped() {
+        // The listener hears the colour after the phrase, so the phrase is what comes before it.
+        let vc = vc_with(&[("colour", &["turn gold", "Navi, go Yellow!", "make it"])]).normalised().unwrap();
+        assert_eq!(vc.phrases("colour"), ["turn", "go", "make it"]);
+        assert_eq!(vc.normalised(), Ok(vc.clone()), "a second save changes nothing");
+        assert_eq!(vc_with(&[("colour", &["Gold!"])]).normalised(), Err("\u{201c}Gold\u{201d} is a colour. Type what you say before it, such as \u{201c}turn\u{201d}.".into()));
+        assert_eq!(vc_with(&[("colour", &["Navi, teal"])]).normalised(), Err("\u{201c}teal\u{201d} is a colour. Type what you say before it, such as \u{201c}turn\u{201d}.".into()));
+        // A colour word anywhere else is any other word.
+        assert!(vc_with(&[("colour", &["go for gold now"])]).normalised().is_ok());
+        assert!(vc_with(&[("watch_on", &["gold"])]).normalised().is_ok());
+        assert_eq!(vc_with(&[("colour", &["take notes"])]).normalised(), Err("\u{201c}take notes\u{201d} is already used for Take notes.".into()));
     }
 
     #[test]
@@ -1415,6 +1457,13 @@ mod tests {
         // A command that is off matches nothing; one that starts with a filler still matches.
         assert_eq!(vc_with(&[("notes_off", &[])]).action_for("stop taking notes"), None);
         assert_eq!(vc_with(&[("watch_off", &["just stop"])]).action_for("just stop").as_deref(), Some("watch_off"));
+        // A colour phrase is a command with a colour after it, and only then.
+        assert_eq!(vc.action_for("Change to teal.").as_deref(), Some("colour"));
+        assert_eq!(vc.action_for("please turn gold").as_deref(), Some("colour"));
+        assert_eq!(vc.action_for("make it pink, thanks").as_deref(), Some("colour"));
+        for said in ["turn", "change to", "turn orange", "turn gold into cash", "make it shorter"] {
+            assert_eq!(vc.action_for(said), None, "{said}");
+        }
     }
 
     #[test]

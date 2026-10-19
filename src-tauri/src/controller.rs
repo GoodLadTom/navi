@@ -1065,6 +1065,12 @@ pub async fn run_spoken(app: &Arc<App>, action: Action, heard: &str, audio: Vec<
             };
             run_command(app, &rec, VoiceCommand::Undo, heard, &audio, Instant::now()).await?;
         }
+        Action::Colour(id) => {
+            // Saved, and every window and the tray icon change at once. Nothing is typed.
+            let colour = crate::colours::switch(app, id);
+            spoken_note(app, format!("Colour: {}", colour.name));
+            app.sounds.play(Cue::Done, &settings.sounds);
+        }
         Action::Wake | Action::Cancel | Action::Finish => {}
     }
     Ok(())
@@ -2419,6 +2425,16 @@ mod tests {
         // A custom wake word leaves what came after it for voice edits and dictation.
         let hey = matcher_with_wake(&["Hey"]);
         assert_eq!(after_take("Hey, make that shorter", &hey, true, true, true), dictate("Hey, make that shorter", Some("make that shorter")));
+    }
+
+    #[test]
+    fn a_colour_after_the_wake_word_is_never_typed() {
+        let m = matcher_with_wake(&["Navi", "Hey Navi"]);
+        assert_eq!(after_take("Navi, turn gold.", &m, true, true, true), AfterTake::Spoken(Action::Colour("gold")));
+        assert_eq!(after_take("Navi, change to teal", &m, false, false, false), AfterTake::Spoken(Action::Colour("teal")), "from the shortcut too");
+        for said in ["Turn gold.", "The gold price rose again.", "Navi, the gold price rose again.", "Navi, turn gold into cash.", "Navi, turn orange."] {
+            assert!(matches!(after_take(said, &m, true, true, false), AfterTake::Dictate { .. }), "{said}");
+        }
     }
 
     #[test]

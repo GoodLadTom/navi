@@ -1,6 +1,7 @@
 //! Navi: local, private dictation that writes like you.
 
 pub mod audio;
+pub mod colours;
 pub mod commands;
 pub mod context;
 pub mod controller;
@@ -489,7 +490,8 @@ fn build_tray(handle: &AppHandle, app: &Arc<App>) -> anyhow::Result<()> {
     )?;
     *app.tray_toggles.lock() = vec![hey_navi.clone(), watch_item.clone()];
 
-    let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
+    // The logo on its tile, in the colour from Settings > General > Colour.
+    let icon = colours::tray_icon(&app.settings().general.colour)?;
     let app_for_menu = app.clone();
     {
         let mut all = vec![auto.clone()];

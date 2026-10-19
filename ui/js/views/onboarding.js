@@ -35,7 +35,8 @@ export function run({ store }) {
 
     function welcome() {
       frame(h('div', {},
-        h('img', { class: 'welcome-mark', src: markSrc(), alt: '' }),
+        // Navi's logo on its tile (app.css .logo-tile), which reads on light and dark alike.
+        h('span', { class: 'welcome-mark logo-tile', 'aria-hidden': 'true' }),
         h('div', { class: 'eyebrow' }, 'Welcome'),
         h('h1', {}, 'Meet Navi.'),
         h('p', { class: 'lead' }, 'Hold a shortcut, talk, and let go. Your words appear wherever you were typing, tidied up and spelt the British way. It runs on this computer, and AI only comes in if you turn it on.'),
@@ -227,9 +228,4 @@ export function run({ store }) {
 
     go(0);
   });
-}
-
-// Navi's logo on its lilac tile, which reads on light and dark alike.
-function markSrc() {
-  return 'img/navi-logo.png';
 }

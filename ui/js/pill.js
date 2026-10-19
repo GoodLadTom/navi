@@ -6,12 +6,12 @@ import { applyTheme } from './theme.js';
 // The firefly has the whole screen here.
 const bubble = new BubbleView(document.body, { roam: true });
 
-// The theme and the firefly setting, now and whenever Settings change.
+// The theme, the colour and the firefly setting, now and whenever Settings change.
 const followTheme = () => invoke('get_settings').then((s) => {
-  applyTheme(s?.general?.theme);
+  applyTheme(s?.general?.theme, s?.general?.colour);
   bubble.setFirefly(s?.general?.showFirefly !== false);
 }).catch(() => {});
-followTheme();
+const themed = followTheme();
 listen('settings-changed', followTheme);
 
 listen('pill', (p) => bubble.set(p));
@@ -19,8 +19,9 @@ listen('level', (v) => bubble.level(v));
 listen('ramble-partial', (text) => bubble.live(text));
 
 if (!isTauri) {
-  // Browser preview: loop a demo take on a stone background.
+  // Browser preview: loop a demo take on a stone background, once the colour is on (the bubble
+  // reads its wave colour as a take starts).
   document.body.classList.add('preview');
   const loop = async () => { await invoke('simulate_take'); setTimeout(loop, 1400); };
-  loop();
+  themed.then(loop);
 }

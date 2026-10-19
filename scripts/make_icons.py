@@ -6,7 +6,9 @@ is drawn separately in ui/js/firefly.js and is not touched here.
     npx tauri icon src-tauri/icons/logo-tile-1024.png -o src-tauri/icons
 
 Writes src-tauri/icons/logo-tile-1024.png (the input for `tauri icon`, which makes every app icon
-size), src-tauri/icons/tray.png and ui/img/navi-logo.png. Delete the android and ios folders
+size), src-tauri/icons/tray.png, ui/img/navi-logo.png and ui/img/firefly-mark.png (the logo alone,
+placed as on the tile, which the interface uses as a mask to draw the tile in the colour from
+Settings; colours.rs recolours tray.png the same way). Delete the android and ios folders
 `tauri icon` also creates; Navi does not use them.
 """
 from pathlib import Path
@@ -33,13 +35,15 @@ def mark() -> Image.Image:
     return white
 
 
-def tile(size: int, margin: float = MARGIN) -> Image.Image:
-    """A size x size image: the rounded lilac tile with the logo centred on it."""
+def tile(size: int, margin: float = MARGIN, fill: bool = True) -> Image.Image:
+    """A size x size image: the rounded lilac tile with the logo centred on it. With fill False,
+    the logo alone in the same place, on transparent."""
     big = size * 4  # drawn large and scaled down for smooth edges
     out = Image.new('RGBA', (big, big), (0, 0, 0, 0))
     inset = round(big * margin)
     side = big - 2 * inset
-    ImageDraw.Draw(out).rounded_rectangle((inset, inset, inset + side - 1, inset + side - 1), radius=round(side * RADIUS), fill=TILE + (255,))
+    if fill:
+        ImageDraw.Draw(out).rounded_rectangle((inset, inset, inset + side - 1, inset + side - 1), radius=round(side * RADIUS), fill=TILE + (255,))
     m = mark()
     w = round(side * MARK)
     h = round(m.height * w / m.width)
@@ -62,4 +66,5 @@ if __name__ == '__main__':
     tile(1024).save(ROOT / 'src-tauri' / 'icons' / 'logo-tile-1024.png')
     tile(256, margin=0.0).save(ROOT / 'src-tauri' / 'icons' / 'tray.png')
     tile(128, margin=0.0).save(ROOT / 'ui' / 'img' / 'navi-logo.png')
+    tile(256, margin=0.0, fill=False).save(ROOT / 'ui' / 'img' / 'firefly-mark.png')
     print(f'white on the tile: {contrast((255, 255, 255), TILE):.2f}:1')
