@@ -123,6 +123,57 @@ You drafted three plans in Notion, created the Pro plan in Stripe and checked th
 
 ![The Pro plan created in Stripe at £19 a month](<${sampleShot('Products - Stripe', '#A9A2E6')}>)`,
 });
+// A ramble the AI couldn't write up: rough notes made on the computer, saying why (controller.rs
+// process_ramble, text/ramble.rs rough_notes_notice). Write again turns them into proper notes.
+const rambleSaid = [
+  'Okay so for the launch we need the website live first.',
+  'Then the film, which still needs another pass on the opening.',
+  'I need to email Priya the launch post wording by Friday.',
+  'We decided to keep the download on GitHub releases for now.',
+];
+sampleNotes.push({
+  id: 'r1', createdAt: iso(60 * 3), title: 'For the launch we need the website live', app: 'Ramble', durationMs: 3 * 60000 + 20000, status: 'done', filePath: null, myNotes: '', jobs: [], shots: [],
+  transcript: rambleSaid.map((text, i) => ({ atMs: i * 50000, who: 'you', text })),
+  notesMd: `# For the launch we need the website live
+
+The AI couldn't write these notes: Claude Code took too long. These are rough notes Navi made on your computer. Press Write again on the Notes page to try once more.
+
+## Summary
+
+For the launch we need the website live first. Then the film, which still needs another pass on the opening.
+
+## Key points
+
+- I need to email Priya the launch post wording by Friday.
+- We decided to keep the download on GitHub releases for now.
+
+## Decisions
+
+- We decided to keep the download on GitHub releases for now.
+
+## Tasks
+
+- [ ] Email Priya the launch post wording by Friday (due by Friday)`,
+});
+// What Write again gives the ramble above, as the ramble prompt would (meeting.rs rewrite_ramble).
+const rambleRewritten = { title: 'Navi launch order', notesMd: `# Navi launch order
+
+## Summary
+
+Get the website live first, then the film once its opening has had another pass. The download stays on GitHub releases for now.
+
+## Key points
+
+- The website goes live before anything else.
+- The film's opening needs another pass.
+
+## Decisions
+
+- Keep the download on GitHub releases for now.
+
+## Tasks
+
+- [ ] Email Priya the launch post wording (due by Friday)` };
 // Newest first, the order store/notes.rs lists notes in, so each day heading shows once.
 sampleNotes.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 const mockLive = { session: null, timer: null, script: [
@@ -138,6 +189,8 @@ function meetingStatus() {
   return { recording: true, finishing: s.finishing, id: s.id, title: s.title, app: s.app, elapsedMs: Date.now() - s.startedAt, lines: s.lines.slice(), myNotes: s.myNotes, systemAudio: true, jobs: s.jobs.slice(), shots: s.shots.slice(), warning: '', warningDetail: '' };
 }
 let mockWatch = { watching: false, id: '', elapsedMs: 0, shots: 0 };
+// How many demo takes the bubble preview has run (simulate_take).
+let simulated = 0;
 
 // Settings > Voice commands as Navi ships them. Keep in step with default_voice_commands in
 // src-tauri/src/types.rs.
@@ -571,7 +624,13 @@ The specials go on the home page and change every Friday, updated from a phone.
     if (title) { n.title = title; n.notesMd = /^#\s+.+$/m.test(n.notesMd) ? n.notesMd.replace(/^#\s+.+$/m, `# ${title}`) : `# ${title}\n\n${n.notesMd}`; }
     return structuredClone(n);
   },
-  rewrite_note: async ({ id }) => { await wait(1500); const n = state.notes.find((x) => x.id === id); emit('note', n); return structuredClone(n); },
+  rewrite_note: async ({ id }) => {
+    await wait(1500);
+    const n = state.notes.find((x) => x.id === id);
+    if (n.id === 'r1') Object.assign(n, rambleRewritten);
+    emit('note', n);
+    return structuredClone(n);
+  },
   delete_note: ({ id }) => { state.notes = state.notes.filter((n) => n.id !== id); },
   prompt_state: () => ({ state: 'hidden' }),
   update_status: () => ({ ...mockUpdate }),
@@ -588,6 +647,17 @@ The specials go on the home page and change every Friday, updated from a phone.
   open_note: () => null,
   reveal_note_file: () => null,
   simulate_take: async () => {
+    // Every third time, a ramble the AI couldn't write up: the bubble says rough notes and why.
+    if (++simulated % 3 === 0) {
+      emit('pill', { state: 'listening', kind: 'ramble', modeName: 'Notes', appLabel: 'Notion' }); startLevels();
+      await wait(1200); emit('ramble-partial', 'so the website goes live first and then the film');
+      await wait(1800); stopLevels();
+      emit('pill', { state: 'processing', modeName: 'Notes' });
+      await wait(1200);
+      emit('pill', { state: 'notice', message: "Saved rough notes: the AI couldn't write them (Claude Code took too long) · 1 task" });
+      await wait(5000); emit('pill', { state: 'hidden' });
+      return;
+    }
     emit('pill', { state: 'listening', kind: 'talk', modeName: 'Email', appLabel: 'Outlook' }); startLevels();
     await wait(2600); stopLevels();
     emit('pill', { state: 'processing', modeName: 'Email' });

@@ -11,8 +11,9 @@
 //! * `offline_notes`: no AI available. Title from the first sentence (≤ 8 words), summary = first
 //!   two sentences, points = remaining sentences, tasks = sentences that start with or contain
 //!   "I need to", "we need to", "remember to", "make sure", "todo", "to do", "don't forget".
-//! * `to_markdown`: "# Title", date line, Summary, Key points, Decisions, Tasks as "- [ ]" lines
-//!   with owner and due in brackets, then the full transcript under "Transcript".
+//! * `to_markdown`: "# Title", date line, a notice line when there is one (`rough_notes_notice`:
+//!   the AI failed, so these are offline notes), Summary, Key points, Decisions, Tasks as "- [ ]"
+//!   lines with owner and due in brackets, then the full transcript under "Transcript".
 //!
 //! Details:
 //! * `parse_notes` also accepts "keyPoints"/"key_points" and "actionItems"/"action_items", tasks
@@ -350,13 +351,16 @@ fn is_decision(sentence: &str) -> bool {
     .any(|p| has_phrase(&lower, p))
 }
 
-/// `when` is a human date like "Tuesday 14 October 2026, 13:05".
-pub fn to_markdown(notes: &Notes, transcript: &str, when: &str) -> String {
+/// `when` is a human date like "Tuesday 14 October 2026, 13:05". `notice` is a line under it, such
+/// as `rough_notes_notice`. Any of `transcript`, `when` and `notice` may be "" to leave it out.
+pub fn to_markdown(notes: &Notes, transcript: &str, when: &str, notice: &str) -> String {
     let title = if notes.title.trim().is_empty() { "Notes" } else { notes.title.trim() };
     let mut md = format!("# {title}\n\n");
-    if !when.trim().is_empty() {
-        md.push_str(when.trim());
-        md.push_str("\n\n");
+    for line in [when, notice] {
+        if !line.trim().is_empty() {
+            md.push_str(line.trim());
+            md.push_str("\n\n");
+        }
     }
     if !notes.summary.trim().is_empty() {
         md.push_str("## Summary\n\n");
@@ -373,6 +377,16 @@ pub fn to_markdown(notes: &Notes, transcript: &str, when: &str) -> String {
         md.push('\n');
     }
     md.trim_end().to_string() + "\n"
+}
+
+/// The line that heads rough notes made because the AI failed: what went wrong (`why`, its error)
+/// and how to have them written up properly.
+pub fn rough_notes_notice(why: &str) -> String {
+    let why = why.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("it didn't say why");
+    format!(
+        "The AI couldn't write these notes: {} These are rough notes Navi made on your computer. Press Write again on the Notes page to try once more.",
+        cleanup::full_stop(why)
+    )
 }
 
 /// Plain text version for pasting into an app.
@@ -488,7 +502,7 @@ mod tests {
     #[test]
     fn markdown_and_plain_rendering() {
         let n = parse_notes(JSON).expect("notes");
-        let md = to_markdown(&n, "the raw words", "Tuesday 14 October 2026, 13:05");
+        let md = to_markdown(&n, "the raw words", "Tuesday 14 October 2026, 13:05", "");
         assert!(md.starts_with("# Launch plan\n\nTuesday 14 October 2026, 13:05\n\n## Summary\n\nWe launch Friday."));
         assert!(md.contains("## Key points\n\n- Design is done\n"));
         assert!(md.contains("## Decisions\n\n- Blue logo\n"));
@@ -499,7 +513,24 @@ mod tests {
         assert!(plain.contains("Tasks:\n- Email Sam the copy (Alex, due tomorrow)"));
         assert!(!plain.contains('#'));
         let empty = Notes { title: "Only a title".into(), ..Default::default() };
-        assert_eq!(to_markdown(&empty, "", ""), "# Only a title\n");
+        assert_eq!(to_markdown(&empty, "", "", ""), "# Only a title\n");
+    }
+
+    #[test]
+    fn rough_notes_say_the_ai_failed_and_why() {
+        let n = offline_notes("We need to launch the site by Friday. The design is nearly done.");
+        let notice = rough_notes_notice("Couldn't reach Ollama at http://localhost:11434. Is it running?");
+        assert_eq!(
+            notice,
+            "The AI couldn't write these notes: Couldn't reach Ollama at http://localhost:11434. Is it running? These are rough notes Navi made on your computer. Press Write again on the Notes page to try once more."
+        );
+        assert!(rough_notes_notice("Claude Code took too long").starts_with("The AI couldn't write these notes: Claude Code took too long. These"));
+        // Under the title and the date, before the notes themselves.
+        let md = to_markdown(&n, "the raw words", "Monday 20 October 2026, 14:05", &notice);
+        assert!(md.starts_with(&format!("# We need to launch the site by Friday\n\nMonday 20 October 2026, 14:05\n\n{notice}\n\n## Summary\n\n")), "{md}");
+        assert!(to_markdown(&n, "", "", &notice).starts_with(&format!("# We need to launch the site by Friday\n\n{notice}\n\n## Summary")));
+        // An error of several lines gives its first.
+        assert!(rough_notes_notice("\nClaude Code stopped\nexit code 1").contains(": Claude Code stopped. These"));
     }
 
     #[test]

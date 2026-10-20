@@ -78,16 +78,30 @@ being recorded hands-free).
 
 Ramble (Space while holding the chord, with its own sound) records hands-free in the Notes mode.
 Every 12 seconds it transcribes the last 30 seconds, only for the live preview in the bubble (the
-`ramble-partial` event). When it ends, the whole recording is transcribed once and `text::ramble`
+`ramble-partial` event); only those 30 seconds are copied (`audio.tail_16k`), however long the
+ramble. When it ends, the whole recording is transcribed once and `text::ramble`
 turns it into notes (title, summary, key points, decisions and tasks; rough offline notes when
 there is no AI or no reply within 90 seconds), saved as Markdown, kept on the Notes page
 (`meeting::save_ramble`) and optionally sent to ClickUp (the tasks) or Notion (the note without its transcript)
-(`integrations`). A hands-free take or a ramble finishes on Enter (`HotkeyEvent::Finish`, swallowed)
+(`integrations`). When the AI was on and failed, the rough notes carry
+`ramble::rough_notes_notice` under the title and date (the AI's error and how to try again), and
+the bubble says "Saved rough notes" with the reason instead of "Saved to Notes". Rambles go to the
+Notes page and the notes folder even with Save history off: notes are documents the user asked
+for, and only the take in History follows that setting. Write again on the Notes page
+(`meeting::rewrite_ramble`) writes a ramble's notes again from what was said, with the ramble
+prompt and the same AI, and its Markdown file keeps the ramble layout (`meeting::ramble_file`).
+A hands-free take or a ramble finishes on Enter (`HotkeyEvent::Finish`, swallowed)
 or on the talk shortcut.
 
 Meeting notes (`meeting`): a watcher reads which apps are using the microphone (the registry key
 behind Windows' privacy light, every 3 seconds) and offers notes on the `prompt` card when a call
-app starts. A meeting records two tracks, the microphone and the speakers in WASAPI loopback (an
+app starts. An entry with a start time and no stop time means "on the microphone", but a program
+that crashed or was replaced leaves its entry like that for good (each Discord version has its
+own folder and entry), so `entry_in_use` ignores entries started before Windows last started and
+NonPackaged entries whose program (the entry's name, with # for \) is no longer there. Without
+that, notes following Discord never finished by themselves, and notes started by hand during a
+Teams or Zoom call followed no app.
+A meeting records two tracks, the microphone and the speakers in WASAPI loopback (an
 input stream on the output device), and transcribes both every 20 seconds, cutting at a quiet
 moment. Loopback sends nothing while the computer is silent, so the gap is filled with silence to
 keep each line's time. Lines are marked You or Them, and microphone lines that echo the other side
@@ -155,7 +169,11 @@ looks at the screen and keeps a screenshot when enough of it changed, until "sto
 hour). The AI for longer jobs then gets each screenshot's time, window and OCR text (never the
 picture), picks up to 20 that matter with captions and writes a short account; the rest are
 deleted. Without an AI every screenshot stays, listed by time and window. The result is a note
-whose app is "Watch". Screenshots live in the app data folder (`shots/<note id>/`), which the
+whose app is "Watch". Write again on the Notes page (`watch::rewrite`, after a confirm) writes a
+finished watch up the same way from the text and window names saved with its screenshots (still
+never the pictures), so one the AI failed on or that was saved with no AI can be written up; the
+screenshots the AI leaves out are deleted, and its title replaces only the one Navi gave the watch.
+Screenshots live in the app data folder (`shots/<note id>/`), which the
 asset protocol may read, so the interface shows them with `convertFileSrc`.
 
 "What's wrong with this?" (`VoiceCommand::Critique`): the selection (or the last insertion) goes to

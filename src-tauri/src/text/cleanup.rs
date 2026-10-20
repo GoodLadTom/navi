@@ -1535,9 +1535,28 @@ fn normalise_phrase(text: &str) -> String {
     mapped.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// `text` (an error, a title) ending a sentence in a message: one full stop, unless it already
+/// ends in a question mark, an exclamation mark or an ellipsis, so "Is it running?" never becomes
+/// "Is it running?.".
+pub fn full_stop(text: &str) -> String {
+    let t = text.trim_end().trim_end_matches('.').trim_end();
+    if t.is_empty() || t.ends_with(['?', '!', '…']) { t.to_string() } else { format!("{t}.") }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sentence_ends_once() {
+        assert_eq!(full_stop("Claude Code took too long"), "Claude Code took too long.");
+        assert_eq!(full_stop("Claude Code took too long."), "Claude Code took too long.");
+        assert_eq!(full_stop("Couldn't reach Ollama at localhost:11434. Is it running?"), "Couldn't reach Ollama at localhost:11434. Is it running?");
+        assert_eq!(full_stop("Is it running?. "), "Is it running?");
+        assert_eq!(full_stop("Ready to launch!"), "Ready to launch!");
+        assert_eq!(full_stop("Draft the email to Sam about…"), "Draft the email to Sam about…");
+        assert_eq!(full_stop(""), "");
+    }
 
     // ---- spoken punctuation ----
 

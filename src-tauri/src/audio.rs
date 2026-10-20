@@ -14,6 +14,7 @@
 //! * `stop()` ends the take and returns the audio resampled to 16 kHz mono (rubato, good quality).
 //! * `snapshot_16k(from)` returns 16 kHz audio recorded so far starting at sample `from` (16 kHz
 //!   index) without stopping, so long rambles can be transcribed in chunks while they happen.
+//!   `tail_16k(max)` copies only the last `max` samples (the ramble's live preview).
 //! * `cancel()` stops and discards. `is_recording()` is cheap.
 //! * Errors are readable for the UI: "No microphone found", "Microphone access is off in Windows
 //!   Settings > Privacy & security > Microphone", "The microphone 'X' is not connected".
@@ -178,6 +179,16 @@ impl AudioService {
             log::warn!("audio snapshot: {e:#}");
         }
         conv.out.get(from..).map(<[f32]>::to_vec).unwrap_or_default()
+    }
+
+    /// The last `max` samples recorded so far (16 kHz), without stopping: only that much is copied,
+    /// however long the take has run.
+    pub fn tail_16k(&self, max: usize) -> Vec<f32> {
+        let mut conv = self.shared.conv.lock();
+        if let Err(e) = self.shared.drain_into(&mut conv) {
+            log::warn!("audio snapshot: {e:#}");
+        }
+        conv.out[conv.out.len().saturating_sub(max)..].to_vec()
     }
 
     pub fn cancel(&self) {
@@ -885,6 +896,28 @@ mod tests {
         let mut take = CaptureState::new(48_000, 1, true, shared.clone(), tx);
         take.push(&speech[..]);
         assert_eq!(shared.raw.lock().len(), speech.len(), "a take keeps every sample");
+    }
+
+    #[test]
+    fn the_tail_of_a_long_take_copies_only_the_tail() {
+        let shared = Arc::new(Shared {
+            recording: AtomicBool::new(true),
+            raw: Mutex::new(Vec::new()),
+            conv: Mutex::new(Converter::passthrough(SAMPLE_RATE)),
+            error: Mutex::new(None),
+        });
+        // A service with no audio thread behind it: nothing is opened or recorded.
+        let audio = AudioService { commands: mpsc::channel().0, shared: shared.clone() };
+        assert!(audio.tail_16k(480_000).is_empty());
+        // Two minutes so far, the last of it still waiting to be folded in.
+        let take: Vec<f32> = (0..SAMPLE_RATE as usize * 120).map(|i| i as f32).collect();
+        let split = take.len() - 4_000;
+        shared.conv.lock().push(&take[..split]).expect("push");
+        shared.raw.lock().extend_from_slice(&take[split..]);
+        let tail = audio.tail_16k(SAMPLE_RATE as usize * 30);
+        assert_eq!(tail.len(), SAMPLE_RATE as usize * 30, "30 seconds, not the whole take");
+        assert_eq!(tail, take[take.len() - tail.len()..], "the very end, with what was still waiting");
+        assert_eq!(audio.tail_16k(usize::MAX).len(), take.len(), "a short take is copied whole");
     }
 
     #[test]

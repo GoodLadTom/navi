@@ -11,6 +11,9 @@
 //!   rest are deleted. Without an AI every screenshot stays, listed by time and window.
 //! * The result is a note on the Notes page (its app is "Watch") with the pictures in it, and a
 //!   Markdown copy in the notes folder that links to them.
+//! * Write again on the Notes page (`rewrite`) writes a finished watch up the same way, from the
+//!   text and window names kept with its screenshots, so one the AI failed on (or saved with no AI)
+//!   can still be written up.
 
 use crate::meeting::{self, clock, PromptState};
 use crate::screen;
@@ -43,11 +46,10 @@ impl Active {
     /// The watch as a note. It is saved from the start and with every screenshot, so a quit or a
     /// crash mid-watch still leaves a note with its pictures (`meeting::recover` closes it).
     fn note(&self, status: &str) -> MeetingNote {
-        let when = chrono::DateTime::parse_from_rfc3339(&self.created_at).map(|d| d.with_timezone(&chrono::Local)).unwrap_or_else(|_| chrono::Local::now());
         MeetingNote {
             id: self.id.clone(),
             created_at: self.created_at.clone(),
-            title: format!("Watch, {}", when.format("%-d %B, %H:%M")),
+            title: default_title(&self.created_at),
             app: "Watch".into(),
             duration_ms: self.started.elapsed().as_millis() as u64,
             status: status.into(),
@@ -55,6 +57,12 @@ impl Active {
             ..Default::default()
         }
     }
+}
+
+/// The name a watch has until the AI (or you) gives it another: "Watch, 20 October, 14:05".
+fn default_title(created_at: &str) -> String {
+    let when = chrono::DateTime::parse_from_rfc3339(created_at).map(|d| d.with_timezone(&chrono::Local)).unwrap_or_else(|_| chrono::Local::now());
+    format!("Watch, {}", when.format("%-d %B, %H:%M"))
 }
 
 static ACTIVE: Mutex<Option<Active>> = parking_lot::const_mutex(None);
@@ -266,7 +274,7 @@ async fn write_up(app: &Arc<App>, active: Active) {
         None => {
             note.notes_md = offline_markdown(&note.title, &note.shots);
             if let Some(why) = &why {
-                note.notes_md = note.notes_md.replacen("\n\n", &format!("\n\nNavi couldn't write this up: {}. The screenshots are all here.\n\n", why.trim_end_matches('.')), 1);
+                note.notes_md = note.notes_md.replacen("\n\n", &format!("\n\nNavi couldn't write this up: {} The screenshots are all here.\n\n", crate::text::cleanup::full_stop(why)), 1);
                 // The AI is on and failed, so don't tell them to turn one on.
                 note.notes_md = note.notes_md.replace(TURN_ON_AI, "").trim_end().to_string();
             }
@@ -290,6 +298,65 @@ async fn write_up(app: &Arc<App>, active: Active) {
     if !meeting::offer_prompt(app, PromptState::Done { id: note.id.clone(), title: note.title.clone(), detail }) {
         notice(app, &format!("Saved: {}", note.title), 4000);
     }
+}
+
+/// Writes a finished watch up again with the AI for longer jobs (after it failed, or was saved
+/// without an AI) from what was kept with its screenshots: their text and window names, never the
+/// pictures. As the first write-up does, it keeps the screenshots the AI picks, with its captions,
+/// and deletes the rest. On failure the note stays as it was.
+pub async fn rewrite(app: &Arc<App>, note: MeetingNote) -> Result<MeetingNote> {
+    let settings = app.settings();
+    let Some(llm) = crate::controller::make_llm_long(&settings) else { bail!("Turn on an AI in Settings > AI first.") };
+    // A picture deleted since can't be kept or shown, so the AI isn't told about it.
+    let shots: Vec<Shot> = note.shots.iter().filter(|s| std::path::Path::new(&s.path).is_file()).cloned().collect();
+    if shots.is_empty() {
+        bail!("This watch has no screenshots left to write up from.");
+    }
+    let writing = MeetingNote { status: "writing".into(), ..note.clone() };
+    let _ = app.db.save_note(&writing);
+    app.emit("note", writing);
+    let (system, user) = messages(&shots, &settings);
+    let written = match tokio::time::timeout(AI_DEADLINE, llm.complete(&system, &user, 3000, 0.3)).await {
+        Ok(Ok(reply)) => parse(&reply, shots.len()).ok_or_else(|| anyhow!("the AI's answer couldn't be read")),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(anyhow!("{} took too long to answer", llm.display_name())),
+    };
+    if !matches!(app.db.get_note(&note.id), Ok(Some(_))) {
+        // Deleted while it was being written: it stays deleted.
+        bail!("That note has gone.");
+    }
+    let w = match written {
+        Ok(w) => w,
+        Err(e) => {
+            log::warn!("watch write-up again: {e:#}");
+            let _ = app.db.save_note(&note);
+            app.emit("note", note);
+            bail!("The write-up is as it was: {}", crate::text::cleanup::full_stop(&e.to_string()));
+        }
+    };
+    let mut done = rewritten(&note, &shots, &w, &settings);
+    for shot in &note.shots {
+        if !done.shots.iter().any(|k| k.path == shot.path) {
+            let _ = std::fs::remove_file(&shot.path);
+        }
+    }
+    meeting::save_file(app, &settings, &mut done);
+    app.db.save_note(&done)?;
+    app.emit("note", done.clone());
+    Ok(done)
+}
+
+/// The watch written up again from the AI's answer: the screenshots it picked from `shots` (the
+/// ones still there) with its captions, its account, and its title unless the watch already has a
+/// name other than the one Navi gave it.
+fn rewritten(note: &MeetingNote, shots: &[Shot], w: &Written, settings: &Settings) -> MeetingNote {
+    let mut done = MeetingNote { status: "done".into(), ..note.clone() };
+    if done.title == default_title(&done.created_at) && !w.title.trim().is_empty() {
+        done.title = w.title.trim().to_string();
+    }
+    done.shots = picked(shots, &w.steps);
+    done.notes_md = markdown(&done.title, &w.summary, &done.shots, settings);
+    done
 }
 
 /// (system, user) for writing up a watch from its screenshots' text.
@@ -496,6 +563,26 @@ mod tests {
         assert!(w.steps.is_empty());
         assert_eq!(picked(&shots, &w.steps).len(), 3);
         assert_eq!(picked(&shots, &[]).len(), 3);
+    }
+
+    #[test]
+    fn a_watch_written_up_again_keeps_the_picks_and_your_name_for_it() {
+        let created = "2026-10-20T14:05:00+01:00";
+        let shots = vec![shot(0, "Notion", "Plans"), shot(30, "Stripe", "Pro 19.00 GBP"), shot(60, "Chrome", "Pricing")];
+        let note = MeetingNote { created_at: created.into(), title: default_title(created), app: "Watch".into(), status: "done".into(), shots: shots.clone(), ..Default::default() };
+        let w = parse("{\"title\":\"Set up pricing\",\"summary\":\"You set the price.\",\"steps\":[{\"shot\":2,\"caption\":\"The price in Stripe\"}]}", shots.len()).expect("parsed");
+        let done = rewritten(&note, &shots, &w, &Settings::default());
+        assert_eq!(done.status, "done");
+        assert_eq!(done.title, "Set up pricing", "the name Navi gave it makes way for the AI's");
+        assert_eq!(done.shots.iter().map(|s| (s.window.as_str(), s.caption.as_str())).collect::<Vec<_>>(), [("Stripe", "The price in Stripe")]);
+        assert!(done.notes_md.starts_with("# Set up pricing\n\n## Summary\n\nYou set the price."), "{}", done.notes_md);
+        assert!(done.notes_md.contains("![The price in Stripe](<C:\\data\\shots\\w\\030.jpg>)"));
+        // A name you gave it stays.
+        let named = MeetingNote { title: "Pricing work".into(), ..note.clone() };
+        assert_eq!(rewritten(&named, &shots, &w, &Settings::default()).title, "Pricing work");
+        // The AI gets the text and the window names, never a picture or where it is.
+        let (system, user) = messages(&shots, &Settings::default());
+        assert!(user.contains("Stripe: Pro 19.00 GBP") && !user.contains(".jpg") && !system.contains(".jpg"));
     }
 
     #[test]

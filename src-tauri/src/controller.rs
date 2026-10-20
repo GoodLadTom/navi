@@ -1914,6 +1914,8 @@ async fn process_ramble(app: &Arc<App>, mut rec: Recording, mut samples: Vec<f32
     let words = app.db.list_words().unwrap_or_default();
     let (tidy, _) = cleanup::apply_dictionary(&raw, &words);
     let llm = make_llm(&settings);
+    // Why the AI's notes didn't come, said on the note and in the bubble, never only in the log.
+    let mut ai_failed: Option<anyhow::Error> = None;
     let mut notes = match &llm {
         Some(llm) => {
             let (sys, user) = ramble::notes_messages(&tidy, &rec.ctx, &settings);
@@ -1925,6 +1927,7 @@ async fn process_ramble(app: &Arc<App>, mut rec: Recording, mut samples: Vec<f32
                 Ok(n) => n,
                 Err(e) => {
                     log::warn!("notes from AI failed, using offline notes: {e:#}");
+                    ai_failed = Some(e);
                     ramble::offline_notes(&tidy)
                 }
             }
@@ -1935,7 +1938,8 @@ async fn process_ramble(app: &Arc<App>, mut rec: Recording, mut samples: Vec<f32
         notes.summary = crate::text::britishise::britishise(&notes.summary);
     }
     let when = chrono::Local::now().format("%A %-d %B %Y, %H:%M").to_string();
-    let markdown = ramble::to_markdown(&notes, &tidy, &when);
+    let notice = ai_failed.as_ref().map(|e| ramble::rough_notes_notice(&e.to_string())).unwrap_or_default();
+    let markdown = ramble::to_markdown(&notes, &tidy, &when, &notice);
     let dir = settings.ramble.notes_dir.clone().map(std::path::PathBuf::from).unwrap_or_else(|| app.paths.notes_default.clone());
     let saved = integrations::save_markdown(&dir, &notes.title, &markdown);
 
@@ -1990,12 +1994,11 @@ async fn process_ramble(app: &Arc<App>, mut rec: Recording, mut samples: Vec<f32
     save_take(app, &settings, &rec, &raw, &final_text, &full_audio, latency, status, "ramble", serde_json::json!({ "notes": notes, "notesPath": notes_path }));
     // On the Notes page too, beside your calls.
     let spoken_ms = (samples.len() as u64) * 1000 / audio::SAMPLE_RATE as u64;
-    crate::meeting::save_ramble(app, &notes.title, ramble::to_markdown(&notes, "", ""), &tidy, spoken_ms, notes_path);
+    crate::meeting::save_ramble(app, &notes.title, ramble::to_markdown(&notes, "", "", &notice), &tidy, spoken_ms, notes_path);
 
     app.sounds.play(Cue::Done, &settings.sounds);
-    let tasks = notes.tasks.len();
     // Said in words: a tick alone left it unclear where the ramble went.
-    let summary = format!("Saved to Notes{}{}", if tasks > 0 { format!(" · {tasks} task{}", if tasks == 1 { "" } else { "s" }) } else { String::new() }, sent);
+    let summary = ramble_summary(notes.tasks.len(), &sent, ai_failed.as_ref().map(short_error).as_deref());
     let hold = read_ms(&summary, 2600);
     let gen = app.pill(PillState::Notice { message: summary });
     app.hide_pill_later(gen, hold);
@@ -2024,6 +2027,17 @@ fn ramble_send_blocked(settings: &Settings, has_tasks: bool, has_token: impl Fn(
     }
 }
 
+/// The bubble once a ramble is saved: where it went, its tasks and where they went (`sent`). With
+/// `why` (the AI's error, shortened) it says these are rough notes and why: the note itself says
+/// more (`ramble::rough_notes_notice`).
+fn ramble_summary(tasks: usize, sent: &str, why: Option<&str>) -> String {
+    let tasks = if tasks > 0 { format!(" · {tasks} task{}", if tasks == 1 { "" } else { "s" }) } else { String::new() };
+    match why {
+        None => format!("Saved to Notes{tasks}{sent}"),
+        Some(why) => format!("Saved rough notes: the AI couldn't write them ({}){tasks}{sent}", first_sentence(why).trim().trim_end_matches('.')),
+    }
+}
+
 /// The first sentence of `message`: a service's error in full can push the rest of the bubble out.
 fn first_sentence(message: &str) -> &str {
     match message.find(". ") {
@@ -2042,13 +2056,13 @@ fn spawn_ramble_preview(app: Arc<App>) {
                 break;
             }
             let settings = app.settings();
-            let samples = app.audio.snapshot_16k(0);
-            let start = samples.len().saturating_sub(audio::SAMPLE_RATE as usize * 30);
+            // Only the last 30 seconds are copied: the whole of a long ramble is megabytes a time.
+            let samples = app.audio.tail_16k(audio::SAMPLE_RATE as usize * 30);
             let Some(engine) = app.engine.read().await.clone() else { continue };
             let opts = TranscribeOptions { language: settings.engine.language.clone(), prompt: String::new() };
-            if let Ok(tr) = engine.transcribe(&samples[start..], &opts).await {
+            if let Ok(tr) = engine.transcribe(&samples, &opts).await {
                 let still = matches!(&app.session.lock().phase, Phase::Recording(r) if r.kind == Kind::Ramble);
-                if still && !heard_nothing(&tr.text, &samples[start..]) {
+                if still && !heard_nothing(&tr.text, &samples) {
                     app.emit("ramble-partial", tr.text.trim().to_string());
                 }
             }
@@ -2360,6 +2374,18 @@ mod tests {
     fn a_service_error_is_cut_to_its_first_sentence() {
         assert_eq!(first_sentence("ClickUp rejected the token. Check it in Settings."), "ClickUp rejected the token.");
         assert_eq!(first_sentence("No connection to Notion"), "No connection to Notion");
+    }
+
+    #[test]
+    fn a_ramble_the_ai_couldnt_write_says_so() {
+        assert_eq!(ramble_summary(2, " · 2 tasks to ClickUp", None), "Saved to Notes · 2 tasks · 2 tasks to ClickUp");
+        assert_eq!(ramble_summary(0, "", None), "Saved to Notes");
+        // Rough notes: said, with the reason, never "Saved to Notes" as if all went well.
+        let rough = ramble_summary(1, "", Some("Claude Code took too long"));
+        assert_eq!(rough, "Saved rough notes: the AI couldn't write them (Claude Code took too long) · 1 task");
+        let rough = ramble_summary(0, " · not sent (Local only)", Some(&short_error(&anyhow!("Couldn't reach Ollama at http://localhost:11434. Is it running?"))));
+        assert_eq!(rough, "Saved rough notes: the AI couldn't write them (Couldn't reach Ollama at http://localhost:11434) · not sent (Local only)");
+        assert!(!rough.contains("?.") && !rough.contains('\u{2014}'));
     }
 
     fn matcher_with_wake(wake: &[&str]) -> Matcher {
