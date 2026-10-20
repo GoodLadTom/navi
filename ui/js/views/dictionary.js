@@ -73,7 +73,7 @@ export async function render(root, { store, arg }) {
     };
     body.append(h('div', { class: 'card', style: { marginBottom: '14px' } },
       h('p', { class: 'small quiet', style: { marginBottom: '12px' } }, 'Say a short phrase, get a longer block of text: links, addresses, sign-offs, standard replies.'),
-      h('div', { class: 'add-bar' }, trig, exp, btn('Add snippet', { variant: 'primary', icon: 'plus', onClick: add }))));
+      h('div', { class: 'add-bar snippet' }, trig, exp, btn('Add snippet', { variant: 'primary', icon: 'plus', onClick: add }))));
     const list = h('div', { class: 'card' });
     if (!snippets.length) list.append(h('div', { class: 'empty' }, h('p', {}, 'No snippets yet.')));
     for (const s of snippets) {

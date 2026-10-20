@@ -39,7 +39,9 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
 p { margin: 0; }
 
 /* ------------------------------------------------------------------ window frame */
-.app { display: grid; grid-template-columns: 236px 1fr; height: 100vh; }
+/* One row exactly the window's height: a sidebar taller than the window used to push the whole
+   window past its bottom edge. */
+.app { display: grid; grid-template-columns: 236px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); height: 100vh; }
 /* Above the setup screens (.onb, 70) so minimise and close are always there; below dialogs. */
 .titlebar { position: fixed; top: 0; left: 236px; right: 0; height: 40px; display: flex; justify-content: flex-end; z-index: 75; background: linear-gradient(var(--surface) 62%, transparent); }
 /* Pages scroll under the window buttons into the fade; the setup screens keep their dotted ground. */
@@ -50,7 +52,9 @@ body:has(.onb) .titlebar { background: none; }
 .winbtn.close:hover { background: var(--blue-ink); color: var(--paper); }
 
 /* ------------------------------------------------------------------ sidebar */
-.side { display: flex; flex-direction: column; padding: 16px 14px 14px; border-right: 1px solid var(--line-soft); background: color-mix(in oklab, var(--surface-raised) 34%, var(--surface)); }
+/* It scrolls only as a last resort: in the smallest window with an update offered. Shorter windows
+   tighten the spacing first (end of this file). */
+.side { display: flex; flex-direction: column; padding: 16px 14px 14px; border-right: 1px solid var(--line-soft); background: color-mix(in oklab, var(--surface-raised) 34%, var(--surface)); overflow-x: hidden; overflow-y: auto; }
 .brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 18px 6px; }
 /* The logo: the firefly (img/firefly-mark.png, used as a mask) on a tile in Navi's colour, so it
    reads on the light and dark sidebars alike and changes with Settings > General > Colour. */
@@ -100,10 +104,11 @@ body:has(.onb) .titlebar { background: none; }
 .card.flat { box-shadow: none; }
 .card.tight { padding: 16px; }
 .card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+/* minmax(0, 1fr): a long word, path or name inside a column can't widen it past the page. */
 .grid { display: grid; gap: 14px; }
-.cols-2 { grid-template-columns: 1fr 1fr; }
-.cols-3 { grid-template-columns: repeat(3, 1fr); }
-.cols-4 { grid-template-columns: repeat(4, 1fr); }
+.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .row { display: flex; align-items: center; gap: 10px; }
 .row.between { justify-content: space-between; }
 .stack { display: flex; flex-direction: column; gap: 10px; }
@@ -130,14 +135,17 @@ body:has(.onb) .titlebar { background: none; }
 .linkbtn:hover { text-decoration: underline; text-underline-offset: 3px; }
 
 /* ------------------------------------------------------------------ chips and badges */
-.chip { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: var(--r-pill); background: var(--well); color: var(--ink-quiet); font-size: 11.5px; font-weight: 500; white-space: nowrap; }
+/* A chip never runs out of its row: a long name (a pack, an app, a mode) ends in an ellipsis. */
+.chip { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: var(--r-pill); background: var(--well); color: var(--ink-quiet); font-size: 11.5px; font-weight: 500; white-space: nowrap; max-width: 100%; }
+.chip .ct { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .chip .d { width: 6px; height: 6px; border-radius: 50%; background: var(--rule-strong); }
 .chip.accent { background: var(--accent-wash); color: var(--accent-ink); }
 .chip.accent .d { background: var(--accent); }
 .chip.ink { background: var(--ink); color: var(--paper); }
 .chip.line { background: transparent; border: 1px solid var(--rule); }
 .chip.blue { background: var(--blue-wash); color: var(--blue-ink); }
-.chip button { border: 0; background: none; padding: 0; margin-right: -4px; color: inherit; opacity: .6; display: grid; place-items: center; }
+/* The × that removes a chip: dimmed, but still 3:1 against the chip like any control's icon. */
+.chip button { border: 0; background: none; padding: 0; margin-right: -4px; color: inherit; opacity: .8; display: grid; place-items: center; flex: none; }
 .chip button:hover { opacity: 1; }
 
 /* ------------------------------------------------------------------ keycaps */
@@ -147,6 +155,10 @@ body:has(.onb) .titlebar { background: none; }
 .kbd.down { transform: translateY(2px); box-shadow: 0 1px 0 var(--rule-strong), inset 0 1px 0 var(--kbd-shine); }
 .kbd.lg.down { transform: translateY(3px); box-shadow: 0 0 0 var(--rule-strong), 0 2px 5px rgba(36, 31, 51, .05), inset 0 1px 0 var(--kbd-shine); background: linear-gradient(180deg, var(--card), var(--card)); }
 .plus { color: var(--ink-faint); font-weight: 500; }
+/* A shortcut's keys (ui.js keycaps): a long one wraps between keys, each "+" staying with the key
+   after it, rather than running out of a narrow card. */
+.keycaps { flex-wrap: wrap; }
+.kc { display: inline-flex; align-items: center; gap: inherit; }
 
 /* ------------------------------------------------------------------ form controls */
 .field { display: flex; flex-direction: column; gap: 6px; }
@@ -203,7 +215,7 @@ body:has(.onb) .titlebar { background: none; }
 @keyframes pop { from { opacity: 0; transform: scale(.94); } to { opacity: 1; transform: none; } }
 
 /* ------------------------------------------------------------------ home */
-.hero { display: grid; grid-template-columns: 1.15fr .85fr; gap: 0; padding: 0; overflow: hidden; position: relative; }
+.hero { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr); gap: 0; padding: 0; overflow: hidden; position: relative; }
 .hero-left { padding: 30px 32px 28px; }
 .hero-keys { display: flex; align-items: center; gap: 12px; margin: 18px 0 18px; }
 .hero-keys .plus { font-size: 20px; }
@@ -227,13 +239,15 @@ body:has(.onb) .titlebar { background: none; }
 .spark { display: block; margin-top: 8px; }
 
 .take-list { display: flex; flex-direction: column; }
-.take-row { display: grid; grid-template-columns: 34px 1fr auto; gap: 12px; align-items: start; padding: 12px 8px; border-radius: var(--r-md); border: 0; background: transparent; text-align: left; width: 100%; transition: background .15s; }
+.take-row { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; gap: 12px; align-items: start; padding: 12px 8px; border-radius: var(--r-md); border: 0; background: transparent; text-align: left; width: 100%; transition: background .15s; }
 .take-row + .take-row { border-top: 1px solid var(--line-soft); border-radius: 0; }
 .take-row:hover { background: var(--hover); border-radius: var(--r-md); }
 .take-row:hover + .take-row { border-top-color: transparent; }
 .app-av { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; font-weight: 600; font-size: 13px; color: var(--ink); background: var(--well); border: 1px solid var(--line-soft); }
 .take-row .meta { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-faint); margin-bottom: 3px; }
 .take-row .meta b { color: var(--ink); font-weight: 600; font-size: 12.5px; }
+/* A long mode name gives way first, ending in an ellipsis. */
+.take-row .meta .chip { min-width: 0; }
 .take-row .text { font-size: 13px; color: var(--ink-quiet); line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .take-row .when { font-size: 11.5px; color: var(--ink-faint); white-space: nowrap; padding-top: 2px; }
 
@@ -249,8 +263,12 @@ body:has(.onb) .titlebar { background: none; }
 
 /* ------------------------------------------------------------------ history */
 .history { display: grid; grid-template-columns: minmax(300px, 400px) minmax(0, 1fr); gap: 16px; align-items: start; }
+/* The search box, then the kinds and the two filters as one group. When they don't all fit on a
+   line the group moves below the search together (the search then fills its line), and in the
+   narrowest window the kinds and the filters stack: nothing is ever left alone at the end of a line. */
 .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
-.toolbar .search { flex: 1; min-width: 180px; }
+.toolbar .search { flex: 1 1 180px; min-width: min(180px, 100%); }
+.toolbar .tb-group { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
 .toolbar .filters { display: flex; gap: 10px; flex-wrap: wrap; }
 .toolbar .select { width: auto; min-width: 124px; border-radius: var(--r-pill); height: 36px; }
 .h-list { padding: 8px; max-height: calc(100vh - 210px); overflow-y: auto; }
@@ -265,6 +283,10 @@ body:has(.onb) .titlebar { background: none; }
 .detail { position: sticky; top: 0; container-type: inline-size; }
 .detail .d-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px 14px; }
 .detail .d-head > .row { flex-wrap: wrap; }
+/* Re-run's mode picker and Run button get a line of their own under Copy and Hear it, rather than
+   wrapping alone onto one when the panel is narrow. */
+.d-head .rerun.open { flex: 1 1 100%; }
+.d-head .rerun.open .select { flex: 0 1 220px; min-width: 0; }
 /* Name and delete on the first line, the actions always on their own line below. */
 .detail .d-head > .d-who { flex: 1 1 100%; }
 .d-who { display: flex; align-items: center; gap: 12px; flex: 1 1 220px; min-width: 0; }
@@ -308,9 +330,15 @@ body:has(.onb) .titlebar { background: none; }
 .mode-pill:hover { border-color: var(--rule-strong); color: var(--ink); }
 .mode-pill.on { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-tint); color: var(--ink); }
 .mode-pill .kbd { height: 22px; min-width: 24px; padding: 0 6px; font-size: 10.5px; }
+.mode-pill .keycaps { flex-wrap: nowrap; }
 .mode-card.add { align-items: center; justify-content: center; border-style: dashed; border-color: var(--rule-strong); background: transparent; box-shadow: none; color: var(--ink-quiet); }
 .mode-card.add:hover { background: var(--card); }
-.editor { display: grid; grid-template-columns: 1fr 300px; gap: 16px; align-items: start; }
+.editor { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; align-items: start; }
+/* Name is short and the description a sentence, so the description gets the room. */
+.mode-fields { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); }
+/* Projects (Prompt mode): "Add a project folder" and the @path / path switch share a line when the
+   card is wide, and the switch goes under the button in the narrow column beside the editor. */
+.proj-foot { flex-wrap: wrap; }
 
 /* ------------------------------------------------------------------ dictionary */
 .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin-bottom: 18px; }
@@ -319,14 +347,22 @@ body:has(.onb) .titlebar { background: none; }
 .tabs button.on { color: var(--ink); }
 .tabs button.on::after { content: ""; position: absolute; left: 10px; right: 10px; bottom: -1px; height: 2px; border-radius: 2px; background: var(--accent); }
 .tabs .count { font-size: 11px; color: var(--ink-faint); font-weight: 500; }
-.word-row { display: grid; grid-template-columns: minmax(150px, 220px) 1fr auto auto; gap: 14px; align-items: center; padding: 12px 6px; border-top: 1px solid var(--line-soft); }
+.word-row { display: grid; grid-template-columns: minmax(150px, 220px) minmax(0, 1fr) auto auto; gap: 14px; align-items: center; padding: 12px 6px; border-top: 1px solid var(--line-soft); }
 .word-row:first-child { border-top: 0; }
-.word-row .term { font-weight: 600; font-size: 14px; letter-spacing: -.01em; }
+.word-row .term { font-weight: 600; font-size: 14px; letter-spacing: -.01em; overflow-wrap: anywhere; }
 .word-row .alts { display: flex; flex-wrap: wrap; gap: 6px; }
-.add-bar { display: grid; grid-template-columns: 220px 1fr auto; gap: 10px; }
-.snip { display: grid; grid-template-columns: 220px 1fr auto; gap: 14px; align-items: start; padding: 14px 6px; border-top: 1px solid var(--line-soft); }
+/* Adding a word or a snippet: the two fields and the button on one line when they fit, each field
+   wide enough for its example. Otherwise the fields share a line and the button goes under them
+   at the right, as at the foot of a form; in the smallest window each field gets a line. */
+.add-bar { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 10px; }
+.add-bar > :nth-child(1) { flex: 1 1 236px; width: auto; min-width: min(236px, 100%); }
+.add-bar > :nth-child(2) { flex: 2 1 470px; width: auto; min-width: min(470px, 100%); }
+.add-bar > .btn { flex: none; margin-left: auto; }
+.add-bar.snippet > :nth-child(2) { flex-basis: 300px; min-width: min(300px, 100%); }
+.snip { display: grid; grid-template-columns: 220px minmax(0, 1fr) auto; gap: 14px; align-items: start; padding: 14px 6px; border-top: 1px solid var(--line-soft); }
 .snip:first-child { border-top: 0; }
-.snip .trig { font-weight: 600; }
+.snip > :first-child { min-width: 0; }
+.snip .trig { font-weight: 600; overflow-wrap: anywhere; }
 .snip .exp { color: var(--ink-quiet); white-space: pre-wrap; font-size: 13px; line-height: 1.55; }
 
 /* ------------------------------------------------------------------ sound picker */
@@ -339,7 +375,7 @@ body:has(.onb) .titlebar { background: none; }
 .sp-card .small { line-height: 1.4; }
 .sp-play { width: 26px; height: 26px; flex: none; border-radius: 50%; border: 0; background: var(--accent-wash); color: var(--accent-ink); display: grid; place-items: center; transition: transform .15s var(--spring); }
 .sp-play:hover { transform: scale(1.08); }
-.sp-cues { display: flex; flex-wrap: wrap; gap: 8px; }
+.sp-cues, .sp-cue-group { display: flex; flex-wrap: wrap; gap: 8px; }
 .sp.compact .sp-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
 .sp.compact .sp-card { min-height: 0; padding: 9px 10px 10px; }
 .sp.compact .sp-card .small { font-size: 11px; }
@@ -357,6 +393,11 @@ body:has(.onb) .titlebar { background: none; }
 .ai-tool.missing { background: transparent; border-style: dashed; }
 .ai-tool-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .ai-tool .row { flex-wrap: wrap; }
+/* With a path box showing (on the tool in use, or one Navi can't find) the cards stack, each the
+   full width, so the example path fits in its box. */
+.ai-tools:has(.ai-tool-path) { grid-template-columns: minmax(0, 1fr); }
+/* Codex's model list sits beside its label, as Claude Code's switch does. */
+.ai-tool .row > .select { flex: 0 1 240px; width: auto; min-width: 0; }
 .ai-tool .seg button { padding: 0 10px; font-size: 12px; }
 /* A path set by hand when Navi can't find the tool. Paths are long, so they wrap anywhere. */
 .ai-tool-path { display: grid; gap: 5px; margin-top: 2px; min-width: 0; }
@@ -416,8 +457,8 @@ body:has(.onb) .titlebar { background: none; }
 .try-status.warn { color: var(--blue-ink); }
 
 /* ------------------------------------------------------------------ shortcut picker */
-.sc { display: grid; gap: 14px; }
-.sc-now { display: flex; align-items: center; gap: 16px; min-height: 60px; }
+.sc { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.sc-now { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 16px; min-height: 60px; }
 .sc-heard { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px 0 10px; border-radius: var(--r-pill); background: var(--accent-wash); color: var(--accent-ink); font-size: 12.5px; font-weight: 600; opacity: 0; transform: scale(.85); pointer-events: none; transition: opacity .2s, transform .2s; }
 .sc-heard.on { opacity: 1; transform: none; animation: popIn .5s var(--spring) both; }
 .sc-picks { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
@@ -427,7 +468,8 @@ body:has(.onb) .titlebar { background: none; }
 .sc-pick .note { font-size: 11.5px; color: var(--ink-faint); }
 .sc-pick .any-t { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 600; color: var(--ink); }
 .sc-pick.listening { border-style: dashed; border-color: var(--accent); }
-.sc-pick .kbd { height: 26px; min-width: 30px; font-size: 11.5px; }
+/* Slimmer keys, so a two-key pick ("Ctrl + Win") stays on one line in the smallest window. */
+.sc-pick .kbd { height: 26px; min-width: 30px; padding: 0 7px; font-size: 11.5px; }
 .sc-test { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; min-height: 30px; font-size: 12.5px; color: var(--ink-quiet); }
 .sc-extra { display: inline-flex; align-items: center; gap: 8px; color: var(--ink-faint); }
 .sc-extra .kbd { height: 24px; min-width: 28px; font-size: 11px; opacity: .75; }
@@ -563,9 +605,26 @@ body:has(.onb) .titlebar { background: none; }
 }
 
 @media (max-width: 1000px) {
-  .hero { grid-template-columns: 1fr; }
+  .hero { grid-template-columns: minmax(0, 1fr); }
   .hero-right { display: none; }
-  .cols-4 { grid-template-columns: 1fr 1fr; }
-  .history { grid-template-columns: 1fr; }
-  .editor { grid-template-columns: 1fr; }
+  .cols-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .history { grid-template-columns: minmax(0, 1fr); }
+  .editor { grid-template-columns: minmax(0, 1fr); }
+  /* Modes > Using now: Auto and the five built-in modes stay on one line in the smallest window.
+     Modes you add wrap onto the next line, like tags. */
+  .mode-now { gap: 6px; }
+  .mode-pill { gap: 6px; padding: 0 10px 0 9px; }
+}
+
+/* Short windows: the sidebar tightens its spacing so it still fits, down to the smallest window
+   (620 px). An update card adds about 150 px, so the sidebar tightens sooner while one shows. */
+@media (max-height: 660px) {
+  .side { padding-top: 12px; }
+  .brand { padding-bottom: 12px; }
+  .nav button { height: 34px; }
+}
+@media (max-height: 800px) {
+  .side:has(.update-card) { padding-top: 12px; }
+  .side:has(.update-card) .brand { padding-bottom: 12px; }
+  .side:has(.update-card) .nav button { height: 34px; }
 }

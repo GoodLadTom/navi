@@ -489,8 +489,9 @@ export async function render(root, { store, arg }) {
           h('div', {}, h('div', { class: 'h3' }, t.name), h('div', { class: 'small faint' }, `Uses ${t.plan}. No API key.`)),
           using ? chip('In use', 'accent', true) : t.found ? btn(`Use ${t.name}`, { size: 'sm', onClick: () => setProvider(t.id, models[0]) }) : chip('Not installed', 'line')),
         !t.found ? h('p', { class: 'small quiet' }, t.installHint) : null,
-        modelPick ? h('div', { class: 'row', style: { gap: '10px', marginTop: '4px' } }, h('span', { class: 'small quiet' }, 'Model'), modelPick,
-          t.id === 'claude-code' ? h('span', { class: 'small faint' }, 'Haiku is quickest.') : null) : null,
+        modelPick ? h('div', { class: 'row', style: { gap: '10px', marginTop: '4px' } }, h('span', { class: 'small quiet' }, 'Model'), modelPick) : null,
+        // Its own line under the model switch: beside it, it only ever fitted in a very wide window.
+        modelPick && t.id === 'claude-code' ? h('span', { class: 'small faint' }, 'Haiku is quickest.') : null,
         pathRow);
     }));
     // Or straight to a provider: an API key, Ollama, or any OpenAI-compatible server.
@@ -644,7 +645,8 @@ export async function render(root, { store, arg }) {
 
   // ---------------------------------------------------------------- integrations
   const r = S().ramble;
-  const folderLabel = h('span', { class: 'small faint', style: { maxWidth: '260px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, r.notesDir || 'Documents\\Navi Notes');
+  // A folder path can be long: it wraps anywhere rather than running out of the row.
+  const folderLabel = h('span', { class: 'small faint', style: { overflowWrap: 'anywhere' } }, r.notesDir || 'Documents\\Navi Notes');
   const intRows = h('div', {});
   const tokenRow = (name, label, idKey, idLabel) => {
     const tok = h('input', { class: 'input', type: 'password', style: { width: '220px' }, placeholder: `${label} token` });

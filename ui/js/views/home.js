@@ -124,7 +124,7 @@ export async function render(root, { store, go }) {
     h('div', { class: 'h2', style: { margin: '4px 0 12px' } }, 'A safe place to practise'),
     practice);
 
-  root.append(h('div', { class: 'grid', style: { gridTemplateColumns: '1.35fr 1fr', marginTop: '14px', alignItems: 'start' } },
+  root.append(h('div', { class: 'grid', style: { gridTemplateColumns: 'minmax(0, 1.35fr) minmax(0, 1fr)', marginTop: '14px', alignItems: 'start' } },
     h('div', { class: 'card' },
       h('div', { class: 'card-head' }, h('div', {}, h('div', { class: 'eyebrow' }, 'Recent'), h('div', { class: 'h2', style: { marginTop: '4px' } }, 'Your last takes')), btn('History', { variant: 'ghost', size: 'sm', icon: 'right', onClick: () => go('history') })),
       list),

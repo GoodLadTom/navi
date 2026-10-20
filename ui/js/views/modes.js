@@ -159,7 +159,7 @@ export async function render(root, { store, arg, go }) {
 
     const left = h('div', { class: 'card' },
       h('div', { class: 'card-head' }, h('div', { class: 'h2' }, mode ? `Edit ${mode.name}` : 'New mode'), btn('', { variant: 'ghost', size: 'sm', icon: 'x', onClick: () => { editorHost.innerHTML = ''; } })),
-      h('div', { class: 'grid cols-2' }, field('Name', name), field('Description', desc)),
+      h('div', { class: 'grid mode-fields' }, field('Name', name), field('Description', desc)),
       h('div', { style: { marginTop: '14px' } }, field('Instructions for the AI', instr)),
       h('div', { style: { marginTop: '14px' } }, field('Icon', iconPick)),
       h('div', { class: 'divider' }),
@@ -204,7 +204,7 @@ function projectsCard(store) {
           a.activeProject !== p.id ? btn('Use', { size: 'sm', variant: 'ghost', onClick: async () => { await store.saveSettings((n) => { n.agent.activeProject = p.id; }); draw(); } }) : null,
           btn('', { size: 'sm', variant: 'ghost', icon: 'x', title: 'Remove', onClick: async () => { await store.saveSettings((n) => { n.agent.projects = n.agent.projects.filter((x) => x.id !== p.id); if (n.agent.activeProject === p.id) n.agent.activeProject = null; }); draw(); } }))));
     }
-    card.append(h('div', { class: 'row', style: { marginTop: '12px', gap: '8px' } },
+    card.append(h('div', { class: 'row proj-foot', style: { marginTop: '12px', gap: '8px' } },
       btn('Add a project folder', { size: 'sm', icon: 'folder', onClick: async () => {
         const path = await pickFile({ directory: true, title: 'Choose a project folder' });
         if (!path) return;

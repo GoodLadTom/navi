@@ -202,7 +202,8 @@ export function run({ store }) {
       const said = (action) => (vc?.commands || []).find((c) => c.action === action)?.phrases?.find((p) => String(p).trim());
       const wake = said('wake') || 'Navi';
       frame(h('div', {},
-        h('img', { class: 'welcome-mark', src: markSrc(), alt: '', style: { width: '64px', height: '64px' } }),
+        // The logo on its tile, as on the welcome step (markSrc() went with the old image).
+        h('span', { class: 'welcome-mark logo-tile', 'aria-hidden': 'true', style: { width: '64px', height: '64px' } }),
         h('div', { class: 'eyebrow' }, 'All set'),
         h('h1', {}, 'You’re ready.'),
         h('p', { class: 'lead' }, 'A few things worth knowing:'),

@@ -31,9 +31,9 @@ export async function render(root, { arg, store, go }) {
   const modeSelect = select(modeOptions(), '', (v) => { q.mode = v; load(); });
   const toolbar = h('div', { class: 'toolbar' },
     h('div', { class: 'search' }, h('span', { html: icon('search', 16) }), searchInput),
-    kindSeg(),
-    // The two filters wrap together, never one on its own.
-    h('div', { class: 'filters' }, appSelect, modeSelect));
+    // The kinds and the filters move below the search together; the two filters wrap together,
+    // never one on its own.
+    h('div', { class: 'tb-group' }, kindSeg(), h('div', { class: 'filters' }, appSelect, modeSelect)));
   root.append(toolbar);
 
   // A take from an app new to History, or a mode made since the page opened, joins the filters.
@@ -166,11 +166,13 @@ export async function render(root, { arg, store, go }) {
   }
 
   function rerunButton(t) {
-    const wrap = h('span', { class: 'row', style: { gap: '6px' } });
+    const wrap = h('span', { class: 'row rerun', style: { gap: '6px' } });
     const b = btn('Re-run', { size: 'sm', icon: 'rerun', disabled: !t.audioPath, title: t.audioPath ? 'Transcribe this recording again' : 'No recording kept for this take' });
     b.onclick = async () => {
       const pick = select(modes.filter((m) => m.kind !== 'notes').map((m) => ({ value: m.id, label: m.name })), t.modeId, null);
-      pick.style.height = '30px'; pick.style.width = '130px'; pick.style.borderRadius = '999px';
+      pick.style.height = '30px'; pick.style.borderRadius = '999px';
+      // The mode picker and Run take a line of their own (app.css .rerun.open).
+      wrap.classList.add('open');
       const go2 = btn('Run', { size: 'sm', variant: 'primary', onClick: async () => {
         go2.disabled = true; go2.textContent = 'Running…';
         try { const nt = await invoke('rerun_take', { id: t.id, modeId: pick.value }); toast('Re-run done'); selected = nt?.id || t.id; load(); }

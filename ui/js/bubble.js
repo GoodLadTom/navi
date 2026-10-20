@@ -140,10 +140,12 @@ export class BubbleView {
   applyWidth(kind) {
     let w = WIDTH[kind];
     let twoLines = false;
+    // The mode chip as drawn: a long name is cut to the chip's max-width (bubble.css), and sizing the
+    // bubble from the whole name left an empty gap before the chip.
+    const chipWidth = () => { const c = this.$('.b-chip'); return Math.ceil(Math.min(c.scrollWidth, c.offsetWidth || c.scrollWidth)); };
     if (kind === 'listening' || kind === 'handsFree') {
       // padding + dot/lock + wave + timer + gaps, then the mode chip's own width.
-      const chip = this.$('.b-chip');
-      w = 15 + 14 + 10 + 112 + 10 + 32 + 10 + Math.ceil(chip.scrollWidth) + 10;
+      w = 15 + 14 + 10 + 112 + 10 + 32 + 10 + chipWidth() + 10;
       if (kind === 'handsFree') w += Math.ceil(this.$('.b-label').scrollWidth) + 10;
     }
     if (kind === 'error' || kind === 'learned' || kind === 'notice') {
@@ -162,7 +164,7 @@ export class BubbleView {
     this.el.classList.toggle('two-line', twoLines);
     if (kind === 'processing') {
       const chip = this.$('.b-chip');
-      w = 120 + (chip.style.display === 'none' ? 0 : chip.scrollWidth + 4);
+      w = 120 + (chip.style.display === 'none' ? 0 : chipWidth() + 4);
     }
     if (w) this.el.style.width = `${w}px`;
     if (kind === 'ramble') requestAnimationFrame(() => this.sizeCanvas());

@@ -36,6 +36,10 @@ button { font: inherit; cursor: pointer; }
 .x { width: 26px; height: 26px; flex: none; border: 0; border-radius: 50%; background: transparent; color: var(--ink-faint); display: grid; place-items: center; transition: background .15s, color .15s; }
 .x:hover { background: color-mix(in oklab, var(--ink) 6%, transparent); color: var(--ink); }
 .card.ask .x { position: absolute; top: 8px; right: 8px; }
+/* "Thinking" is the narrowest card (336 px, meeting.rs) with a sentence under its title: the close
+   button sits in the corner, as on the ask card, so the sentence has the width to show in full. */
+.card.thinking .x { position: absolute; top: 8px; right: 8px; }
+.card.thinking .txt b { padding-right: 26px; }
 
 .rec { position: relative; width: 10px; height: 10px; flex: none; margin: 0 3px 0 4px; border-radius: 50%; background: var(--blue); }
 .rec::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: var(--blue); animation: ring 1.8s var(--out) infinite; }

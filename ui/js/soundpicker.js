@@ -58,7 +58,10 @@ export function soundPicker({ store, showCues = false, compact = false }) {
       return card;
     }));
     if (showCues) {
-      cuesRow.replaceChildren(...CUES.map(([cue, label]) => h('button', { class: 'cue', onClick: () => playCue(store, current(), cue) }, h('span', { class: 'pb' }, ico('play', 11)), label)));
+      const cueBtn = ([cue, label]) => h('button', { class: 'cue', onClick: () => playCue(store, current(), cue) }, h('span', { class: 'pb' }, ico('play', 11)), label);
+      // Two groups (4 and 3) that wrap as a whole, so a narrow card shows two even lines rather
+      // than one cue alone on a second line.
+      cuesRow.replaceChildren(h('div', { class: 'sp-cue-group' }, CUES.slice(0, 4).map(cueBtn)), h('div', { class: 'sp-cue-group' }, CUES.slice(4).map(cueBtn)));
     }
   }
 

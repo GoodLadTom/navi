@@ -73,16 +73,18 @@ export function seg(options, value, onChange) {
   return wrap;
 }
 
+// The text sits in its own span so a long one can end in an ellipsis (app.css .chip .ct).
 export function chip(text, tone = '', dot = false) {
-  return h('span', { class: `chip ${tone}` }, dot ? h('span', { class: 'd' }) : null, text);
+  return h('span', { class: `chip ${tone}` }, dot ? h('span', { class: 'd' }) : null, h('span', { class: 'ct' }, text));
 }
 
 export function keycaps(keys, size = '') {
-  const wrap = h('span', { class: 'row', style: { gap: size === 'lg' ? '12px' : '6px' } });
+  const wrap = h('span', { class: 'row keycaps', style: { gap: size === 'lg' ? '12px' : '6px' } });
   keys.forEach((k, i) => {
-    if (i) wrap.append(h('span', { class: 'plus' }, '+'));
     const label = keyLabel(k);
-    wrap.append(h('span', { class: `kbd ${size} ${size === 'lg' && label.length > 3 ? 'wide' : ''}` }, label));
+    const cap = h('span', { class: `kbd ${size} ${size === 'lg' && label.length > 3 ? 'wide' : ''}` }, label);
+    // Each "+" stays with the key after it, so a long shortcut wraps between keys.
+    wrap.append(i ? h('span', { class: 'kc' }, h('span', { class: 'plus' }, '+'), cap) : cap);
   });
   return wrap;
 }
