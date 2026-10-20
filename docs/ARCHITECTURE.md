@@ -234,7 +234,10 @@ file but main.rs) describes it.
   front (checked against the real foreground window), never holds a take back, stops when the
   window loses focus, and lapses 45 seconds after the interface last renewed it.
 - Hotkey events carry the time the hook saw them (`HotkeyMsg`), so taps and double taps are timed
-  from the keyboard even when starting a take is slow (a Bluetooth microphone waking up).
+  from the keyboard even when starting a take is slow (a Bluetooth microphone waking up). A
+  quick release followed by a press less than 45 ms later is a key bounce while the fingers settle
+  on the chord, not a double tap, so the take carries on as hold-to-talk; every real double tap and
+  every ignored bounce is logged with its timings.
 - Every take logs its steps at info level (started, stopped with speech seconds and peak level,
   words heard, typed or dropped and why), never the words themselves.
 - The wake-word listener never logs or keeps what it hears. Screenshots never leave the computer:

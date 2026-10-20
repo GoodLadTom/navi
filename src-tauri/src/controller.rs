@@ -28,6 +28,14 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 const DOUBLE_TAP_MS: u128 = 350;
 const DOUBLE_TAP_WINDOW_MS: u64 = 380;
+/// Keys up for less than this between a quick release and the next press is a bounce while the
+/// fingers settle on the chord (or the hook's catch-up of a release it missed, which comes with no
+/// gap at all), not a second tap: a deliberate double tap leaves the keys up for longer.
+const KEY_BOUNCE_MS: u128 = 45;
+
+fn is_key_bounce(gap_ms: u128) -> bool {
+    gap_ms < KEY_BOUNCE_MS
+}
 const MIN_SPEECH_SAMPLES: usize = audio::SAMPLE_RATE as usize / 4;
 const RAMBLE_CHUNK_SECS: u64 = 12;
 /// Wait before announcing a take when the shortcut is only modifiers (Ctrl + Win, Right Ctrl),
@@ -100,6 +108,9 @@ async fn handle(app: &Arc<App>, ev: HotkeyEvent, at: Instant) -> Result<()> {
     let settings = app.settings();
     match ev {
         HotkeyEvent::TalkDown => {
+            // How long the keys were up between a quick release and this press, and how long the
+            // first press lasted, for the log.
+            let (mut gap_ms, mut held_ms) = (0u128, 0u128);
             let action = {
                 let mut guard = app.session.lock();
                 let s = &mut *guard;
@@ -112,8 +123,17 @@ async fn handle(app: &Arc<App>, ev: HotkeyEvent, at: Instant) -> Result<()> {
                     }
                     Phase::Recording(rec) if rec.pending_tap.is_some() => {
                         rec.pending_tap = None;
-                        rec.kind = Kind::HandsFree;
-                        2
+                        let up_at = rec.tap_up_at.take().unwrap_or(at);
+                        gap_ms = at.saturating_duration_since(up_at).as_millis();
+                        held_ms = up_at.saturating_duration_since(rec.pressed).as_millis();
+                        if is_key_bounce(gap_ms) {
+                            // Let go and pressed again too fast for a finger: a bounce while the
+                            // keys settle, not a second tap. Carry on holding to talk.
+                            5
+                        } else {
+                            rec.kind = Kind::HandsFree;
+                            2
+                        }
                     }
                     Phase::Recording(rec) if rec.kind != Kind::Talk => 3,
                     Phase::Processing => {
@@ -125,7 +145,22 @@ async fn handle(app: &Arc<App>, ev: HotkeyEvent, at: Instant) -> Result<()> {
             };
             match action {
                 1 => start(app, &settings, at).await?,
+                5 => {
+                    log::info!("ignored a key bounce {held_ms} ms into the take (up for {gap_ms} ms); still holding to talk");
+                    // The quick release held the greeting back; give it now.
+                    let reveal = {
+                        let mut s = app.session.lock();
+                        match &mut s.phase {
+                            Phase::Recording(rec) if !rec.announced && rec.pending_tap.is_none() => Some(announce_locked(app, rec, &settings)),
+                            _ => None,
+                        }
+                    };
+                    if let Some(hwnd) = reveal {
+                        app.reveal_pill_window(hwnd);
+                    }
+                }
                 2 => {
+                    log::info!("double tap: hands-free (first press {held_ms} ms, keys up for {gap_ms} ms)");
                     // Enter can finish it from now on.
                     if let Some(h) = app.hotkeys.lock().as_ref() {
                         h.set_hands_free(true);
@@ -172,6 +207,7 @@ async fn handle(app: &Arc<App>, ev: HotkeyEvent, at: Instant) -> Result<()> {
                         let held_for = at.saturating_duration_since(rec.pressed);
                         if settings.hotkeys.double_tap_hands_free && held_for.as_millis() < DOUBLE_TAP_MS {
                             rec.pending_tap = Some(seq);
+                            rec.tap_up_at = Some(at);
                             Next::MaybeDoubleTap(seq)
                         } else if !rec.announced {
                             Next::Drop
@@ -383,6 +419,7 @@ async fn start(app: &Arc<App>, settings: &Settings, pressed: Instant) -> Result<
             cue_ms: 0,
             cue_word: None,
             pending_tap: None,
+            tap_up_at: None,
             ramble_cue: None,
             ramble_started: None,
             ocr,
@@ -473,6 +510,7 @@ pub async fn start_from_wake(app: &Arc<App>, preroll: Vec<f32>) -> Result<Option
             cue_ms: 0,
             cue_word: None,
             pending_tap: None,
+            tap_up_at: None,
             ramble_cue: None,
             ramble_started: None,
             ocr,
@@ -995,6 +1033,7 @@ async fn bare_recording(app: &Arc<App>) -> Recording {
         cue_ms: 0,
         cue_word: None,
         pending_tap: None,
+        tap_up_at: None,
         ramble_cue: None,
         ramble_started: None,
         ocr: None,
@@ -2153,6 +2192,20 @@ fn short_error(e: &anyhow::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_key_bounce_is_not_a_double_tap() {
+        // The hook's catch-up of a release it missed sends the release and the press together.
+        assert!(is_key_bounce(0));
+        // Fingers settling on Ctrl + Win: up for a few milliseconds.
+        assert!(is_key_bounce(20));
+        assert!(is_key_bounce(44));
+        // A deliberate double tap leaves the keys up for longer.
+        assert!(!is_key_bounce(45));
+        assert!(!is_key_bounce(120));
+        // Both windows stay within the double tap's own limits.
+        assert!(KEY_BOUNCE_MS < DOUBLE_TAP_MS && (KEY_BOUNCE_MS as u64) < DOUBLE_TAP_WINDOW_MS);
+    }
 
     #[test]
     fn insert_just_before_the_caret_counts() {

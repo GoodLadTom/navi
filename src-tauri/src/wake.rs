@@ -301,7 +301,9 @@ fn send_check(app: &Arc<App>, check: IdleCheck, audio: Vec<f32>, opts: Transcrib
 fn act(app: &Arc<App>, ring: &Arc<Mutex<Ring>>, acting: &Arc<AtomicBool>, decision: IdleDecision, checks: usize) {
     match decision {
         IdleDecision::Wait => {}
-        IdleDecision::Ignore => log::info!("voice: ignored an utterance"),
+        // Every bit of speech that isn't "Navi" ends here, about once a second while anyone talks,
+        // so it stays out of the everyday log.
+        IdleDecision::Ignore => log::debug!("voice: ignored an utterance"),
         IdleDecision::Wake { start, heard_to, after_ms, .. } => {
             log::info!("voice: woke {after_ms} ms after you stopped ({checks} checks)");
             acting.store(true, Ordering::SeqCst);
@@ -557,6 +559,7 @@ mod tests {
             cue_ms: 180,
             cue_word: None,
             pending_tap: None,
+            tap_up_at: None,
             ramble_cue: None,
             ramble_started: None,
             ocr: None,
