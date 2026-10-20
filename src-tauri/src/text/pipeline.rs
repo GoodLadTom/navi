@@ -539,8 +539,8 @@ mod tests {
             let _ = cleanup::strip_cue_echo(raw, Some("Hey"));
             let _ = cleanup::is_hallucination(raw);
             let _ = britishise::britishise(raw);
-            let _ = voice::parse(raw, false);
-            let _ = voice::parse(raw, true);
+            let _ = voice::parse(raw, false, &s.voice_commands);
+            let _ = voice::parse(raw, true, &s.voice_commands);
             let _ = voice::apply_replace(raw, raw, "x");
             let _ = learn::find_corrections(raw, raw);
             let _ = learn::find_corrections(raw, "café Café crème brûlées");
@@ -562,7 +562,7 @@ mod tests {
         use crate::text::{learn, ramble, voice};
         assert_eq!(learn::find_corrections("We met at the café today.", "We met at the Café today."), vec![("café".to_string(), "Café".to_string())]);
         assert!(learn::find_corrections("I love crème brûlée here", "I love crème brûlées here").is_empty());
-        assert_eq!(voice::parse("Navi, Please make that shorter Please", false), Some(crate::types::VoiceCommand::Rewrite { instruction: "make that shorter".into() }));
+        assert_eq!(voice::parse("Navi, Please make that shorter Please", false, &Default::default()), Some(crate::types::VoiceCommand::Rewrite { instruction: "make that shorter".into() }));
         let n = ramble::offline_notes("Don’t forget the invoice. Then lunch.");
         assert_eq!(n.tasks.first().map(|t| t.text.as_str()), Some("The invoice"));
     }

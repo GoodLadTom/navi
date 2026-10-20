@@ -127,16 +127,19 @@ pub fn stop(app: &Arc<App>) -> Result<()> {
 }
 
 /// The bubble as watching starts: how to stop it by voice with today's settings. "Navi, stop
-/// watching" said in a shortcut take always works (voice::parse); said out loud on its own only
-/// while Settings > Voice commands is on, in the words set there (wake word, then the Stop watching
-/// phrase). The tray and the Notes page stop it too, and it stops by itself after MAX_LENGTH.
+/// watching" said in a shortcut take works while Stop watching has a phrase (voice::parse); said
+/// out loud on its own only while Settings > Voice commands is on, in the words set there (wake
+/// word, then the Stop watching phrase). With Stop watching switched off, the tray and the Notes
+/// page are left, which always stop it; it also stops by itself after MAX_LENGTH.
 fn watching_notice(settings: &Settings) -> String {
     let vc = &settings.voice_commands;
     if let Some(say) = vc.say("watch_off").filter(|_| vc.enabled) {
         format!("Watching your screen. Say \u{201c}{say}\u{201d} when you\u{2019}re done.")
-    } else {
+    } else if vc.first("watch_off").is_some() {
         let keys = crate::hotkey::display_chord_label(&settings.hotkeys.talk);
         format!("Watching your screen. To stop, hold {keys} and say \u{201c}Navi, stop watching\u{201d}.")
+    } else {
+        "Watching your screen. Stop it from the tray or the Notes page.".to_string()
     }
 }
 
@@ -627,8 +630,13 @@ mod tests {
         settings.voice_commands.set_phrases("wake", &["Navi"]);
         settings.voice_commands.set_phrases("watch_off", &["I'm done"]);
         assert!(watching_notice(&settings).contains("\u{201c}Navi, I'm done\u{201d}"));
-        // Stop watching turned off: only the shortcut way is left to name.
-        settings.voice_commands.set_phrases("watch_off", &[]);
+        // Listening off: the shortcut way, while Stop watching has a phrase.
+        settings.voice_commands.enabled = false;
         assert_eq!(watching_notice(&settings), shortcut);
+        // Stop watching switched off: no spoken way is left, so the buttons are named.
+        settings.voice_commands.set_phrases("watch_off", &[]);
+        assert_eq!(watching_notice(&settings), "Watching your screen. Stop it from the tray or the Notes page.");
+        settings.voice_commands.enabled = true;
+        assert_eq!(watching_notice(&settings), "Watching your screen. Stop it from the tray or the Notes page.");
     }
 }

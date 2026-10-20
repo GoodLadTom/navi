@@ -5,6 +5,8 @@
 //!   muted and unmuted again. "both": pause what can be paused, then mute the rest.
 //! * Pausing uses Windows' media sessions (the players behind the volume flyout's media controls:
 //!   Spotify, a YouTube tab, most media apps), and only sessions Navi paused are played again.
+//!   Navi keeps the session objects themselves, not their app ids: every tab of a browser shares
+//!   one app id, and a tab you had paused yourself must stay paused.
 //! * Muting sets the mute flag on each other app's audio session, on every active output device,
 //!   and clears it only on sessions Navi muted. The volume level is never touched, so every app
 //!   comes back exactly as loud as it was. Navi's own sessions (its cues) and the system sounds
@@ -52,13 +54,39 @@ impl Choice {
 }
 
 /// What Navi changed for the take that owns it.
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct Held {
     owner: u64,
-    /// Media sessions Navi paused (their app ids).
-    paused: Vec<String>,
+    /// The media sessions Navi paused, as the sessions themselves.
+    paused: win::Paused,
     /// Audio sessions Navi muted (their session instance ids).
     muted: Vec<String>,
+}
+
+/// A player behind one of Windows' media sessions (win.rs gives the real ones; the tests, fakes).
+trait Player {
+    fn playing(&self) -> bool;
+    fn paused(&self) -> bool;
+    /// True when it paused.
+    fn pause(&self) -> bool;
+    fn play(&self);
+}
+
+/// Pauses every player that is playing. Returns those it paused: the only ones `play_again` will
+/// touch, so one already paused (a YouTube tab you paused yourself) is never started.
+fn pause_all<P: Player>(players: Vec<P>) -> Vec<P> {
+    players.into_iter().filter(|p| p.playing() && p.pause()).collect()
+}
+
+/// Plays again the players Navi paused that are still paused (one you started again yourself
+/// meanwhile, or that has gone, is left alone). Returns how many.
+fn play_again<P: Player>(paused: &[P]) -> usize {
+    let mut played = 0;
+    for p in paused.iter().filter(|p| p.paused()) {
+        p.play();
+        played += 1;
+    }
+    played
 }
 
 static STATE: tokio::sync::Mutex<Option<Held>> = tokio::sync::Mutex::const_new(None);
@@ -142,6 +170,7 @@ fn release(held: Held, data_dir: &Path) {
     if !held.paused.is_empty() {
         win::resume(&held.paused);
     }
+    // The sessions are let go here, and only then COM's hold on their apartment (win::Paused).
 }
 
 #[cfg(windows)]
@@ -156,7 +185,10 @@ mod win {
         eRender, IAudioSessionControl2, IAudioSessionManager2, IMMDeviceEnumerator, ISimpleAudioVolume, MMDeviceEnumerator,
         DEVICE_STATE_ACTIVE,
     };
-    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED};
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoDecrementMTAUsage, CoIncrementMTAUsage, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
+        CO_MTA_USAGE_COOKIE,
+    };
 
     /// COM for the length of one call on this (blocking pool) thread.
     struct Com(bool);
@@ -186,32 +218,72 @@ mod win {
         session.GetPlaybackInfo().and_then(|info| info.PlaybackStatus()).ok()
     }
 
+    #[cfg(test)]
     fn app_id(session: &MediaSession) -> String {
         session.SourceAppUserModelId().map(|id| id.to_string()).unwrap_or_default()
     }
 
-    /// Pauses every playing media session. Returns the app ids of those it paused.
-    pub fn pause_playing() -> Vec<String> {
-        let _com = Com::init();
-        let mut paused = Vec::new();
-        for session in media_sessions() {
-            if status(&session) != Some(PlaybackStatus::Playing) {
-                continue;
-            }
-            if session.TryPauseAsync().and_then(|op| op.get()).unwrap_or(false) {
-                paused.push(app_id(&session));
-            }
+    impl super::Player for MediaSession {
+        fn playing(&self) -> bool {
+            status(self) == Some(PlaybackStatus::Playing)
         }
-        paused
+        fn paused(&self) -> bool {
+            status(self) == Some(PlaybackStatus::Paused)
+        }
+        fn pause(&self) -> bool {
+            self.TryPauseAsync().and_then(|op| op.get()).unwrap_or(false)
+        }
+        fn play(&self) {
+            let _ = self.TryPlayAsync().and_then(|op| op.get());
+        }
     }
 
-    /// Plays again the sessions Navi paused, if they are still paused.
-    pub fn resume(ids: &[String]) {
+    /// Keeps COM's multithreaded apartment open, where the sessions Navi holds live, after the
+    /// thread that paused them lets COM go (`Com`): without it, the last thread leaving would close
+    /// it under them.
+    struct MtaHold(CO_MTA_USAGE_COOKIE);
+
+    // The cookie is only handed back to COM, from whichever thread lets the hold go.
+    unsafe impl Send for MtaHold {}
+
+    impl Drop for MtaHold {
+        fn drop(&mut self) {
+            let _ = unsafe { CoDecrementMTAUsage(self.0) };
+        }
+    }
+
+    /// The media sessions Navi paused, kept as the sessions themselves (a browser's tabs all share
+    /// one app id). Declared before `_mta`, so the sessions are let go first.
+    #[derive(Default)]
+    pub struct Paused {
+        sessions: Vec<MediaSession>,
+        _mta: Option<MtaHold>,
+    }
+
+    impl Paused {
+        pub fn len(&self) -> usize {
+            self.sessions.len()
+        }
+        pub fn is_empty(&self) -> bool {
+            self.sessions.is_empty()
+        }
+    }
+
+    /// Pauses every playing media session and keeps the ones it paused.
+    pub fn pause_playing() -> Paused {
         let _com = Com::init();
-        for session in media_sessions() {
-            if status(&session) == Some(PlaybackStatus::Paused) && ids.contains(&app_id(&session)) {
-                let _ = session.TryPlayAsync().and_then(|op| op.get());
-            }
+        let sessions = super::pause_all(media_sessions());
+        let mta = if sessions.is_empty() { None } else { unsafe { CoIncrementMTAUsage() }.ok().map(MtaHold) };
+        Paused { sessions, _mta: mta }
+    }
+
+    /// Plays again the sessions Navi paused, if they are still paused. Never another session of
+    /// the same app.
+    pub fn resume(paused: &Paused) {
+        let _com = Com::init();
+        let played = super::play_again(&paused.sessions);
+        if played < paused.sessions.len() {
+            log::info!("while you talk: played {played} of {} paused player(s) again; the rest were playing or gone", paused.sessions.len());
         }
     }
 
@@ -305,10 +377,22 @@ mod win {
 
 #[cfg(not(windows))]
 mod win {
-    pub fn pause_playing() -> Vec<String> {
-        Vec::new()
+    #[derive(Default)]
+    pub struct Paused;
+
+    impl Paused {
+        pub fn len(&self) -> usize {
+            0
+        }
+        pub fn is_empty(&self) -> bool {
+            true
+        }
     }
-    pub fn resume(_ids: &[String]) {}
+
+    pub fn pause_playing() -> Paused {
+        Paused
+    }
+    pub fn resume(_paused: &Paused) {}
     pub fn mute_others() -> Vec<String> {
         Vec::new()
     }
@@ -343,6 +427,59 @@ mod tests {
         let old: crate::types::SoundSettings = serde_json::from_str(r#"{"enabled":true,"set":"bubble","volume":0.5,"custom":{}}"#).unwrap();
         assert_eq!(old.while_talking, "pause");
         assert_eq!(old.set, "bubble");
+    }
+
+    /// A pretend media session: its state is shared between clones, as a real session's is.
+    #[derive(Clone)]
+    struct Fake {
+        state: std::rc::Rc<std::cell::Cell<&'static str>>,
+        /// Refuses to pause (some players can't).
+        stubborn: bool,
+    }
+
+    impl Fake {
+        fn new(state: &'static str) -> Self {
+            Fake { state: std::rc::Rc::new(std::cell::Cell::new(state)), stubborn: false }
+        }
+        fn get(&self) -> &'static str {
+            self.state.get()
+        }
+    }
+
+    impl Player for Fake {
+        fn playing(&self) -> bool {
+            self.get() == "playing"
+        }
+        fn paused(&self) -> bool {
+            self.get() == "paused"
+        }
+        fn pause(&self) -> bool {
+            if self.stubborn {
+                return false;
+            }
+            self.state.set("paused");
+            true
+        }
+        fn play(&self) {
+            self.state.set("playing");
+        }
+    }
+
+    #[test]
+    fn only_the_players_navi_paused_play_again() {
+        // Two YouTube tabs in one browser (one app id): one playing, one you paused yourself.
+        let (playing_tab, your_paused_tab) = (Fake::new("playing"), Fake::new("paused"));
+        let (music, stopped, live_radio) = (Fake::new("playing"), Fake::new("stopped"), Fake { stubborn: true, ..Fake::new("playing") });
+        let kept = pause_all(vec![playing_tab.clone(), your_paused_tab.clone(), music.clone(), stopped.clone(), live_radio.clone()]);
+        assert_eq!(kept.len(), 2, "only what Navi really paused is kept");
+        assert_eq!((playing_tab.get(), music.get(), live_radio.get()), ("paused", "paused", "playing"));
+        // While you talk you start the music again yourself.
+        music.play();
+        assert_eq!(play_again(&kept), 1);
+        assert_eq!(playing_tab.get(), "playing");
+        assert_eq!(your_paused_tab.get(), "paused", "the tab you paused stays paused");
+        assert_eq!(stopped.get(), "stopped");
+        assert_eq!(music.get(), "playing");
     }
 
     #[test]

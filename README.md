@@ -20,11 +20,13 @@ The source is on GitHub in a private repository for now, so only people with acc
   happens straight away: "Navi, watch my screen", "Navi, take notes", "Navi, scratch that",
   "Navi, turn gold". Say
   "don't worry" on its own during a take to throw it away. Every phrase can be changed in Settings >
-  Voice commands, to any words you like. The listening happens on your computer, no AI is
-  involved, and nothing it hears is kept.
+  Voice commands, to any words you like, and a command with no phrases left is off, with the
+  shortcut held too. The listening happens on your computer, no AI is involved, and nothing it
+  hears is kept.
 - **Modes at your fingertips.** Switch between Raw, Clean, Message, Email, Prompt and your own
   modes from the Modes page, the tray, or a key per mode (F1 to F5, say). The bubble shows which
-  mode you are on.
+  mode you are on. Settings refuses a mode key that would clash with your talk shortcut or
+  another mode's key, including when you press Use F1 to F5.
 - **Ramble mode.** Tap Space while holding the shortcut. Talk for as long as you like and press
   Enter when you are done. Your AI turns it into notes with a title, summary, key points,
   decisions and tasks (with no AI, Navi makes rough notes on your computer). If the AI fails, Navi
@@ -61,9 +63,13 @@ The source is on GitHub in a private repository for now, so only people with acc
   fix to an everyday word waits on the Dictionary page as a suggestion instead, so it can't change
   that word in everything you say.
 - **Edit by voice.** "Navi, scratch that." "Navi, make that shorter." "Navi, change Tuesday to
-  Wednesday." These work on what Navi typed into the same window in the last ten minutes. Select
-  text and say "Navi, turn this into bullet points", or "Navi, what's wrong with this?" for a blunt
-  list of its problems in a card you can copy from.
+  Wednesday." These work on what Navi typed into the same window in the last ten minutes, once
+  Navi has read the text before your cursor and found its words still there. Where it can't read
+  that text (in a terminal, in an app that doesn't share it, or with "Read the text near my
+  cursor" off), they only work on what Navi typed in the last 15 seconds with no key pressed since,
+  so your own typing is never selected over. Select text and say "Navi, turn this into bullet
+  points", or "Navi, what's wrong with this?" for a blunt list of its problems in a card you can
+  copy from.
 - **Writes like you.** British spelling and no em dashes (both on unless you turn them off), and a
   style profile that every AI rewrite follows.
 - **Six colours.** Lilac, Gold, Teal, Sky, Rose or Graphite, each in light and dark. Pick one in
@@ -92,9 +98,10 @@ Sound cues: eleven sets of soft, low sounds (Hush, Felt, Oak, Kalimba, Bubble, B
 made to be heard all day. Or use your own WAV files, or none at all.
 
 While you talk, Navi pauses music and videos and plays them again when you finish, so you can
-hear yourself. You can have it mute other apps instead (they come back at the same
-volume), do both, or leave everything playing (Settings > Sound > While you talk). Nothing
-changes while Navi takes call notes.
+hear yourself. Only what Navi paused plays again: a video you had paused yourself stays paused,
+even in another tab of the same browser. You can have it mute other apps instead (they come back
+at the same volume), do both, or leave everything playing (Settings > Sound > While you talk).
+Nothing changes while Navi takes call notes.
 
 ## Speech engine
 

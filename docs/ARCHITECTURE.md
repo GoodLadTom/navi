@@ -30,19 +30,30 @@ shortcut, speak, release: the words appear in whatever app has focus, transcribe
    ui/sounds/sets) and shows the `overlay` pill, so a quick tap or a shortcut that merely starts
    with the talk keys ends silently. At the same moment `media` pauses what's playing (Windows'
    media sessions) or mutes other apps' audio sessions, as Settings > Sound > While you talk says
-   (Pause by default), and puts back only what it changed once the take stops recording. Muting
-   sets each session's mute flag and never its volume, Navi's own sounds are never muted, and
-   nothing changes during call notes. What it muted is kept in `media-muted.json` until it's
-   unmuted, so the next start can unmute it after a crash.
+   (Pause by default), and puts back only what it changed once the take stops recording. It keeps
+   the media sessions it paused themselves, not their app ids (a browser's tabs share one), so a
+   tab the user had paused stays paused; a COM usage hold (`CoIncrementMTAUsage`) keeps their
+   apartment open until they are let go. Muting sets each session's mute flag and never its
+   volume, Navi's own sounds are never muted, and nothing changes during call notes. What it muted
+   is kept in `media-muted.json` until it's unmuted, so the next start can unmute it after a crash.
 3. On `TalkUp` (or, in hands-free, the next press of the talk keys or Enter), audio stops. The
    audio recorded while the start cue played (at most about 0.1 s: the cue's length, capped at
    160 ms, less its last 60 ms) is cut out so speaker bleed never becomes text; anything said
    before the cue is kept. Nothing is cut in a wake-word take, with sounds off, or when Settings >
    Microphone > Ignore the start cue is off. `engine.transcribe` then runs with a vocabulary
    prompt from the dictionary.
-4. `text::voice::parse` checks for a wake-word command ("Navi, scratch that"). A rewrite or replace
-   only runs when Navi typed something into this window in the last ten minutes; otherwise the words
-   are dictation ("Hello Navi, this is my first note"). Then `text::pipeline::run` applies spoken
+4. `text::voice::parse` checks for a wake-word command ("Navi, scratch that"), given the user's
+   voice commands: Scratch that, Watch my screen and Stop watching are off there too when their
+   phrase list is empty, and their words are then dictation. A rewrite or replace only runs when
+   Navi typed something into this window in the last ten minutes; otherwise the words are
+   dictation ("Hello Navi, this is my first note"). Before an edit selects back over what Navi
+   typed, `controller::select_back_check` looks at the text before the caret (as the take read it,
+   and again just before the keys): Navi's words must still end there. A field that can't be read
+   (reading off, an app that doesn't say, or a terminal) has nothing to compare, so only an insert
+   from the last 15 seconds (`BLIND_EDIT_WINDOW`) with no key pressed since counts. The hook keeps
+   when a key last reached an app (`hotkey::keys_pressed_since`: not Navi's own keystrokes, not
+   keys it swallowed, not a lone modifier or a media key); mouse clicks are not seen, and the
+   second look after the AI checks keys only. Then `text::pipeline::run` applies spoken
    punctuation, snippets, the dictionary, offline cleanup, the optional AI step for the mode
    (`text::llm`, which hands Claude Code and Codex to `text::cli_ai`), the no-em-dash and British
    spelling rules, then the dictionary again.
@@ -77,7 +88,9 @@ ChatGPT joined its list gets them once (`store::modes::add_new_prompt_apps`, mar
 
 Mode keys (HotkeySettings::mode_keys) fire `HotkeyEvent::ModeKey(n)`; `controller::switch_mode`
 saves the active mode, ticks the tray and shows "Mode: Email" in the bubble (or switches a take
-being recorded hands-free).
+being recorded hands-free). Settings checks every mode key with `hotkey::check_mode_key` (the
+`check_mode_key` command) before saving it: by hand, and for each key of Use F1 to F5, against
+the mode keys as they will be (its `others`); one refused leaves them all as they were.
 
 Ramble (Space while holding the chord, with its own sound) records hands-free in the Notes mode.
 Every 12 seconds it transcribes the last 30 seconds, only for the live preview in the bubble (the
@@ -134,7 +147,10 @@ stop watching, take notes, stop taking notes, cancel ("don't worry"), finish ("t
 change colour ("turn", "change to", "switch to", "make it"). A colour phrase only counts with a
 colour after it: `Matcher` adds each colour's words from `colours` (its name, plus yellow, green,
 blue, pink, purple, grey and a few more) and hears them exactly, so "make it Greek" is never heard
-as green.
+as green. An action whose list is emptied is off everywhere: `text::voice::parse`, which also
+knows built-in ways of saying scratch that ("delete that", "undo") and watch ("start watching",
+"watch off") for takes with the shortcut held, is given the settings and skips Scratch that, Watch
+my screen and Stop watching when they have no phrases.
 `spoken.rs` holds the logic as plain state machines (a segmenter, the phrase `Matcher`, an
 `IdleListener` and a `TakeListener`); `wake.rs` and `controller.rs` are thin shells around them,
 and the unit tests and the live measurement run the same code.
@@ -268,10 +284,15 @@ file but main.rs) describes it.
   front (checked against the real foreground window), never holds a take back, stops when the
   window loses focus, and lapses 45 seconds after the interface last renewed it.
 - Hotkey events carry the time the hook saw them (`HotkeyMsg`), so taps and double taps are timed
-  from the keyboard even when starting a take is slow (a Bluetooth microphone waking up). A
-  quick release followed by a press less than 45 ms later is a key bounce while the fingers settle
-  on the chord, not a double tap, so the take carries on as hold-to-talk; every real double tap and
-  every ignored bounce is logged with its timings.
+  from the keyboard even when starting a take is slow (a Bluetooth microphone waking up). The
+  double tap's window (380 ms) closes that long after the hook saw the quick release: the
+  controller's event loop waits for it (`tap_window`) and handles every event the hook saw before
+  then first, so a release that reached it late never stretches the window. A press less than
+  45 ms after a release is a key bounce while the fingers settle on the chord or come off it
+  (`controller::press_while_recording`): after a quick first tap the take carries on as
+  hold-to-talk, and in a hands-free take or a ramble it carries on rather than finishing (the
+  bounce on a double tap's second tap, or while letting go after starting a ramble). Every real
+  double tap and every ignored bounce is logged with its timings only.
 - Every take logs its steps at info level (started, stopped with speech seconds and peak level,
   words heard, typed or dropped and why), never the words themselves.
 - The wake-word listener never logs or keeps what it hears. Screenshots never leave the computer:
