@@ -23,8 +23,9 @@ shortcut, speak, release: the words appear in whatever app has focus, transcribe
    keystrokes, tagged `NAVI_INPUT_TAG`, never do. The hook reinstalls itself after a quiet minute,
    because Windows silently removes a hook that once keeps it waiting.
 2. `controller` starts `audio` capture at once, captures `context` (app, window title, text near
-   the cursor, selection and, in a browser, the address bar's host) and picks a mode (the active
-   mode if one is chosen, else from the app or site, see Modes below).
+   the cursor, selection and, in a browser, the address bar's host; for an app under "Never read
+   these apps" only the app, not even its title) and picks a mode (the active mode if one is
+   chosen, else from the app or site, see Modes below).
    After a short grace (110 to 180 ms) it plays the start cue (`sounds`: the chosen sound set from
    ui/sounds/sets) and shows the `overlay` pill, so a quick tap or a shortcut that merely starts
    with the talk keys ends silently. At the same moment `media` pauses what's playing (Windows'
@@ -51,10 +52,12 @@ shortcut, speak, release: the words appear in whatever app has focus, transcribe
    take is saved (`store::history` + a WAV in the audio folder, deleted after
    `privacy.keepAudioDays`, 30 by default). The pill shows done, the done cue plays.
 6. Later (25 seconds after pasting, or at the next take), `context::read_focused_text` reads the
-   field again and `text::learn::find_corrections` spots words the user fixed. A fix seen twice is
-   added to the dictionary by itself when `text::learn::can_auto_add` allows it (the misheard word
-   isn't everyday English); otherwise it waits as a suggestion on the Dictionary page. This needs
-   "Read the text near my cursor" on.
+   field again and `text::learn::find_corrections` spots words the user fixed. Each take's timer
+   looks only at that take (`learning_due`), so a newer paste is never checked early by an older
+   timer. A fix seen twice is added to the dictionary by itself when `text::learn::can_auto_add`
+   allows it (the misheard word isn't everyday English); otherwise it waits as a suggestion on the
+   Dictionary page. This needs "Read the text near my cursor" on, and `read_focused_text` never
+   reads a window whose app is under "Never read these apps" (checked when it reads).
 
 Modes (`text::modes`): the built-ins (Raw, Clean, Message, Email, Prompt, and Notes for rambles)
 come from the code; the `modes` table only holds custom modes and the user's edits of built-ins.
@@ -103,7 +106,8 @@ Along the way, as Settings > Meeting notes allows:
   or more words goes straight to the AI for longer jobs with the call so far; the answer is kept
   with the note. The AI only writes.
 - Screenshots (`screen`): every 15 seconds a look at the screen, kept when enough of it changed,
-  its text read with Windows OCR. Only that text goes to the AI writing the notes.
+  its text read with Windows OCR. Only that text, the app's name and (while "Read the window
+  title" is on) the window's title go to the AI writing the notes.
 - Actions: the bullets under the notes' Actions heading go to ClickUp or Notion.
 Jobs and screenshots live in the note's `extras` JSON (schema version 3); the Short ideas that
 notes saved by older versions keep there are skipped when read. Jobs can finish
@@ -152,9 +156,10 @@ sidebar and on the welcome screen is drawn in CSS: the firefly from one mask
 "Watch my screen" (`watch`): started by "Navi, watch" (said with the shortcut or to the wake-word
 listener), the tray or the Notes page. Every 10 seconds by default (Settings: 5, 10, 20 or 30) it
 looks at the screen and keeps a screenshot when enough of it changed, until "stop watching" (or an
-hour). The AI for longer jobs then gets each screenshot's time, window and OCR text (never the
-picture), picks up to 20 that matter with captions and writes a short account; the rest are
-deleted. Without an AI every screenshot stays, listed by time and window. The result is a note
+hour). The AI for longer jobs then gets each screenshot's time, app, window title (kept only while
+"Read the window title" is on) and OCR text (never the picture), picks up to 20 that matter with
+captions and writes a short account; the rest are deleted. Without an AI every screenshot stays,
+listed by time and window. The result is a note
 whose app is "Watch". Screenshots live in the app data folder (`shots/<note id>/`), which the
 asset protocol may read, so the interface shows them with `convertFileSrc`.
 
@@ -213,7 +218,18 @@ file but main.rs) describes it.
 ## Rules
 
 - British English in everything the user reads. No em dashes in UI strings.
-- Never log API keys, tokens, prompts or transcripts at info level.
+- Never log API keys, tokens, prompts, transcripts, window titles or anything else the user said,
+  at any level. An error whose message quotes their words (`Couldn't find "Tuesday" in what you
+  just said.`) is a `controller::SaidError`: the bubble shows the message, the log only its
+  description (`for_log`). The speech engine's output is kept for the log without the segments
+  some whisper.cpp builds print as they transcribe (`engine::is_transcript_line`).
+- What goes to the AI with a take's words: the app's name, the window title (Settings > Context
+  and privacy > Read the window title), up to 1,000 characters before the cursor (Read the text
+  near my cursor), the user's name (Settings > General), the style notes, the dictionary terms
+  used in the take, the mode's own instructions and, in Prompt mode, up to 60 file paths from the
+  project folder the window title matches (or the active project). An app under "Never read these
+  apps" gives only its name: no title, field text, selection, address, OCR, screenshots or
+  learning from corrections.
 - Nothing leaves the machine except the update check and update download (GitHub), the
   silence-model download (Hugging Face, tried at each start until it's there), engine and model
   downloads the user starts (GitHub and Hugging Face), packs installed or refreshed from a link,
@@ -241,5 +257,6 @@ file but main.rs) describes it.
 - Every take logs its steps at info level (started, stopped with speech seconds and peak level,
   words heard, typed or dropped and why), never the words themselves.
 - The wake-word listener never logs or keeps what it hears. Screenshots never leave the computer:
-  the AI only ever gets the text read off them and the window names, and apps under "Never read
+  the AI only ever gets the text read off them, the app's name and, while "Read the window title"
+  is on, the window's title (`screen::capture` keeps no title otherwise). Apps under "Never read
   these apps" are never captured.

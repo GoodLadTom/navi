@@ -166,7 +166,9 @@ pub async fn rerun_take(app: State<'_, Arc<App>>, id: String, mode_id: Option<St
     let words = app.db.list_words().unwrap_or_default();
     let snippets = app.db.list_snippets().unwrap_or_default();
     let llm = if mode.use_ai { make_llm(&settings) } else { None };
-    let ctx = AppContext { app_label: take.app_name.clone(), window_title: take.window_title.clone(), category: "other".into(), ..Default::default() };
+    // The title kept with the take goes to the AI only while "Read the window title" is still on.
+    let window_title = context::kept_title(take.window_title.clone(), settings.context.read_app, false);
+    let ctx = AppContext { app_label: take.app_name.clone(), window_title, category: "other".into(), ..Default::default() };
     let out = pipeline::run(pipeline::PipelineInput { raw: &tr.text, mode: &mode, ctx: &ctx, settings: &settings, words: &words, snippets: &snippets, llm: llm.as_ref(), project_files: &[] })
         .await
         .map_err(err)?;

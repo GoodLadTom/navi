@@ -44,7 +44,8 @@ The source is on GitHub in a private repository for now, so only people with acc
   Navi looks at the screen every 10 seconds, keeps a screenshot when it has changed and stops
   after an hour. Your AI then keeps up to 20 that matter and writes up what you did (with no AI,
   every screenshot stays, listed by time). Screenshots stay on your computer; the AI only gets the
-  text read off them and the window names.
+  text read off them and the app and window names (only the app's while "Read the window title"
+  is off).
 - **Built for talking to AI agents.** In a terminal, VS Code, Cursor, Windsurf, BB, the Claude,
   ChatGPT and Codex apps, or a browser tab on ChatGPT or Claude, Navi picks Prompt mode. It turns
   what you say into a clear brief for an AI tool such as Claude Code or ChatGPT, with `@file`
@@ -52,9 +53,10 @@ The source is on GitHub in a private repository for now, so only people with acc
   line instead of rewriting. A browser tab counts by its title or, once ChatGPT has renamed the
   tab after your chat, by the site in the address bar.
 - **Learns from your corrections.** Fix a word after Navi pastes it and it notices (this needs
-  "Read the text near my cursor", which is on unless you turn it off). Fix the same word twice and
-  Navi adds it to your dictionary. A fix to an everyday word waits on the Dictionary page as a
-  suggestion instead, so it can't change that word in everything you say.
+  "Read the text near my cursor", which is on unless you turn it off, and never happens in apps
+  under "Never read these apps"). Fix the same word twice and Navi adds it to your dictionary. A
+  fix to an everyday word waits on the Dictionary page as a suggestion instead, so it can't change
+  that word in everything you say.
 - **Edit by voice.** "Navi, scratch that." "Navi, make that shorter." "Navi, change Tuesday to
   Wednesday." These work on what Navi typed into the same window in the last ten minutes. Select
   text and say "Navi, turn this into bullet points", or "Navi, what's wrong with this?" for a blunt
@@ -69,8 +71,12 @@ The source is on GitHub in a private repository for now, so only people with acc
 - **Knows where you are typing.** Navi reads the app and the text near your cursor on your
   computer, which helps it pick the right mode and spell names correctly. In a browser it also
   looks at the address bar and keeps only the site's name, such as chatgpt.com, to pick the mode;
-  that is never saved or sent anywhere. When an AI mode runs, the app
-  name, window title and up to 1,000 characters before the cursor go to your AI with your words.
+  that is never saved or sent anywhere. When an AI mode runs, your words go to your AI with the
+  app's name, the window title, up to 1,000 characters before the cursor, the name in Settings >
+  General, your style notes and any dictionary words you used. In Prompt mode the paths of up to
+  60 files from the matching project folder go too. You can stop Navi reading the window title or
+  the text near your cursor in Settings > Context and privacy. From apps under "Never read these
+  apps", Navi takes nothing but the app's name.
 - **Keeps your takes.** Every take is kept with its text, and its recording for 30 days unless you
   choose 7 or 90 days or for ever. While the recording is there you can play it back or re-run
   it through another mode; copying the text works at any time. Turn Save history off and nothing is kept.
