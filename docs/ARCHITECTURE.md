@@ -38,13 +38,20 @@ shortcut, speak, release: the words appear in whatever app has focus, transcribe
    160 ms, less its last 60 ms) is cut out so speaker bleed never becomes text; anything said
    before the cue is kept. Nothing is cut in a wake-word take, with sounds off, or when Settings >
    Microphone > Ignore the start cue is off. `engine.transcribe` then runs with a vocabulary
-   prompt from the dictionary.
+   prompt from the dictionary. A restart (`start_engine_and_wait`: a new model, the graphics card
+   switched, the silence model fetched) takes the old engine away at once, and the new one is
+   there only once warmed up (2 to 3 seconds on the graphics card, about 10 on the processor), so
+   `controller::engine_for_take` waits up to 30 seconds for an engine on its way (a start under
+   way, or a status that isn't missing-model, missing-engine or error), the bubble saying
+   "Waiting for the speech engine to start…" every 3 seconds, as call notes hold their audio.
 4. `text::voice::parse` checks for a wake-word command ("Navi, scratch that"). A rewrite or replace
    only runs when Navi typed something into this window in the last ten minutes; otherwise the words
    are dictation ("Hello Navi, this is my first note"). Then `text::pipeline::run` applies spoken
    punctuation, snippets, the dictionary, offline cleanup, the optional AI step for the mode
    (`text::llm`, which hands Claude Code and Codex to `text::cli_ai`), the no-em-dash and British
-   spelling rules, then the dictionary again.
+   spelling rules, then the dictionary again. When the AI step fails, the words get the offline
+   tidy and the bubble names why from the error's first sentence (`controller::ai_fallback_note`:
+   "Ollama isn't running, so Navi typed a plain tidy instead.").
 5. `insert` pastes into the app that has the focus when the text is ready (clipboard snapshot,
    Ctrl+V, restore; or typed, as Settings choose). In a window running as administrator Windows
    blocks the keystrokes, so the text is left on the clipboard. Unless Save history is off, the
@@ -158,6 +165,24 @@ deleted. Without an AI every screenshot stays, listed by time and window. The re
 whose app is "Watch". Screenshots live in the app data folder (`shots/<note id>/`), which the
 asset protocol may read, so the interface shows them with `convertFileSrc`.
 
+AI providers (`text::llm`): Claude and OpenAI by API key, Ollama, any OpenAI-compatible server,
+and Claude Code or Codex through `text::cli_ai`. Ollama is asked at http://127.0.0.1:11434 unless
+Settings gives another address (Ollama listens on IPv4 only, and every new connection to
+localhost tried ::1 first). Every call sends `keep_alive: "30m"`, so the model stays loaded
+between takes (Ollama's own default unloads it after five minutes), and jobs someone waits on send
+`think: false`, retried without it if the model refuses; `make_llm_long` (`Llm::for_long_jobs`)
+leaves thinking to the model, with 2,048 more tokens of room. A server on this computer gets a
+one-second connection timeout, because Windows takes about two seconds to refuse a connection to
+a closed port, and one that didn't take the connection is skipped for a minute, so later takes go
+straight to the offline tidy. The Settings Test button (`Llm::test`) and the status check always
+ask again. Settings > AI with Ollama calls `ollama_status` (GET /api/tags): running or not, and the
+models that can chat, to pick from, with a link to ollama.com/download when nothing answers. A 404
+only counts as a missing model when its text names the model; otherwise it's a wrong address.
+Measured on the owner's PC (20 Oct 2026, Ollama 0.40.6, llama3.2 already loaded): the status check
+6 to 7 ms, the Test 21 to 60 ms, a Message, Email or Prompt rewrite 0.2 to 0.3 s, ramble notes
+0.7 s; with nothing listening, the first call gave up after 1.0 s (2.0 to 2.3 s before) and the
+next at once.
+
 "What's wrong with this?" (`VoiceCommand::Critique`): the selection (or the last insertion) goes to
 the AI with a prompt that asks for flaws, never praise, and the answer appears on the `prompt`
 card (`PromptState::Answer`) to read and copy. It runs in the background so the next take is never
@@ -181,7 +206,9 @@ recording, the screen is being watched, or notes are being written up.
 ## Where data lives
 
 `paths` puts the app's files under the per-user app data folder, `%APPDATA%\com.goodlad.navi` (the
-app identifier): `settings.json`, the SQLite database `navi.db` (which also holds installed packs:
+app identifier): `settings.json` (fields older versions saved but nothing read, `version`,
+`writing.styleSamples` and `speak.voiceName`, are skipped when read and dropped on the next save),
+the SQLite database `navi.db` (which also holds installed packs:
 the `packs` table, plus words, snippets and modes tagged with the pack id), the take recordings
 (`audio/`), the speech models (`models/`), the downloaded engine (`engine/`) and screenshots
 (`shots/<note id>/`). It also creates `logs/` and `packs/` there, but nothing writes to them. The
@@ -215,7 +242,8 @@ file but main.rs) describes it.
 - British English in everything the user reads. No em dashes in UI strings.
 - Never log API keys, tokens, prompts or transcripts at info level.
 - Nothing leaves the machine except the update check and update download (GitHub), the
-  silence-model download (Hugging Face, tried at each start until it's there), engine and model
+  silence-model download (Hugging Face, tried at each start until it's there, and straight away
+  when Trim silences is turned on or Local only off), engine and model
   downloads the user starts (GitHub and Hugging Face), packs installed or refreshed from a link,
   and the AI provider, ElevenLabs or integrations the user turned on (with their Test buttons).
   `privacy.localOnly` blocks all of those, the ClickUp and Notion Test buttons included, except

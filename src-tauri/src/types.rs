@@ -8,10 +8,11 @@ use std::collections::HashMap;
 // Settings (persisted as settings.json in the app data folder)
 // ---------------------------------------------------------------------------------------------
 
+/// Fields no longer kept (`version`, `writing.styleSamples`, `speak.voiceName`: saved, never read)
+/// are skipped when an older file is read and left out when it is next saved.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
-    pub version: u32,
     pub onboarded: bool,
     pub user_name: String,
     pub hotkeys: HotkeySettings,
@@ -521,21 +522,19 @@ impl Default for WatchSettings {
 #[serde(rename_all = "camelCase", default)]
 pub struct SpeakSettings {
     pub voice_id: String,
-    pub voice_name: String,
     /// ElevenLabs model id, e.g. "eleven_v4_turbo".
     pub model: String,
 }
 
 impl Default for SpeakSettings {
     fn default() -> Self {
-        Self { voice_id: String::new(), voice_name: String::new(), model: "eleven_v4_turbo".into() }
+        Self { voice_id: String::new(), model: "eleven_v4_turbo".into() }
     }
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            version: 1,
             onboarded: false,
             user_name: String::new(),
             hotkeys: HotkeySettings::default(),
@@ -668,7 +667,7 @@ pub struct AiSettings {
     /// "claude-code" | "codex".
     pub provider: String,
     pub model: String,
-    /// Required for "ollama" (default http://localhost:11434) and "custom". For "claude-code" and
+    /// Required for "custom"; for "ollama", empty means http://127.0.0.1:11434. For "claude-code" and
     /// "codex": the path to the tool, only when Navi can't find it.
     pub base_url: Option<String>,
     /// The model for jobs nobody waits on (call notes, watch notes, call jobs).
@@ -692,10 +691,9 @@ pub struct WritingSettings {
     pub no_em_dashes: bool,
     /// Drop "um", "uh", "er", "you know" style fillers.
     pub remove_fillers: bool,
-    /// "How I write": typed, or generated from the samples. Fed to every AI mode.
+    /// "How I write": typed, or written by the AI from files of your writing (Settings > Writing >
+    /// Learn it from my writing). Fed to every AI mode.
     pub style_notes: String,
-    /// Files of the user's own writing used to generate style_notes.
-    pub style_samples: Vec<String>,
 }
 
 impl Default for WritingSettings {
@@ -705,7 +703,6 @@ impl Default for WritingSettings {
             no_em_dashes: true,
             remove_fillers: true,
             style_notes: String::new(),
-            style_samples: Vec::new(),
         }
     }
 }

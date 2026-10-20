@@ -92,12 +92,19 @@ on CUDA; otherwise it runs Whisper Base (English only, about 150 MB) on the proc
 pick another model in Settings. English is the default language; the Large v3 Turbo models can
 also detect 99 languages, while Base and Small understand English only.
 
+With Settings > Speech engine > Use the graphics card turned off, Large v3 Turbo takes about 10
+seconds a take on the processor (Base is quicker), and the wake word and "don't worry" or "that's
+all" during a take get slower or stop working. Changing the model or the graphics card setting
+restarts the engine, which takes 2 to 3 seconds on the graphics card and about 10 on the
+processor. A take made meanwhile waits for it, and the bubble says so.
+
 Set-up detects what you have and downloads what is missing: the engine from whisper.cpp's GitHub
 releases and the speech model from
 [huggingface.co/ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp). Navi then
 fetches a small silence-trimming model (Silero VAD, under 1 MB) from
 [huggingface.co/ggml-org/whisper-vad](https://huggingface.co/ggml-org/whisper-vad) by itself,
-unless Local only is on. Each model is checked against its known size and SHA-256. A
+unless Local only is on: at start, or as soon as you turn Trim silences on, so it works straight
+away. Each model is checked against its known size and SHA-256. A
 `whisper-server.exe` already on your PATH is used rather than downloading another.
 
 Settings, history, recordings, screenshots, the engine and the models live in
@@ -114,11 +121,21 @@ write-ups and "what's wrong with this?". Only text is sent, never audio or pictu
 Settings offers the AI you already pay for first. If Claude Code (your Claude plan) or Codex
 (your ChatGPT plan) is installed, Navi runs it for you and needs no API key. A rewrite takes a few
 seconds this way, so Clean mode skips it and stays instant. You can also use an API key for
-Claude (Anthropic) or OpenAI, which is usually quicker but paid per use. Or use a local Ollama
-model, which needs no key, or any OpenAI-compatible endpoint, where the key is optional. Jobs
-nobody waits on (call notes, screen watches, jobs on calls and "what's wrong with this?") can use
-a stronger model than dictation; through Claude Code that is Sonnet unless you
-pick another. Keys are stored in Windows Credential Manager.
+Claude (Anthropic) or OpenAI, which is usually quicker but paid per use. Or use any
+OpenAI-compatible endpoint, where the key is optional.
+
+Or run the AI on your own computer with [Ollama](https://ollama.com/download), free and with no
+key: install it, get a model (`ollama pull llama3.2` in a terminal) and choose Ollama in
+Settings > AI. Settings shows whether Ollama is running, lists the models it has to pick from, and
+links to the download when it can't find it. Navi asks Ollama to keep the model loaded for 30
+minutes after each use, so takes don't wait for it to load again. If Ollama isn't running, the
+bubble says "Ollama isn't running, so Navi typed a plain tidy instead." and, for the next minute,
+takes go straight to the tidy without trying it again; the Test button always tries.
+
+Jobs nobody waits on (call notes, screen watches, jobs on calls and "what's wrong with this?") can
+use a stronger model than dictation; through Claude Code that is Sonnet unless you pick another.
+When the AI is skipped, the bubble says why in a few words ("Claude rejected the API key"). Keys
+are stored in Windows Credential Manager.
 
 Local only blocks AI that runs off this computer (Claude Code and Codex included), ElevenLabs,
 ClickUp and Notion (their Test buttons too), installing or refreshing packs from a link, the

@@ -13,15 +13,19 @@ const SECTIONS = [
 const MODEL_HINTS = {
   anthropic: ['claude-haiku-4-5-20251001', 'claude-sonnet-5-5', 'claude-opus-5-5'],
   openai: ['gpt-5-mini', 'gpt-5'],
-  ollama: ['llama3.2', 'qwen3:8b', 'gemma3'],
+  // Ollama's are the models it has pulled (ollama_status), not names that may not be there.
+  ollama: [],
   custom: [],
 };
+const OLLAMA_DOWNLOAD = 'https://ollama.com/download';
 
 // Settings > Voice commands. Rows are named as types.rs voice_action_label names the actions.
 // Said on their own while you dictate, rather than straight after the wake word.
 const IN_TAKE = ['cancel', 'finish'];
-// Wake words common enough that Navi may hear them when nobody meant to wake it.
-const COMMON_WAKE = ['hey', 'hi', 'hello', 'ok', 'okay', 'right', 'so', 'computer'];
+// Wake words common enough in conversation that Navi may hear them when nobody meant to wake it.
+// A long, distinct word such as "Computer" isn't one: the listener hears it exactly ("Computers"
+// and "Commuter" don't wake it, spoken.rs).
+const COMMON_WAKE = ['hey', 'hi', 'hello', 'ok', 'okay', 'right', 'so'];
 // Two phrases are the same command when their keys match ("Don't worry!" and "dont worry"). Keep in
 // step with phrase_key in src-tauri/src/types.rs.
 const vkey = (s) => String(s ?? '').toLowerCase().replace(/['’‘]/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
@@ -38,12 +42,17 @@ const sayFor = (vc, action) => {
 // The words for jobs on calls: jobs.rs takes "Navi" alone only while it is a wake word
 // (types.rs jobs_name_only), and otherwise wants "Hey Navi".
 const jobsWake = (vc) => (vcPhrases(vc, 'wake').some((p) => vkey(p) === 'navi') ? 'Navi' : 'Hey Navi');
-// A wake word short or common enough to set Navi off by accident. Navi's own name is what the
-// listener is tuned for, so it never gets the warning.
-const commonWake = (p) => {
+// Why a wake word may set Navi off by accident: 'short' (one word of four letters or fewer),
+// 'common' (an everyday word), 'both', or null. Navi's own name is what the listener is tuned
+// for, so it never gets the warning.
+const wakeRisk = (p) => {
   const k = vkey(p);
-  return k !== 'navi' && ((!k.includes(' ') && [...k].length <= 4) || COMMON_WAKE.includes(k));
+  if (k === 'navi') return null;
+  const short = !k.includes(' ') && [...k].length <= 4;
+  const common = COMMON_WAKE.includes(k);
+  return short && common ? 'both' : short ? 'short' : common ? 'common' : null;
 };
+const WAKE_RISK = { both: 'is short and common', short: 'is short', common: 'is an everyday word' };
 
 // Model downloads carry on when you leave Settings, so their progress is kept here rather than in
 // the page. Coming back mid-download shows the bar again, not a second Download button.
@@ -239,8 +248,8 @@ export async function render(root, { store, arg }) {
     const say = !first ? h('div', { class: 'vc-off' }, 'Off. Add a phrase to use it.')
       : h('div', { class: 'vc-say' }, action === 'wake' ? `Say “${first}” and keep talking` : IN_TAKE.includes(action) ? `Say “${first}” on its own` : `Say “${sayFor(vc, action)}${action === 'colour' ? ' gold' : ''}”`);
     const cancel = vcPhrases(vc, 'cancel')[0];
-    const warns = action === 'wake' ? phrases.filter(commonWake).map((p) => h('div', { class: 'vc-warn' },
-      `“${p}” is short and common, so Navi may wake when you didn’t mean it to. ${cancel ? `Say “${cancel}” or press Esc to send it away.` : 'Press Esc to send it away.'}`)) : [];
+    const warns = action === 'wake' ? phrases.filter(wakeRisk).map((p) => h('div', { class: 'vc-warn' },
+      `“${p}” ${WAKE_RISK[wakeRisk(p)]}, so Navi may wake when you didn’t mean it to. ${cancel ? `Say “${cancel}” or press Esc to send it away.` : 'Press Esc to send it away.'}`)) : [];
     return h('div', { class: 'vc-row' },
       h('div', {}, h('div', { class: 'nm' }, name), h('div', { class: 'ds' }, desc)),
       h('div', {}, h('div', { class: 'vc-phrases' }, chips, input), say, warns));
@@ -354,8 +363,21 @@ export async function render(root, { store, arg }) {
         h('div', { class: 'small quiet' }, e.state === 'ready' ? `Running on ${e.device === 'cuda' ? (e.gpu || 'your graphics card') : 'the processor'}. Everything is transcribed on this computer.` : (e.message || ''))),
       btn('Restart', { size: 'sm', icon: 'rerun', onClick: async () => { try { store.set({ engine: await invoke('restart_engine') }); } catch (err) { toast(errText(err), { error: true }); } } })));
   };
+  // Trim silences needs a small model of its own. Turned on without it, Navi fetches it and
+  // restarts the engine (lib.rs restart_engine_for_settings), unless Local only is on.
+  let vadInstalled = true;
+  const vadNote = h('span', {});
+  const drawVad = () => {
+    const missing = S().engine.vad && !vadInstalled;
+    vadNote.textContent = !missing ? ''
+      : S().privacy.localOnly ? ' It needs a small silence model (under 1 MB), and Local only stops Navi downloading it.'
+        : ' It needs a small silence model (under 1 MB), which Navi downloads by itself. Until then, pauses aren’t trimmed.';
+  };
   const drawModels = async () => {
-    const models = (await invoke('list_models').catch(() => [])).filter((m) => m.id !== 'vad');
+    const all = await invoke('list_models').catch(() => []);
+    vadInstalled = all.find((m) => m.id === 'vad')?.installed ?? true;
+    drawVad();
+    const models = all.filter((m) => m.id !== 'vad');
     modelsHost.innerHTML = '';
     for (const m of models) {
       const isActive = S().engine.model === m.id;
@@ -380,14 +402,29 @@ export async function render(root, { store, arg }) {
   redrawModels = drawModels;
   cleanups.push(() => { if (redrawModels === drawModels) redrawModels = null; });
   cleanups.push(store.on(drawEngine));
+  // Local only can change in another section, and the engine restarts once the silence model is in.
+  let engineState = store.engine?.state;
+  cleanups.push(store.on(() => {
+    drawVad();
+    if (store.engine?.state !== engineState) { engineState = store.engine?.state; if (engineState === 'ready') drawModels(); }
+  }));
   drawEngine();
   await drawModels();
+  // Measured on the processor: about 10 seconds a take with Large v3 Turbo. The wake word is then
+  // only checked at the end of each utterance (wake.rs), and nothing listens for cancel or finish
+  // during a take (controller.rs spawn_take_listener).
+  const gpuDesc = () => {
+    const vc = VC();
+    const inTake = [vcPhrases(vc, 'cancel')[0], vcPhrases(vc, 'finish')[0]].filter(Boolean).map((p) => `“${p}”`);
+    const listening = inTake.length ? `the wake word and ${inTake.join(' or ')} during a take get slower or stop working` : 'the wake word gets slower or stops working';
+    return `Much faster with an NVIDIA card. Turned off, Navi uses the processor instead: a take with Large v3 Turbo takes about 10 seconds (Base is quicker), and ${listening}.`;
+  };
   section('engine', 'Speech engine', 'Navi runs Whisper on this computer. Nothing you say is uploaded to transcribe it.',
     engineHost,
     h('div', { class: 'set-row', style: { display: 'block' } }, h('div', { class: 'h3', style: { marginBottom: '4px' } }, 'Models'), modelsHost),
     setRow('Language', 'Detect automatically handles 99 languages with a Large v3 Turbo model. Small (English) and Base (English) only understand English.', select([{ value: 'en', label: 'English' }, { value: 'auto', label: 'Detect automatically' }], S().engine.language, (v) => save((n) => { n.engine.language = v; }))),
-    setRow('Use the graphics card', 'Much faster when you have an NVIDIA card.', toggle(S().engine.useGpu, (v) => save((n) => { n.engine.useGpu = v; }))),
-    setRow('Trim silences', 'Skips pauses before transcribing. Faster, and fewer phantom words.', toggle(S().engine.vad, (v) => save((n) => { n.engine.vad = v; }))),
+    setRow('Use the graphics card', gpuDesc(), toggle(S().engine.useGpu, (v) => save((n) => { n.engine.useGpu = v; }))),
+    setRow('Trim silences', ['Skips pauses before transcribing. Faster, and fewer phantom words.', vadNote], toggle(S().engine.vad, async (v) => { await save((n) => { n.engine.vad = v; }); drawModels(); })),
   );
 
   // ---------------------------------------------------------------- AI
@@ -400,12 +437,27 @@ export async function render(root, { store, arg }) {
     const has = await invoke('has_secret', { name: p }).catch(() => false);
     keyState.textContent = has ? 'Saved in Windows Credential Manager' : p === 'custom' ? 'No key saved. Only needed if your server asks for one.' : 'No key saved';
   };
+  // Ollama (llm.rs ollama_status): whether it is running, and the models it has pulled.
+  let ollama = null;
+  const ollamaNames = () => (ollama?.running ? ollama.models : []).map((m) => m.name);
+  const sameModel = (a, b) => { const k = (m) => String(m || '').trim().toLowerCase().replace(/:latest$/, ''); return k(a) === k(b); };
+  // The model Ollama is asked for: another provider's model left in Settings becomes llama3.2
+  // (llm.rs from_settings).
+  const ollamaRuns = (m) => (!String(m || '').trim() || /^(claude|gpt-)/i.test(String(m).trim()) ? 'llama3.2' : String(m).trim());
+  const checkOllama = async () => {
+    ollama = await invoke('ollama_status').catch(() => null);
+    if (S().ai.provider === 'ollama') drawAi();
+    return ollama;
+  };
   const modelInput = h('input', { class: 'input', style: { width: '260px' }, value: ai.model, list: 'model-hints' });
   const hints = h('datalist', { id: 'model-hints' });
-  const fillHints = () => { hints.innerHTML = ''; (MODEL_HINTS[S().ai.provider] || []).forEach((m) => hints.append(h('option', { value: m }))); };
+  const fillHints = () => { hints.innerHTML = ''; (S().ai.provider === 'ollama' ? ollamaNames() : MODEL_HINTS[S().ai.provider] || []).forEach((m) => hints.append(h('option', { value: m }))); };
   modelInput.addEventListener('change', () => save((n) => { n.ai.model = modelInput.value.trim(); }));
-  const baseInput = h('input', { class: 'input', style: { width: '260px' }, value: ai.baseUrl || '', placeholder: 'http://localhost:11434' });
-  baseInput.addEventListener('change', () => save((n) => { n.ai.baseUrl = baseInput.value.trim() || null; }));
+  const baseInput = h('input', { class: 'input', style: { width: '260px' }, value: ai.baseUrl || '', placeholder: 'http://127.0.0.1:11434' });
+  baseInput.addEventListener('change', async () => {
+    await save((n) => { n.ai.baseUrl = baseInput.value.trim() || null; });
+    if (S().ai.provider === 'ollama') checkOllama();
+  });
   const testOut = h('span', { class: 'small faint' });
   const subHost = h('div', { class: 'ai-tools' });
   const apiHost = h('div', {});
@@ -416,8 +468,14 @@ export async function render(root, { store, arg }) {
   const redetect = async () => { tools = (await invoke('detect_ai_tools').catch(() => null)) || tools; };
   const setProvider = async (v, model) => {
     const before = S().ai.provider;
+    // The provider in use, clicked again: nothing changes. Saving here put back the model from
+    // before one just typed (its own save was still on its way) or swapped it for a suggested one.
+    if (v === before && !model) return;
+    // Switching to Ollama picks a model it has, so first ask which.
+    if (v === 'ollama') await checkOllama();
     await save((n) => {
-      if (n.ai.provider !== v) {
+      const changing = n.ai.provider !== v;
+      if (changing) {
         // A model for longer jobs belongs to the provider it was picked for: "opus" sent to OpenAI
         // or Ollama made every call write-up fail.
         n.ai.longModel = '';
@@ -427,7 +485,11 @@ export async function render(root, { store, arg }) {
       }
       n.ai.provider = v;
       if (model) n.ai.model = model;
-      else if (MODEL_HINTS[v]?.length && !MODEL_HINTS[v].includes(n.ai.model)) n.ai.model = MODEL_HINTS[v][0];
+      else if (changing && v === 'ollama') {
+        // The model set if Ollama has it, otherwise the first one it has pulled.
+        const pulled = ollamaNames();
+        if (!pulled.some((m) => sameModel(m, n.ai.model))) n.ai.model = pulled[0] || ollamaRuns(n.ai.model);
+      } else if (changing && MODEL_HINTS[v]?.length && !MODEL_HINTS[v].includes(n.ai.model)) n.ai.model = MODEL_HINTS[v][0];
     });
     // A tool's card says where it was found, which follows the path just cleared.
     if (before !== v && (TOOLS.includes(v) || TOOLS.includes(before))) await redetect();
@@ -458,7 +520,44 @@ export async function render(root, { store, arg }) {
   const testRow = () => setRow('Check it works', testOut, btn('Test', { size: 'sm', icon: 'spark', onClick: async () => {
     testOut.textContent = 'Asking…';
     try { const r = await invoke('test_ai'); testOut.textContent = `Working: “${String(r).slice(0, 40)}”`; } catch (e) { testOut.textContent = errText(e); }
+    // The Ollama row above should agree with what the test found.
+    if (S().ai.provider === 'ollama') { const said = testOut.textContent; await checkOllama(); testOut.textContent = said; }
   } }));
+  const cmd = (text) => h('code', { style: { font: '12px "Cascadia Mono", Consolas, ui-monospace, monospace', userSelect: 'all' } }, text);
+  // Whether Ollama is running at its address, with a way to get it when it isn't.
+  const ollamaRow = () => {
+    const again = btn('Check again', { size: 'sm', variant: 'ghost', icon: 'rerun', onClick: async () => { again.disabled = true; await checkOllama(); } });
+    let desc;
+    let state = null;
+    if (!ollama) desc = 'Checking whether Ollama is running…';
+    else if (ollama.running) {
+      state = chip('Running', 'accent', true);
+      const n = ollama.models.length;
+      const want = ollamaRuns(S().ai.model);
+      desc = !n ? [`Running at ${ollama.address}, with no models yet. To get one, open a terminal and run `, cmd('ollama pull llama3.2'), '.']
+        : ollama.models.some((m) => sameModel(m.name, want)) ? `Running at ${ollama.address}, with ${n} model${n === 1 ? '' : 's'} to choose from.`
+          : [`Running at ${ollama.address}, but it doesn’t have ${want}. Pick one of its models below, or run `, cmd(`ollama pull ${want}`), ' in a terminal.'];
+    } else {
+      state = chip('Not running', 'line');
+      const blocked = ollama.message.startsWith('Local only');
+      desc = blocked ? ollama.message : [`${ollama.message} `,
+        h('a', { href: OLLAMA_DOWNLOAD, onClick: (e) => { e.preventDefault(); openPath(OLLAMA_DOWNLOAD); } }, 'Download Ollama'),
+        ' (free), start it, then press Check again.'];
+    }
+    return setRow('Ollama', desc, h('div', { class: 'row', style: { gap: '8px' } }, state, again));
+  };
+  // The models Ollama has pulled, to pick from. Null when there are none to list (then the
+  // model's name can be typed).
+  const ollamaPick = () => {
+    const pulled = ollama?.running ? ollama.models : [];
+    if (!pulled.length) return null;
+    const want = ollamaRuns(S().ai.model);
+    const have = pulled.find((m) => sameModel(m.name, want));
+    const size = (b) => (b ? ` · ${(b / 1e9).toFixed(1)} GB` : '');
+    const options = pulled.map((m) => ({ value: m.name, label: `${m.name}${size(m.size)}` }));
+    if (!have) options.unshift({ value: want, label: `${want} (not pulled)` });
+    return select(options, have ? have.name : want, async (v) => { await save((n) => { n.ai.model = v; }); modelInput.value = S().ai.model; drawAi(); });
+  };
   const drawAi = () => {
     const p = S().ai.provider;
     // Use the AI you already pay for: Claude Code and Codex sign in with your plan, no key.
@@ -499,11 +598,13 @@ export async function render(root, { store, arg }) {
       setRow('Or connect directly', 'An API key for Claude or OpenAI (paid by use), Ollama on this computer (free, no key), or any OpenAI-compatible server.',
         seg([{ value: 'anthropic', label: 'Claude' }, { value: 'openai', label: 'OpenAI' }, { value: 'ollama', label: 'Ollama' }, { value: 'custom', label: 'Custom' }], API.includes(p) ? p : '', (v) => setProvider(v))));
     if (API.includes(p)) {
-      apiHost.append(setRow('Model', p === 'anthropic' ? 'Haiku is quick and cheap, and plenty for dictation.' : p === 'custom' ? 'Needed: the name your server knows the model by.' : null, h('div', {}, modelInput, hints)));
+      if (p === 'ollama') apiHost.append(ollamaRow());
+      const pick = p === 'ollama' ? ollamaPick() : null;
+      apiHost.append(setRow('Model', p === 'anthropic' ? 'Haiku is quick and cheap, and plenty for dictation.' : p === 'custom' ? 'Needed: the name your server knows the model by.' : pick ? 'The models Ollama has pulled.' : null, pick || h('div', {}, modelInput, hints)));
       if (p === 'ollama' || p === 'custom') {
         // Navi adds /chat/completions to a custom server's address (llm.rs).
-        baseInput.placeholder = p === 'ollama' ? 'http://localhost:11434' : 'http://localhost:1234/v1';
-        apiHost.append(setRow('Address', p === 'ollama' ? 'Where Ollama is running.' : 'The address of any OpenAI-compatible server, up to the part before /chat/completions.', baseInput));
+        baseInput.placeholder = p === 'ollama' ? 'http://127.0.0.1:11434' : 'http://localhost:1234/v1';
+        apiHost.append(setRow('Address', p === 'ollama' ? 'Where Ollama is running. Leave it empty for Ollama on this computer.' : 'The address of any OpenAI-compatible server, up to the part before /chat/completions.', baseInput));
       }
       if (p !== 'ollama') apiHost.append(setRow('API key', keyState, h('div', { class: 'row' }, keyInput, btn('Save', { size: 'sm', onClick: async () => {
         if (!keyInput.value.trim()) return;
@@ -544,6 +645,7 @@ export async function render(root, { store, arg }) {
     subHost, apiHost, offHost);
   drawAi();
   invoke('detect_ai_tools').then((list) => { tools = list || []; drawAi(); }).catch(() => {});
+  if (S().ai.provider === 'ollama') checkOllama();
 
   // ---------------------------------------------------------------- voice (ElevenLabs)
   const elKey = h('input', { class: 'input', type: 'password', style: { width: '260px' }, placeholder: 'Paste your ElevenLabs API key' });
@@ -560,7 +662,7 @@ export async function render(root, { store, arg }) {
       const [voices, models] = await Promise.all([invoke('eleven_voices'), invoke('eleven_models')]);
       const cur = S().speak?.voiceId || '';
       voiceHost.replaceChildren(select([{ value: '', label: 'Pick a voice' }, ...voices.map((v) => ({ value: v.voiceId, label: v.description ? `${v.name} · ${v.description}` : v.name }))], cur,
-        (id) => save((n) => { n.speak.voiceId = id; n.speak.voiceName = voices.find((v) => v.voiceId === id)?.name || ''; }), 'wide-select'));
+        (id) => save((n) => { n.speak.voiceId = id; }), 'wide-select'));
       const curModel = S().speak?.model || 'eleven_v4_turbo';
       modelHost.replaceChildren(select(models.map((m) => ({ value: m.modelId, label: m.name || m.modelId })), models.some((m) => m.modelId === curModel) ? curModel : models[0]?.modelId,
         (m) => save((n) => { n.speak.model = m; })));
@@ -592,7 +694,7 @@ export async function render(root, { store, arg }) {
     const list = Array.isArray(paths) ? paths : paths ? [paths] : [];
     if (!list.length) return;
     learnStyle.disabled = true; learnStyle.lastChild.textContent = 'Reading your writing…';
-    try { style.value = await invoke('generate_style_notes', { paths: list }); await save((n) => { n.writing.styleNotes = style.value; n.writing.styleSamples = list; }); toast('Style notes written'); }
+    try { style.value = await invoke('generate_style_notes', { paths: list }); await save((n) => { n.writing.styleNotes = style.value; }); toast('Style notes written'); }
     catch (e) { toast(errText(e), { error: true }); }
     learnStyle.disabled = false; learnStyle.lastChild.textContent = 'Learn it from my writing…';
   } });
