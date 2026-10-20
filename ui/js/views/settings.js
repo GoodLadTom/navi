@@ -60,6 +60,12 @@ const progress = {};
 let redrawModels = null;
 listen('download', (p) => { progress[p.id] = p; redrawModels?.(); }).catch(() => {});
 
+// Scratch that is off when the user has emptied its phrases (Settings > Voice commands).
+const scratchThatOn = (s) => {
+  const entry = (s?.voiceCommands?.commands || []).find((c) => c.action === 'scratch_that');
+  return !entry || (entry.phrases || []).some((p) => p.trim());
+};
+
 export async function render(root, { store, arg }) {
   const cleanups = [];
   const S = () => store.settings;
@@ -183,7 +189,7 @@ export async function render(root, { store, arg }) {
     setRow('Ramble', 'While holding the talk keys, tap this to switch to notes mode. A different sound plays and Navi keeps listening until you press Enter (or tap the talk keys again), then saves it to Notes.', select(['Space', 'Enter', 'Tab', 'N', 'R'], S().hotkeys.rambleKey, (v) => save((n) => { n.hotkeys.rambleKey = v; }))),
     setRow('Cancel', 'Throws the take away while it is recording.', keycaps([S().hotkeys.cancelKey])),
     modeKeysBlock,
-    setRow('Voice edits', 'Start with “Navi”: “Navi, scratch that”, “Navi, make that shorter”, “Navi, change Tuesday to Wednesday”. Select text first and say “Navi, turn this into bullet points”, or “Navi, what’s wrong with this?” for a blunt list of its problems. “Scratch that” works without an AI, and so does “change Tuesday to Wednesday” when Navi finds the word. Shorter, bullet points and “what’s wrong” need an AI (set one up under AI).', chip('Always on', 'accent', true)),
+    setRow('Voice edits', 'Start with “Navi”: “Navi, scratch that”, “Navi, make that shorter”, “Navi, change Tuesday to Wednesday”. Select text first and say “Navi, turn this into bullet points”, or “Navi, what’s wrong with this?” for a blunt list of its problems. “Scratch that” works without an AI, and so does “change Tuesday to Wednesday” when Navi finds the word. Shorter, bullet points and “what’s wrong” need an AI (set one up under AI).' + (scratchThatOn(S()) ? '' : ' “Scratch that” is off: give it a phrase under Voice commands to use it.'), chip('Always on', 'accent', true)),
   );
 
   // ---------------------------------------------------------------- voice commands
