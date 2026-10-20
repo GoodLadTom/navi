@@ -276,7 +276,7 @@ export async function render(root, { arg, store }) {
     const actionsTo = store?.settings?.notes?.actionsTo || 'none';
     head.append(h('div', { class: 'n-actions' }, ...[
       btn('Copy', { size: 'sm', icon: 'copy', title: 'Copy the notes', onClick: async () => { await copyText(n.notesMd); toast('Copied'); } }),
-      isWatch ? null : rewriteButton(n),
+      rewriteButton(n),
       !isWatch && actionsTo !== 'none' && hasActions(n.notesMd) ? sendButton(n, actionsTo) : null,
       btn('', { size: 'sm', variant: 'ghost', icon: 'trash', title: 'Delete this note', onClick: async () => {
         // A watch's Markdown copy links to the screenshots in Navi's data folder, which go too.
@@ -341,9 +341,16 @@ export async function render(root, { arg, store }) {
     return wrap;
   }
 
+  // A call's notes are written again from the transcript, a ramble's from what you said (with the
+  // ramble prompt), and a screen watch from the text read off its screenshots and their window
+  // names, never the pictures (meeting.rs rewrite, watch.rs rewrite).
   function rewriteButton(n) {
-    const b = btn('Write again', { size: 'sm', icon: 'rerun', title: 'Write the notes again with your AI', disabled: !n.transcript.length });
+    const isWatch = n.app === 'Watch';
+    const title = isWatch ? 'Write it up again with your AI, from the text on the screenshots' : 'Write the notes again with your AI';
+    const b = btn('Write again', { size: 'sm', icon: 'rerun', title, disabled: isWatch ? !n.shots.length : !n.transcript.length });
     b.onclick = async () => {
+      // As in the first write-up, the screenshots the AI leaves out go, so ask first.
+      if (isWatch && !(await confirmDialog('Write this up again?', 'Your AI picks the screenshots that matter from the text on them and writes up what you did. The ones it leaves out are deleted.', { ok: 'Write again' }))) return;
       b.disabled = true;
       b.lastChild.textContent = 'Writing…';
       try {
@@ -430,7 +437,7 @@ function jobList(jobs) {
         h('span', { class: 't-time' }, stamp(job.atMs)),
         h('b', {}, `“${job.ask}”`),
         state,
-        job.status === 'done' ? h('button', { class: 'job-copy', title: 'Copy the answer', onClick: async () => { await copyText(job.resultMd); toast('Copied'); } }, 'Copy') : null),
+        job.status === 'done' ? h('button', { class: 'job-copy', title: 'Copy the answer', onClick: async () => { await copyText(job.resultMd); toast('Copied'); } }, 'Copy draft') : null),
       job.status === 'done' ? h('div', { class: 'job-body' }, markdown(job.resultMd)) : null,
       job.status === 'failed' && job.error ? h('p', { class: 'small quiet' }, job.error) : null);
   }));

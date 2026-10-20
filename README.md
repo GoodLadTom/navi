@@ -27,8 +27,10 @@ The source is on GitHub in a private repository for now, so only people with acc
   mode you are on.
 - **Ramble mode.** Tap Space while holding the shortcut. Talk for as long as you like and press
   Enter when you are done. Your AI turns it into notes with a title, summary, key points,
-  decisions and tasks (with no AI, Navi makes rough notes on your computer). They're kept on the
-  Notes page and as Markdown, and the tasks can go to ClickUp or Notion.
+  decisions and tasks (with no AI, Navi makes rough notes on your computer). If the AI fails, Navi
+  saves rough notes and says why, in the bubble and at the top of the notes; press Write again on
+  the Notes page to have them written up. They're kept on the Notes page and as Markdown, and the
+  tasks can go to ClickUp or Notion.
 - **Notes from your calls.** When Teams, Zoom, Google Meet, Slack, Discord, WhatsApp or another
   call app starts using your microphone, Navi offers to take notes. It writes down both sides,
   marked You and Them, while you type your own notes. Your AI then turns it all into a summary,
@@ -43,9 +45,10 @@ The source is on GitHub in a private repository for now, so only people with acc
   work, then say "Navi, stop watching". The tray and the Notes page can start and stop it too.
   Navi looks at the screen every 10 seconds, keeps a screenshot when it has changed and stops
   after an hour. Your AI then keeps up to 20 that matter and writes up what you did (with no AI,
-  every screenshot stays, listed by time). Screenshots stay on your computer; the AI only gets the
-  text read off them and the app and window names (only the app's while "Read the window title"
-  is off).
+  every screenshot stays, listed by time). If the AI failed or wasn't on, press Write again on the
+  Notes page to have it written up later; the screenshots it leaves out are then deleted.
+  Screenshots stay on your computer; the AI only gets the text read off them and the app and window
+  names (only the app's while "Read the window title" is off).
 - **Built for talking to AI agents.** In a terminal, VS Code, Cursor, Windsurf, BB, the Claude,
   ChatGPT and Codex apps, or a browser tab on ChatGPT or Claude, Navi picks Prompt mode. It turns
   what you say into a clear brief for an AI tool such as Claude Code or ChatGPT, with `@file`
@@ -79,7 +82,10 @@ The source is on GitHub in a private repository for now, so only people with acc
   apps", Navi takes nothing but the app's name.
 - **Keeps your takes.** Every take is kept with its text, and its recording for 30 days unless you
   choose 7 or 90 days or for ever. While the recording is there you can play it back or re-run
-  it through another mode; copying the text works at any time. Turn Save history off and nothing is kept.
+  it through another mode; copying the text works at any time. Turn Save history off and your
+  takes and their recordings aren't kept. Notes are documents you asked for, so they are still
+  saved on the Notes page and as Markdown: rambles and call notes with what was said, and screen
+  watches with their screenshots.
 - **Packs.** Share your words, snippets and modes with your team as one file.
 
 Sound cues: eleven sets of soft, low sounds (Hush, Felt, Oak, Kalimba, Bubble, Bowl and more)

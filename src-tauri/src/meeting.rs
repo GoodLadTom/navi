@@ -4,7 +4,8 @@
 //!
 //! * It offers to start when a call app begins using the microphone. Windows records that for its
 //!   privacy light under HKCU\...\CapabilityAccessManager\ConsentStore\microphone (an app is using
-//!   the mic while its LastUsedTimeStop is 0); Navi reads it every few seconds.
+//!   the mic while its LastUsedTimeStop is 0); Navi reads it every few seconds. Entries left on
+//!   from before Windows last started, or for programs that have gone (`entry_in_use`), don't count.
 //! * One task runs each meeting. Every 20 seconds it transcribes what both tracks recorded, ending
 //!   each piece at a quiet moment so no word is split. Loopback sends nothing while the computer is
 //!   silent, so those gaps are filled with silence and every line keeps its true time. Lines from
@@ -839,7 +840,7 @@ async fn run(app: Arc<App>, id: String, audio: MeetingAudio, mut stop_rx: tokio:
     // Another call may be under way by now: its card stays, and the bubble says these are saved.
     if !offer_prompt(&app, PromptState::Done { id: note.id.clone(), title: note.title.clone(), detail: extra.join(" · ") }) {
         pill_notice(&app, match unsent {
-            Some(service) => format!("Notes saved: {}. The actions weren't sent to {service}.", note.title.trim_end_matches('.')),
+            Some(service) => format!("Notes saved: {} The actions weren't sent to {service}.", crate::text::cleanup::full_stop(&note.title)),
             None => format!("Notes saved: {}", note.title),
         });
     }
@@ -1030,7 +1031,7 @@ async fn write_up(app: &Arc<App>, mut note: MeetingNote, missed: bool) -> (Meeti
             Err(e) => {
                 log::warn!("meeting notes: the AI step failed: {e:#}");
                 // Say why on the note itself, not only in the log.
-                let why = format!("The AI couldn't write these notes: {}. Press Write again to try once more; the full transcript is kept.", e.to_string().trim_end_matches('.'));
+                let why = format!("The AI couldn't write these notes: {} Press Write again to try once more; the full transcript is kept.", crate::text::cleanup::full_stop(&e.to_string()));
                 (offline_notes(&note, Some(&why)), true)
             }
         };
@@ -1171,7 +1172,7 @@ fn spawn_job(app: Arc<App>, note_id: String, mut job: CallJob) {
         // Said in the bubble, unless you are in the middle of a take.
         if matches!(app.session.lock().phase, crate::state::Phase::Idle) {
             let short: String = ask.chars().take(48).collect();
-            let message = if done { format!("Done: {short}{}. It's with your notes.", if ask.chars().count() > 48 { "…" } else { "" }) } else { format!("Navi couldn't do: {short}") };
+            let message = if done { format!("Done: {} It's with your notes.", crate::text::cleanup::full_stop(&format!("{short}{}", if ask.chars().count() > 48 { "…" } else { "" }))) } else { format!("Navi couldn't do: {short}") };
             app.show_pill_window(crate::context::foreground_hwnd());
             let gen = app.pill(crate::types::PillState::Notice { message });
             app.hide_pill_later(gen, 4000);
@@ -1347,11 +1348,17 @@ async fn write_with_ai(note: &MeetingNote, settings: &Settings) -> Result<Option
 }
 
 /// Writes the notes again with the AI (after it was turned on, or to try again). On failure the
-/// notes stay as they were.
+/// notes stay as they were. A screen watch is written up again from its screenshots' text
+/// (`watch::rewrite`) and a ramble with the ramble prompt (`rewrite_ramble`).
 pub async fn rewrite(app: &Arc<App>, id: &str) -> Result<MeetingNote> {
     let mut note = app.db.get_note(id)?.ok_or_else(|| anyhow!("That note has gone."))?;
     if note.status != "done" {
         bail!("Navi is still working on this note.");
+    }
+    match note.app.as_str() {
+        "Watch" => return crate::watch::rewrite(app, note).await,
+        "Ramble" => return rewrite_ramble(app, note).await,
+        _ => {}
     }
     if note.transcript.is_empty() {
         bail!("Nothing was heard on this call, so there is nothing to write from.");
@@ -1377,9 +1384,67 @@ pub async fn rewrite(app: &Arc<App>, id: &str) -> Result<MeetingNote> {
     app.emit("note", saved.clone());
     match result {
         Ok(Some(_)) => Ok(saved),
-        Err(e) => bail!("The notes are as they were: {e:#}."),
+        Err(e) => bail!("The notes are as they were: {}", crate::text::cleanup::full_stop(&format!("{e:#}"))),
         Ok(None) => bail!("Turn on an AI in Settings > AI first."),
     }
+}
+
+/// Writes a ramble's notes again from what was said, with the ramble prompt (text::ramble) and the
+/// same AI a ramble uses, so it gets its title, summary, key points, decisions and tasks back. The
+/// AI's title replaces the one Navi made up for rough notes, never one you gave it. On failure the
+/// notes stay as they were.
+async fn rewrite_ramble(app: &Arc<App>, mut note: MeetingNote) -> Result<MeetingNote> {
+    use crate::text::ramble;
+    let said = ramble_said(&note);
+    if said.is_empty() {
+        bail!("Nothing was said in this ramble, so there is nothing to write from.");
+    }
+    let settings = app.settings();
+    let Some(llm) = crate::controller::make_llm(&settings) else { bail!("Turn on an AI in Settings > AI first.") };
+    note.status = "writing".into();
+    save_merged(app, &mut note);
+    app.emit("note", note.clone());
+    let (system, user) = ramble::notes_messages(&said, &crate::types::AppContext::default(), &settings);
+    // Nobody is held up by this one, so it has the longer deadline of call notes.
+    let reply = tokio::time::timeout(AI_DEADLINE, llm.complete(&system, &user, 2500, 0.2)).await.unwrap_or_else(|_| Err(anyhow!("{} took too long", llm.display_name())));
+    let notes = reply.and_then(|o| ramble::parse_notes(&o)).map(|mut n| {
+        if settings.writing.british {
+            n.summary = crate::text::britishise::britishise(&n.summary);
+        }
+        n
+    });
+    if let Err(e) = &notes {
+        log::warn!("ramble notes: writing them again failed: {e:#}");
+    }
+    let saved = change_note(app, &note.id, |saved| {
+        saved.status = "done".into();
+        if let Ok(notes) = &notes {
+            let made_up = saved.title == "Ramble" || saved.title == ramble::offline_notes(&said).title;
+            if made_up && !notes.title.trim().is_empty() {
+                saved.title = notes.title.trim().to_string();
+            }
+            saved.notes_md = with_heading(&ramble::to_markdown(notes, "", "", ""), &saved.title);
+        }
+    })?;
+    app.emit("note", saved.clone());
+    match notes {
+        Ok(_) => Ok(saved),
+        Err(e) => bail!("The notes are as they were: {}", crate::text::cleanup::full_stop(&format!("{e:#}"))),
+    }
+}
+
+/// What was said in a ramble, as one passage (`save_ramble` keeps it sentence by sentence).
+fn ramble_said(note: &MeetingNote) -> String {
+    note.transcript.iter().map(|l| l.text.trim()).filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" ")
+}
+
+/// A ramble's Markdown file, laid out as when it was first saved (text::ramble::to_markdown): the
+/// notes with the day and time under the title, then what was said.
+fn ramble_file(notes_md: &str, note: &MeetingNote) -> String {
+    let when = chrono::DateTime::parse_from_rfc3339(&note.created_at).map(|d| d.with_timezone(&chrono::Local).format("%A %-d %B %Y, %H:%M").to_string()).unwrap_or_default();
+    let md = if when.is_empty() { notes_md.trim().to_string() } else { under_title(notes_md, &when).trim().to_string() };
+    let said = ramble_said(note);
+    if said.is_empty() { format!("{md}\n") } else { format!("{md}\n\n## Transcript\n\n{said}\n") }
 }
 
 /// A ramble, kept on the Notes page beside your calls: its notes, and what you said as the
@@ -1495,8 +1560,8 @@ fn notes_dir(app: &App, settings: &Settings) -> PathBuf {
     settings.ramble.notes_dir.clone().filter(|d| !d.trim().is_empty()).map(PathBuf::from).unwrap_or_else(|| app.paths.notes_default.clone())
 }
 
-/// The note as a Markdown file: the notes, any jobs, then the transcript. Rewrites its file when it
-/// has one.
+/// The note as a Markdown file: the notes, any jobs, then the transcript (a ramble's file keeps its
+/// own layout, `ramble_file`). Rewrites its file when it has one.
 pub fn save_file(app: &App, settings: &Settings, note: &mut MeetingNote) {
     let transcript = if note.transcript.is_empty() { "Nothing was heard.".to_string() } else { transcript_text(&note.transcript) };
     let mut body = note.notes_md.trim().to_string();
@@ -1504,7 +1569,11 @@ pub fn save_file(app: &App, settings: &Settings, note: &mut MeetingNote) {
         body.push_str("\n\n## Jobs Navi did on the call\n");
         body.push_str(&jobs::to_markdown(&note.jobs));
     }
-    let body = if note.app == "Watch" { format!("{body}\n") } else { format!("{body}\n\n## Transcript\n\n{transcript}\n") };
+    let body = match note.app.as_str() {
+        "Watch" => format!("{body}\n"),
+        "Ramble" => ramble_file(&body, note),
+        _ => format!("{body}\n\n## Transcript\n\n{transcript}\n"),
+    };
     if let Some(path) = note.file_path.as_deref().map(Path::new).filter(|p| p.is_file()) {
         if let Err(e) = std::fs::write(path, &body) {
             log::warn!("meeting notes: couldn't update {}: {e}", path.display());
@@ -1869,6 +1938,32 @@ pub fn sole_call_app(users: &HashMap<String, bool>) -> Option<&'static str> {
     }
 }
 
+/// Room for the clock moving after start-up (a time correction from the internet), so a call that
+/// began just after the computer started is never taken for one from before: ten minutes, in the
+/// registry's units of 100 ns.
+const BOOT_SLACK: u64 = 10 * 60 * 10_000_000;
+
+/// Whether a microphone registry entry says its app is using the microphone now: it has a start
+/// time and no stop time. A program that crashed or was replaced while it had the microphone leaves
+/// its entry saying so for good. Discord installs each version in a folder of its own and removes
+/// the old one, and three old versions on one PC still said they were on months later, so notes
+/// started from a Discord offer never finished. So an entry started before Windows last started
+/// doesn't count, nor one for a program (listed by path, `packaged` false) that has gone. Times are
+/// as the registry keeps them (100 ns since 1601); `booted` is when Windows started.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn entry_in_use(entry: &str, packaged: bool, start: u64, stop: u64, booted: u64, exists: impl Fn(&Path) -> bool) -> bool {
+    if start == 0 || stop != 0 || start.saturating_add(BOOT_SLACK) < booted {
+        return false;
+    }
+    packaged || exists(&program_path(entry))
+}
+
+/// The program a NonPackaged microphone entry is for: its name is the path with # for \.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn program_path(entry: &str) -> PathBuf {
+    PathBuf::from(entry.replace('#', "\\"))
+}
+
 /// Watches the microphone for call apps: offers notes when one starts, and finishes the notes when
 /// the call app lets go of the microphone.
 pub fn spawn_watch(app: Arc<App>) {
@@ -1956,6 +2051,7 @@ mod win {
     const BASE: &str = r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone";
 
     pub fn mic_users() -> HashMap<String, bool> {
+        let booted = booted_at();
         let mut out = HashMap::new();
         for sub in ["", r"\NonPackaged"] {
             let path = HSTRING::from(format!("{BASE}{sub}"));
@@ -1984,12 +2080,23 @@ mod win {
                     };
                     let start = read("LastUsedTimeStart").unwrap_or(0);
                     let stop = read("LastUsedTimeStop").unwrap_or(1);
-                    out.insert(entry, start != 0 && stop == 0);
+                    let in_use = super::entry_in_use(&entry, sub.is_empty(), start, stop, booted, |p| p.exists());
+                    out.insert(entry, in_use);
                 }
                 let _ = RegCloseKey(key);
             }
         }
         out
+    }
+
+    /// When Windows last started, in the registry's time (100 ns since 1601): now less the time
+    /// since start-up, which counts sleep and hibernation too.
+    pub fn booted_at() -> u64 {
+        use windows::Win32::System::SystemInformation::GetTickCount64;
+        const UNIX_EPOCH_AS_FILETIME: u64 = 116_444_736_000_000_000;
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| (d.as_nanos() / 100) as u64).unwrap_or(0);
+        let up = unsafe { GetTickCount64() }.saturating_mul(10_000);
+        (now + UNIX_EPOCH_AS_FILETIME).saturating_sub(up)
     }
 
     /// Shows the card in the bottom right of the screen the mouse is on, above the taskbar, on top
@@ -2369,6 +2476,63 @@ mod tests {
     }
 
     #[test]
+    fn microphone_entries_left_on_by_old_programs_dont_count() {
+        // Times from the owner's PC (20 Oct 2026): Windows started on 16 October; three Discord
+        // versions, long since replaced, still said they had the microphone months later.
+        let booted = 134_366_092_775_000_000u64;
+        let old_discord = r"C:#Users#you#AppData#Local#Discord#app-1.0.9209#Discord.exe";
+        let discord = r"C:#Users#you#AppData#Local#Discord#app-1.0.9261#Discord.exe";
+        let zoom = r"C:#Users#you#AppData#Roaming#Zoom#bin#Zoom.exe";
+        let installed = |p: &Path| p == Path::new(r"C:\Users\you\AppData\Local\Discord\app-1.0.9261\Discord.exe") || p == Path::new(r"C:\Users\you\AppData\Roaming\Zoom\bin\Zoom.exe");
+        let now = 134_369_661_760_658_337u64;
+        assert!(!entry_in_use(old_discord, false, 134_030_367_113_490_302, 0, booted, installed), "from before Windows started, and gone");
+        assert!(!entry_in_use(old_discord, false, now, 0, booted, installed), "a program that has gone, even if started since");
+        assert!(!entry_in_use(discord, false, 134_030_367_113_490_302, 0, booted, installed), "still installed, but on since before Windows started");
+        assert!(entry_in_use(discord, false, now, 0, booted, installed), "the Discord there now, on the microphone now");
+        assert!(!entry_in_use(discord, false, now, now + 1, booted, installed), "it let go");
+        assert!(!entry_in_use(discord, false, 0, 0, booted, installed), "never used it");
+        // A packaged app has no path to look for; only its times count.
+        assert!(entry_in_use("MSTeams_8wekyb3d8bbwe", true, now, 0, booted, |_| false));
+        assert!(!entry_in_use("MSTeams_8wekyb3d8bbwe", true, 134_030_367_113_490_302, 0, booted, |_| false));
+        // A call that began just after start-up, with the clock put forward a minute since.
+        assert!(entry_in_use(zoom, false, booted - 60 * 10_000_000, 0, booted, installed));
+        // With the stale entries read as off, notes started by hand on a Zoom call follow Zoom.
+        let read = |list: &[(&str, u64)]| list.iter().map(|(e, start)| (e.to_string(), entry_in_use(e, false, *start, 0, booted, installed))).collect::<HashMap<_, _>>();
+        let users = read(&[(old_discord, 134_030_367_113_490_302), (r"C:#Users#you#AppData#Local#Discord#app-1.0.9217#Discord.exe", 134_097_030_490_444_318), (zoom, now)]);
+        assert_eq!(sole_call_app(&users), Some("Zoom"));
+        assert!(!on_mic(&users, "Discord"), "Discord no longer seems to be on the microphone for ever");
+        assert_eq!(program_path(zoom), Path::new(r"C:\Users\you\AppData\Roaming\Zoom\bin\Zoom.exe"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_started_in_the_past() {
+        let now = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() / 100) as u64 + 116_444_736_000_000_000;
+        let booted = win::booted_at();
+        assert!(booted <= now && booted > now - 400 * 24 * 3600 * 10_000_000, "booted {booted}, now {now}");
+    }
+
+    #[test]
+    fn a_rambles_file_keeps_its_own_layout() {
+        let note = MeetingNote {
+            created_at: "2026-10-20T14:05:00+01:00".into(),
+            title: "Launch plan".into(),
+            app: "Ramble".into(),
+            transcript: sentences_as_lines("We launch on Friday. The film needs another pass first.", 6_000),
+            ..Default::default()
+        };
+        assert_eq!(ramble_said(&note), "We launch on Friday. The film needs another pass first.");
+        let notes_md = "# Launch plan\n\nThe AI couldn't write these notes: Claude Code took too long.\n\n## Summary\n\nWe launch on Friday.";
+        let file = ramble_file(notes_md, &note);
+        let when = chrono::DateTime::parse_from_rfc3339(&note.created_at).unwrap().with_timezone(&chrono::Local).format("%A %-d %B %Y, %H:%M").to_string();
+        assert_eq!(file, format!("# Launch plan\n\n{when}\n\nThe AI couldn't write these notes: Claude Code took too long.\n\n## Summary\n\nWe launch on Friday.\n\n## Transcript\n\nWe launch on Friday. The film needs another pass first.\n"));
+        // As text::ramble::to_markdown first wrote it, never the call layout with You and times.
+        assert!(!file.contains("You:") && !file.contains("[00:00]"));
+        let silent = MeetingNote { transcript: Vec::new(), ..note };
+        assert!(!ramble_file("# Launch plan", &silent).contains("## Transcript"));
+    }
+
+    #[test]
     fn stopping_by_itself_never_covers_an_answer() {
         let answer = PromptState::Answer { title: "What's wrong with it".into(), body: "- Typo".into() };
         let thinking = PromptState::Thinking { title: "Looking for problems".into() };
@@ -2476,5 +2640,7 @@ mod tests {
                 println!("{in_use:5} {entry} -> {:?}", call_app_name(&entry));
             }
         }
+        #[cfg(windows)]
+        println!("Windows started at {} (registry time)", win::booted_at());
     }
 }
