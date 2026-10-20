@@ -1195,11 +1195,11 @@ fn spawn_screenshots(app: Arc<App>, note_id: String) {
             if kept >= MAX_SHOTS {
                 continue;
             }
-            let excluded = app.settings().context.excluded_apps;
+            let reading = app.settings().context;
             let previous = last.clone();
             let path = dir.join(format!("{:03}.jpg", kept + 1));
             let taken = tokio::task::spawn_blocking(move || {
-                let frame = screen::capture(&excluded)?;
+                let frame = screen::capture(&reading)?;
                 let signature = frame.signature();
                 if previous.as_ref().is_some_and(|p| screen::changed(p, &signature) < screen::NEW_SCREEN) {
                     return None;

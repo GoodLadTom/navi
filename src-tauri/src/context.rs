@@ -19,8 +19,9 @@
 //!   signal, messenger), email (outlook, olk, thunderbird, mailbird; browsers whose title contains
 //!   "Gmail" or "Outlook"), browser (chrome, msedge, firefox, brave, arc, opera), document (winword,
 //!   notion, obsidian, onenote, wordpad, notepad, excel, powerpnt), else other.
-//! * `read_focused_text(hwnd)`: if `hwnd` is still the foreground window, the full text of its focused
-//!   element (capped at 20,000 chars), for learning from corrections. None otherwise.
+//! * `read_focused_text(hwnd, settings)`: if `hwnd` is still the foreground window, the full text of
+//!   its focused element (capped at 20,000 chars), for learning from corrections. None otherwise,
+//!   and None when `read_field` is off or the window's app is excluded (`may_read_field`).
 //! * `ocr_window(hwnd)`: optional on-device OCR (Windows.Media.Ocr) of the window; None if unavailable.
 //!
 //! Details worth knowing:
@@ -36,7 +37,8 @@
 //! * Call `warm_up()` at startup: creating the UIA client costs tens of milliseconds and would
 //!   otherwise eat the first take's budget.
 //! * With `read_app` off, the window title is left empty; process name, label and category are still
-//!   filled because mode picking and the excluded-apps check need them (they never leave the machine).
+//!   filled because mode picking and the excluded-apps check need them. An excluded app's title is
+//!   never read at all (`kept_title`), so it can't reach the AI, History or a mode pick.
 //! * Navi's own windows and elevated apps (UIA cannot reach them from a normal process) are skipped.
 //! * UWP apps hosted by ApplicationFrameHost.exe are reported as the real app inside the frame.
 //! * Newlines in returned text are "\n" only.
@@ -78,14 +80,14 @@ pub fn foreground_hwnd() -> isize {
     0
 }
 
-pub fn read_focused_text(hwnd: isize) -> Option<String> {
+pub fn read_focused_text(hwnd: isize, settings: &ContextSettings) -> Option<String> {
     #[cfg(windows)]
     {
-        win::read_focused_text(hwnd)
+        win::read_focused_text(hwnd, settings)
     }
     #[cfg(not(windows))]
     {
-        let _ = hwnd;
+        let _ = (hwnd, settings);
         None
     }
 }
@@ -365,6 +367,22 @@ fn capitalise(word: &str) -> String {
 pub fn is_excluded(process_name: &str, excluded: &[String]) -> bool {
     let stem = process_stem(process_name);
     !stem.is_empty() && excluded.iter().any(|e| process_stem(e) == stem)
+}
+
+/// Whether the text in `process_name`'s fields may be read: "Read the text near my cursor" is on,
+/// the app is known, and it isn't under "Never read these apps".
+pub fn may_read_field(process_name: &str, settings: &ContextSettings) -> bool {
+    settings.read_field && !process_name.trim().is_empty() && !is_excluded(process_name, &settings.excluded_apps)
+}
+
+/// The window title kept for a take or a screenshot: none with "Read the window title" off, and
+/// never an excluded app's, which would otherwise go to the AI and into History.
+pub fn kept_title(title: String, read_app: bool, excluded: bool) -> String {
+    if read_app && !excluded {
+        title
+    } else {
+        String::new()
+    }
 }
 
 /// "\r\n" and "\r" become "\n"; NULs and U+FFFC (embedded-object placeholders) are dropped.
@@ -671,12 +689,14 @@ mod win {
             return AppContext { category: "other".into(), ..Default::default() };
         }
         let info = window_info(hwnd);
-        let title = window_title(hwnd);
+        let excluded = is_excluded(&info.process_name, &settings.excluded_apps);
+        // Never read means never read: an excluded app's title isn't even used for its category.
+        let title = if excluded { String::new() } else { window_title(hwnd) };
         let mut ctx = AppContext {
             hwnd: hwnd.0 as isize,
             category: categorise(&info.process_name, &title).to_string(),
             app_label: app_label(&info),
-            window_title: if settings.read_app { title } else { String::new() },
+            window_title: kept_title(title, settings.read_app, excluded),
             process_name: info.process_name.clone(),
             exe_path: info.exe_path.clone(),
             field_text: None,
@@ -685,7 +705,7 @@ mod win {
         };
 
         let own = info.pid == unsafe { GetCurrentProcessId() };
-        let readable = !info.process_name.is_empty() && !is_excluded(&info.process_name, &settings.excluded_apps);
+        let readable = !info.process_name.is_empty() && !excluded;
         // A browser's address is asked for first, so its worker reads it while the field is read.
         let address_deadline = started + CAPTURE_ADDRESS_BUDGET;
         let address = if settings.read_app && readable && !own && is_browser(&info.process_name) {
@@ -693,7 +713,7 @@ mod win {
         } else {
             None
         };
-        if settings.read_field && readable && !own {
+        if may_read_field(&info.process_name, settings) && !own {
             if let Some(Reply::Field { before, selection }) = CAPTURE_WORKER.call(Job::Field, started + CAPTURE_UIA_BUDGET) {
                 // Only trust the answer if the same window is still in front.
                 if unsafe { GetForegroundWindow() } == hwnd {
@@ -713,8 +733,13 @@ mod win {
         ctx
     }
 
-    pub(super) fn read_focused_text(hwnd: isize) -> Option<String> {
+    pub(super) fn read_focused_text(hwnd: isize, settings: &ContextSettings) -> Option<String> {
         if hwnd == 0 || foreground_hwnd() != hwnd {
+            return None;
+        }
+        // Checked against the app in that window now, with today's settings: an app put under
+        // "Never read these apps" since the paste is not read either.
+        if !may_read_field(&window_info(HWND(hwnd as *mut c_void)).process_name, settings) {
             return None;
         }
         let deadline = Instant::now() + READ_UIA_BUDGET;
@@ -1456,6 +1481,28 @@ mod tests {
         assert!(!is_excluded("code.exe", &excluded));
         assert!(!is_excluded("", &excluded));
         assert!(!is_excluded("code.exe", &[]));
+    }
+
+    #[test]
+    fn excluded_apps_fields_are_never_read() {
+        let settings = ContextSettings::default();
+        assert!(may_read_field("code.exe", &settings));
+        // On the list (any case), or nothing known about the window: not read.
+        assert!(!may_read_field("1password.exe", &settings));
+        assert!(!may_read_field("KEEPASS.EXE", &settings));
+        assert!(!may_read_field("", &settings));
+        // "Read the text near my cursor" off: no app is read.
+        let off = ContextSettings { read_field: false, ..ContextSettings::default() };
+        assert!(!may_read_field("code.exe", &off));
+    }
+
+    #[test]
+    fn an_excluded_apps_title_is_never_kept() {
+        let title = || "Bank login - 1Password".to_string();
+        assert_eq!(kept_title(title(), true, false), "Bank login - 1Password");
+        assert_eq!(kept_title(title(), true, true), "", "an app under Never read these apps");
+        assert_eq!(kept_title(title(), false, false), "", "Read the window title off");
+        assert_eq!(kept_title(title(), false, true), "");
     }
 
     #[test]

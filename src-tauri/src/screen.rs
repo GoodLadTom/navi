@@ -11,10 +11,11 @@
 //!   Compare with the last screenshot KEPT, so slow changes (a page being typed) still add up.
 //! * `save_jpeg` writes the picture under the app data folder (shots/<note id>/), where the
 //!   interface can show it. `read_text` is Windows' own OCR.
-//! * Nothing here leaves the computer. The AI is only ever given the text read off a screenshot
-//!   and the name of the window, never the picture.
+//! * Nothing here leaves the computer. The AI is only ever given the text read off a screenshot,
+//!   the app's name and (while "Read the window title" is on) the window's title, never the picture.
 
 use crate::state::App;
+use crate::types::ContextSettings;
 use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
 
@@ -80,12 +81,15 @@ pub fn changed(a: &Signature, b: &Signature) -> f32 {
 }
 
 /// The screen the window in front is on, unless that window belongs to an app that is never read.
-/// Windows of those apps elsewhere on the screen are blacked out.
-pub fn capture(excluded_apps: &[String]) -> Option<Frame> {
+/// Windows of those apps elsewhere on the screen are blacked out. The window's title is kept only
+/// while "Read the window title" is on, so with it off the AI gets the app's name alone.
+pub fn capture(reading: &ContextSettings) -> Option<Frame> {
+    let excluded_apps = &reading.excluded_apps;
     let (app, window, process) = crate::context::foreground_app();
     if !process.is_empty() && crate::context::is_excluded(&process, excluded_apps) {
         return None;
     }
+    let window = crate::context::kept_title(window, reading.read_app, false);
     // A screenshot of Navi itself says nothing (early test calls were full of them).
     if process.eq_ignore_ascii_case("navi.exe") {
         return None;
@@ -483,7 +487,7 @@ mod tests {
     #[ignore]
     fn live_capture() {
         let t = std::time::Instant::now();
-        let f = capture(&[]).expect("capture");
+        let f = capture(&ContextSettings { excluded_apps: Vec::new(), ..Default::default() }).expect("capture");
         println!("{}x{} from {} ({}) in {} ms", f.width, f.height, f.app, f.window, t.elapsed().as_millis());
         let t = std::time::Instant::now();
         let text = read_text(&f);

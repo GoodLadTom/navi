@@ -291,7 +291,7 @@ export async function render(root, { store, arg }) {
       setRow('Watch my screen', 'Navi looks at the screen every few seconds and keeps a screenshot only when enough of it has changed. When you stop, your AI picks the ones that matter and writes up what you did, on the Notes page. With no AI, every screenshot is kept, listed by time. Watching stops by itself after an hour.', h('div', { class: 'row' }, watchNote, watchBtn)),
       setRow('How often to look', null, select([{ value: '5', label: 'Every 5 seconds' }, { value: '10', label: 'Every 10 seconds' }, { value: '20', label: 'Every 20 seconds' }, { value: '30', label: 'Every 30 seconds' }], String(S().watch?.everySecs || 10), (v) => save((n) => { n.watch = { ...(n.watch || {}), everySecs: Number(v) }; })))),
     h('p', { class: 'small faint', style: { paddingTop: '14px', borderTop: '1px solid var(--line-soft)' } },
-      'Screenshots stay on this computer, in Navi’s data folder. Your AI only gets the text read off them and the window names, never the pictures. Apps under “Never read these apps” (in Context and privacy) are never captured.'),
+      'Screenshots stay on this computer, in Navi’s data folder. Your AI only gets the text read off them and the app and window names (only the app’s with “Read the window title” off), never the pictures. Apps under “Never read these apps” (in Context and privacy) are never captured.'),
   );
 
   // ---------------------------------------------------------------- sound
@@ -615,11 +615,11 @@ export async function render(root, { store, arg }) {
     excl.append(add);
   };
   drawExcl();
-  section('privacy', 'Context and privacy', 'Navi reads a little of what is on screen to get names and tone right. The reading happens on this computer. When an AI mode runs, the app name, the window title and up to 1,000 characters of the text before your cursor go to your AI with your words.',
+  section('privacy', 'Context and privacy', 'Navi reads a little of what is on screen to get names and tone right. The reading happens on this computer. When an AI mode runs, your words go to your AI with the app name, the window title, up to 1,000 characters of the text before your cursor, your name, your style notes and any dictionary words you used. In Prompt mode the paths of files in your project go too.',
     setRow('Read the window title', 'Lets Navi use the title of the window you are in and, in a browser, the site in the address bar (its name only, to pick a mode). Off, Navi still sees which app you are in, to pick a mode, and tells your AI its name.', toggle(S().context.readApp, (v) => save((n) => { n.context.readApp = v; }))),
     setRow('Read the text near my cursor', 'The paragraph you are writing, so names come out right and replies match the thread. Password boxes are never read.', toggle(S().context.readField, (v) => save((n) => { n.context.readField = v; }))),
     setRow('Read the screen', 'Windows’ own on-device text recognition of the window you are in, so the speech engine spells names on screen right. It never goes to your AI. Off by default.', toggle(S().context.ocr, (v) => save((n) => { n.context.ocr = v; }))),
-    setRow('Never read these apps', null, excl),
+    setRow('Never read these apps', 'Navi only uses their name: never their window title or text, no screenshots and no learning from your corrections.', excl),
     setRow('Local only', 'Nothing goes to the internet except downloads you start and the Check for updates button. AI then only works with Ollama or a server on this computer; without one, Navi tidies your words on this computer.', toggle(S().privacy.localOnly, (v) => save((n) => { n.privacy.localOnly = v; }))),
     setRow('Keep recordings for', 'Text is kept until you delete it. Audio can expire.', select([{ value: '7', label: '7 days' }, { value: '30', label: '30 days' }, { value: '90', label: '90 days' }, { value: '0', label: 'Forever' }], String(S().privacy.keepAudioDays), (v) => save((n) => { n.privacy.keepAudioDays = Number(v); }))),
     setRow('Save history', 'Off means nothing is kept after it is pasted.', toggle(S().privacy.saveHistory, (v) => save((n) => { n.privacy.saveHistory = v; }))),

@@ -89,7 +89,7 @@ pub fn spawn(app: Arc<App>, mut rx: UnboundedReceiver<hotkey::HotkeyMsg>) {
             }
             log::info!("shortcut {ev:?}");
             if let Err(e) = handle(&app, ev, at).await {
-                log::warn!("take failed: {e:#}");
+                log::warn!("take failed: {}", for_log(&e));
                 fail(&app, &short_error(&e));
             }
         }
@@ -385,7 +385,7 @@ async fn start(app: &Arc<App>, settings: &Settings, pressed: Instant) -> Result<
     let mode = modes::pick_mode(&all, &ctx, settings, (!active.is_empty()).then_some(active));
 
     let hwnd = ctx.hwnd;
-    let excluded = settings.context.excluded_apps.iter().any(|a| a.eq_ignore_ascii_case(&ctx.process_name));
+    let excluded = context::is_excluded(&ctx.process_name, &settings.context.excluded_apps);
     let ocr = if settings.context.ocr && !excluded && hwnd != 0 {
         Some(tokio::task::spawn_blocking(move || context::ocr_window(hwnd)))
     } else {
@@ -482,7 +482,7 @@ pub async fn start_from_wake(app: &Arc<App>, preroll: Vec<f32>) -> Result<Option
     let ctx = tokio::task::spawn_blocking(move || context::capture(&ctx_settings)).await.unwrap_or_default();
     let mode = modes::pick_mode(&all, &ctx, &settings, active);
     let hwnd = ctx.hwnd;
-    let excluded = settings.context.excluded_apps.iter().any(|a| a.eq_ignore_ascii_case(&ctx.process_name));
+    let excluded = context::is_excluded(&ctx.process_name, &settings.context.excluded_apps);
     let ocr = if settings.context.ocr && !excluded && hwnd != 0 { Some(tokio::task::spawn_blocking(move || context::ocr_window(hwnd))) } else { None };
     let preroll_ms = (preroll.len() as u64 * 1000 / audio::SAMPLE_RATE as u64) as u32;
     log::info!("take started by the wake word in {} ({} mode)", if ctx.app_label.is_empty() { "an unknown app" } else { ctx.app_label.as_str() }, mode.name);
@@ -736,7 +736,7 @@ pub async fn stop_take(app: &Arc<App>, only: Option<u64>, cut: Option<usize>) ->
         }
         app2.session.lock().phase = Phase::Idle;
         if let Err(e) = result {
-            log::warn!("processing failed: {e:#}");
+            log::warn!("processing failed: {}", for_log(&e));
             fail(&app2, &short_error(&e));
         }
     });
@@ -1487,7 +1487,7 @@ async fn process_take(app: &Arc<App>, mut rec: Recording, mut samples: Vec<f32>,
                         let words = rest.clone().filter(|w| w.chars().any(char::is_alphanumeric)).map(|w| capitalise_first(&w));
                         if let Some(words) = words {
                             if insert::set_clipboard_text(&words).is_ok() {
-                                return Err(anyhow!(with_note(&short_error(&e), "Your words are on the clipboard.")));
+                                return Err(reworded(&e, with_note(&short_error(&e), "Your words are on the clipboard.")));
                             }
                         }
                     }
@@ -1576,7 +1576,7 @@ async fn process_take(app: &Arc<App>, mut rec: Recording, mut samples: Vec<f32>,
         }),
         InsertOutcome::ClipboardOnly(_) => None,
     };
-    schedule_learning_check(app.clone(), &settings);
+    schedule_learning_check(app.clone(), &settings, take.id.clone());
 
     match &outcome {
         InsertOutcome::ClipboardOnly(reason) => {
@@ -1720,7 +1720,7 @@ async fn run_command(app: &Arc<App>, rec: &Recording, cmd: VoiceCommand, raw: &s
             let mut new_text = voice::apply_replace(&l.text, from, to);
             if new_text == l.text {
                 // The words were not found as spoken (a different spelling, say): let the AI do it.
-                let llm = make_llm(&settings).ok_or_else(|| anyhow!("Couldn't find \"{from}\" in what you just said."))?;
+                let llm = make_llm(&settings).ok_or_else(|| said_error(format!("Couldn't find \"{from}\" in what you just said."), "the words to change weren't found and there is no AI to look"))?;
                 let VoiceCommand::Rewrite { instruction } = voice::replace_as_rewrite(from, to) else { unreachable!() };
                 let (sys, user) = voice::rewrite_messages(&instruction, &l.text, &settings);
                 new_text = finish_text(&ai_edit(&llm, &sys, &user, 1200, 0.2).await?, &l.text, &settings)?;
@@ -2098,7 +2098,7 @@ fn save_take(app: &Arc<App>, settings: &Settings, rec: &Recording, raw: &str, fi
 /// to show, saying so when it was kept.
 #[allow(clippy::too_many_arguments)]
 fn keep_failed_take(app: &Arc<App>, settings: &Settings, rec: &Recording, raw: &str, audio_samples: &[f32], released: Instant, kind: &str, e: anyhow::Error) -> anyhow::Error {
-    log::warn!("take failed: {e:#}");
+    log::warn!("take failed: {}", for_log(&e));
     let latency = released.elapsed().as_millis() as u64;
     let take = save_take(app, settings, rec, raw, "", audio_samples, latency, "error", kind, serde_json::json!({ "error": short_error(&e) }));
     if take.audio_path.is_none() {
@@ -2132,18 +2132,34 @@ fn preview(text: &str) -> String {
 // Learning from corrections
 // ------------------------------------------------------------------------------------------
 
-fn schedule_learning_check(app: Arc<App>, settings: &Settings) {
+/// Looks for corrections to take `take_id` once it has had time to be fixed. Only that take: a
+/// newer one pasted meanwhile waits for its own timer, so it is never looked at too early.
+fn schedule_learning_check(app: Arc<App>, settings: &Settings, take_id: String) {
     if !settings.learning.enabled || !settings.context.read_field {
         return;
     }
     let delay = settings.learning.check_after_secs.max(5) as u64;
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_secs(delay)).await;
-        learning_check_now(&app).await;
+        learning_check(&app, Some(&take_id)).await;
     });
 }
 
+/// Looks for corrections to whatever Navi typed last (at the next take, or from the interface).
 pub async fn learning_check_now(app: &Arc<App>) {
+    learning_check(app, None).await;
+}
+
+/// The least time a paste is given to be corrected before it is looked at.
+const LEARN_MIN_WAIT: Duration = Duration::from_secs(3);
+
+/// Whether `last` is due a look: not looked at yet, given LEARN_MIN_WAIT, and, for a take's own
+/// timer (`only`), that take rather than a newer one.
+fn learning_due(last: &LastInsert, only: Option<&str>) -> bool {
+    !last.checked && last.at.elapsed() >= LEARN_MIN_WAIT && only.is_none_or(|id| id == last.take_id)
+}
+
+async fn learning_check(app: &Arc<App>, only: Option<&str>) {
     let settings = app.settings();
     if !settings.learning.enabled || !settings.context.read_field {
         return;
@@ -2151,15 +2167,16 @@ pub async fn learning_check_now(app: &Arc<App>) {
     let last = {
         let mut guard = app.last_insert.lock();
         match guard.as_mut() {
-            Some(l) if !l.checked && l.at.elapsed() >= Duration::from_secs(3) => {
+            Some(l) if learning_due(l, only) => {
                 l.checked = true;
                 l.clone()
             }
             _ => return,
         }
     };
-    let hwnd = last.hwnd;
-    let Ok(Some(now)) = tokio::task::spawn_blocking(move || context::read_focused_text(hwnd)).await else { return };
+    let (hwnd, reading) = (last.hwnd, settings.context.clone());
+    // Never an app under "Never read these apps" (read_focused_text checks the window's app).
+    let Ok(Some(now)) = tokio::task::spawn_blocking(move || context::read_focused_text(hwnd, &reading)).await else { return };
     for (from, to) in learn::find_corrections(&last.text, &now) {
         let Ok(Some(sugg)) = app.db.record_suggestion(&from, &to, &last.app_label) else { continue };
         // An everyday word ("quickly" -> "Quikly") is only ever suggested: added by itself it
@@ -2187,6 +2204,46 @@ fn short_error(e: &anyhow::Error) -> String {
     let s = e.to_string();
     let first = s.lines().next().unwrap_or("Something went wrong").trim().to_string();
     if first.chars().count() > 80 { first.chars().take(78).collect::<String>() + "…" } else { first }
+}
+
+/// An error whose message holds words the user said ("Couldn't find "Tuesday" in what you just
+/// said."). The bubble shows the message; the log only ever gets `log`, which holds none of them.
+#[derive(Debug)]
+struct SaidError {
+    message: String,
+    log: &'static str,
+}
+
+impl std::fmt::Display for SaidError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for SaidError {}
+
+fn said_error(message: String, log: &'static str) -> anyhow::Error {
+    anyhow::Error::new(SaidError { message, log })
+}
+
+fn said_in(e: &anyhow::Error) -> Option<&SaidError> {
+    e.chain().find_map(|c| c.downcast_ref::<SaidError>())
+}
+
+/// `e` as the log may say it: never the words in a SaidError.
+fn for_log(e: &anyhow::Error) -> String {
+    match said_in(e) {
+        Some(said) => said.log.to_string(),
+        None => format!("{e:#}"),
+    }
+}
+
+/// A new message for the bubble in place of `e`'s, kept out of the log just as `e`'s was.
+fn reworded(e: &anyhow::Error, message: String) -> anyhow::Error {
+    match said_in(e) {
+        Some(said) => said_error(message, said.log),
+        None => anyhow!(message),
+    }
 }
 
 #[cfg(test)]
@@ -2311,6 +2368,41 @@ mod tests {
         assert!(noted.ends_with("… Saved in History."), "{noted}");
         assert!(noted.chars().count() <= 80, "{noted}");
         assert_eq!(short_error(&anyhow!(noted.clone())), noted);
+    }
+
+    #[test]
+    fn spoken_words_in_an_error_never_reach_the_log() {
+        let e = said_error("Couldn't find \"Tuesday\" in what you just said.".into(), "the words weren't found");
+        // The bubble says which words; the log doesn't.
+        assert_eq!(short_error(&e), "Couldn't find \"Tuesday\" in what you just said.");
+        assert_eq!(for_log(&e), "the words weren't found");
+        assert!(!for_log(&e.context("running the command")).contains("Tuesday"), "wrapped, too");
+        // Reworded for the bubble (the clipboard note), it stays out of the log.
+        let e = said_error("Couldn't find \"Tuesday\" in what you just said.".into(), "the words weren't found");
+        let noted = reworded(&e, with_note(&short_error(&e), "Your words are on the clipboard."));
+        assert!(short_error(&noted).contains("Tuesday") && short_error(&noted).ends_with("Your words are on the clipboard."));
+        assert!(!for_log(&noted).contains("Tuesday"));
+        // Every other error is logged as it is.
+        let plain = anyhow!("There's nothing recent to scratch here.");
+        assert_eq!(for_log(&plain), "There's nothing recent to scratch here.");
+        assert_eq!(for_log(&reworded(&plain, "Again.".into())), "Again.");
+    }
+
+    fn pasted(take_id: &str, secs_ago: u64, checked: bool) -> LastInsert {
+        let at = Instant::now().checked_sub(Duration::from_secs(secs_ago)).expect("an instant in the past");
+        LastInsert { hwnd: 1, text: "See you on Tuesday.".into(), take_id: take_id.into(), app_label: "Notepad".into(), at, checked, replaced: None }
+    }
+
+    #[test]
+    fn each_learning_timer_looks_only_at_its_own_take() {
+        // Take A's timer fires after take B was pasted: B is left for its own timer.
+        assert!(!learning_due(&pasted("b", 5, false), Some("a")));
+        assert!(learning_due(&pasted("b", 25, false), Some("b")));
+        // The check at the next take looks at whatever was pasted last.
+        assert!(learning_due(&pasted("b", 5, false), None));
+        // Never twice, and never straight after the paste.
+        assert!(!learning_due(&pasted("b", 25, true), Some("b")));
+        assert!(!learning_due(&pasted("b", 1, false), None));
     }
 
     #[test]

@@ -711,7 +711,9 @@ fn spawn_log_reader<R: Read + Send + 'static>(stream: R, log: Arc<Mutex<VecDeque
                     Ok(0) | Err(_) => break,
                     Ok(_) => {
                         let line = String::from_utf8_lossy(&buf).trim_end().to_string();
-                        if line.is_empty() {
+                        // What was said never goes in the tail, which is logged when the engine
+                        // stops: some builds print every segment they transcribe.
+                        if line.is_empty() || is_transcript_line(&line) {
                             continue;
                         }
                         log::trace!("whisper-server: {line}");
@@ -729,6 +731,17 @@ fn spawn_log_reader<R: Read + Send + 'static>(stream: R, log: Arc<Mutex<VecDeque
     if spawned.is_err() {
         done.fetch_add(1, Ordering::SeqCst);
     }
+}
+
+/// A transcribed segment as whisper.cpp prints it, "[00:00:01.000 --> 00:00:03.500]   Hello there",
+/// which some server builds do for every request.
+fn is_transcript_line(line: &str) -> bool {
+    let Some((stamps, _)) = line.trim_start().strip_prefix('[').and_then(|rest| rest.split_once(']')) else { return false };
+    let is_time = |t: &str| {
+        let t = t.trim();
+        t.contains(':') && t.chars().all(|c| c.is_ascii_digit() || matches!(c, ':' | '.' | ','))
+    };
+    stamps.split_once("-->").is_some_and(|(from, to)| is_time(from) && is_time(to))
 }
 
 fn free_port() -> Result<u16> {
@@ -927,6 +940,22 @@ mod tests {
         let tail: Vec<String> = log.iter().rev().take(LOG_TAIL_LINES).rev().cloned().collect();
         assert_eq!(rejected_flag(&tail).as_deref(), Some("-nlp"));
         assert_eq!(rejected_flag(&["all good".to_string()]), None);
+    }
+
+    #[test]
+    fn transcribed_words_never_go_in_the_log_tail() {
+        assert!(is_transcript_line("[00:00:00.000 --> 00:00:02.500]   See you on Tuesday."));
+        assert!(is_transcript_line("  [00:01:02,040 --> 00:01:04,000]  Hi"));
+        // The server's own lines stay, so a failure can still be explained.
+        for line in [
+            "whisper_init_from_file_with_params_no_state: loading model from 'ggml-base.en.bin'",
+            "error: unknown argument: -nlp",
+            "[INFO] listening on 127.0.0.1:8080",
+            "Received request: audio.wav",
+            "whisper_full_with_state: progress = 50%",
+        ] {
+            assert!(!is_transcript_line(line), "{line}");
+        }
     }
 
     /// Closing the job handle (what happens when Navi exits or crashes) kills the child.

@@ -6,9 +6,10 @@
 //! * Every few seconds (Settings > Voice commands > How often to look, 10 by default) Navi looks
 //!   at the screen and keeps the picture only when enough of it has changed (screen.rs), with the
 //!   text on it read on this computer.
-//! * When it stops, the AI for longer jobs is given each screenshot's time, window and text (never
-//!   the picture), picks the ones that matter with a caption each, and writes a short account. The
-//!   rest are deleted. Without an AI every screenshot stays, listed by time and window.
+//! * When it stops, the AI for longer jobs is given each screenshot's time, app, window title (kept
+//!   only while "Read the window title" is on, screen.rs) and text (never the picture), picks the
+//!   ones that matter with a caption each, and writes a short account. The rest are deleted.
+//!   Without an AI every screenshot stays, listed by time and window.
 //! * The result is a note on the Notes page (its app is "Watch") with the pictures in it, and a
 //!   Markdown copy in the notes folder that links to them.
 
@@ -170,11 +171,11 @@ fn spawn_loop(app: Arc<App>, id: String) {
             if count >= MAX_SHOTS {
                 continue;
             }
-            let excluded = app.settings().context.excluded_apps;
+            let reading = app.settings().context;
             let previous = last.clone();
             let path = dir.join(format!("{:03}.jpg", count + 1));
             let taken = tokio::task::spawn_blocking(move || {
-                let frame = screen::capture(&excluded)?;
+                let frame = screen::capture(&reading)?;
                 let signature = frame.signature();
                 if previous.as_ref().is_some_and(|p| screen::changed(p, &signature) < screen::NEW_SCREEN) {
                     return None;
@@ -395,7 +396,8 @@ fn markdown(title: &str, summary: &str, shots: &[Shot], settings: &Settings) -> 
     if !shots.is_empty() {
         md.push_str("## What happened\n\n");
         for (n, s) in shots.iter().enumerate() {
-            let caption = if s.caption.trim().is_empty() { s.window.clone() } else { tidy(&s.caption, settings) };
+            // No window title when "Read the window title" is off: the app names it instead.
+            let caption = if !s.caption.trim().is_empty() { tidy(&s.caption, settings) } else if s.window.is_empty() { s.app.clone() } else { s.window.clone() };
             md.push_str(&format!("{}. {} ({})\n\n{}\n\n", n + 1, caption, clock(s.at_ms), image(&caption, &s.path)));
         }
     }
@@ -452,6 +454,15 @@ mod tests {
         assert!(system.contains("You cannot see the pictures"));
         assert!(user.contains("[1] 00:00 · Chrome · Pricing - Notion: Plans Starter £9"));
         assert!(user.contains("[2] 00:40 · Chrome · Stripe: (no text)"));
+    }
+
+    #[test]
+    fn without_window_titles_only_the_app_is_named() {
+        // "Read the window title" off: screen.rs keeps no title, so the AI gets the app alone.
+        let shots = vec![shot(0, "", "Plans Starter £9")];
+        let (_, user) = messages(&shots, &Settings::default());
+        assert!(user.contains("[1] 00:00 · Chrome: Plans Starter £9"), "{user}");
+        assert!(markdown("Pricing", "", &shots, &Settings::default()).contains("1. Chrome (00:00)"));
     }
 
     /// Has the real Claude Code (Sonnet) write up a made-up watch from screenshot text, and checks
