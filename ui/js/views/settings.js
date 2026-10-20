@@ -710,7 +710,9 @@ export async function render(root, { store, arg }) {
     setRow('Your data', 'Settings, history, recordings, screenshots and speech models live in this folder. Markdown notes go to your notes folder.', btn('Open folder', { size: 'sm', icon: 'external', onClick: () => invoke('open_data_folder') })),
     setRow('Set-up', 'Walk through the first-run steps again.', btn('Run set-up again', { size: 'sm', onClick: async () => { await save((n) => { n.onboarded = false; }); location.reload(); } })),
     h('p', { class: 'small faint', style: { paddingTop: '14px', borderTop: '1px solid var(--line-soft)' } },
-      'Navi is free, under the MIT licence. Speech recognition by whisper.cpp (MIT). Typeface Poppins (SIL Open Font Licence). Made by ',
+      'Navi is free and open source, under the ',
+      h('a', { href: 'https://www.gnu.org/licenses/gpl-3.0.html', onClick: (e) => { e.preventDefault(); openPath('https://www.gnu.org/licenses/gpl-3.0.html'); } }, 'GNU General Public License, version 3'),
+      ', and comes with no warranty. Speech recognition by whisper.cpp (MIT). Typeface Poppins (SIL Open Font Licence). Copyright © 2026 GoodLad. Made by ',
       h('a', { href: 'https://github.com/GoodLadTom', onClick: (e) => { e.preventDefault(); openPath('https://github.com/GoodLadTom'); } }, 'GoodLad'), '.'),
   );
 

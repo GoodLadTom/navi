@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Navi: local, private dictation that writes like you.",
-  "license": "MIT",
+  "license": "GPL-3.0-only",
   "engines": {
     "node": ">=18"
   },
