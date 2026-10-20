@@ -20,7 +20,8 @@
 //!   still talking. On a call, a command may follow a bare "Navi" after a pause.
 //! * `TakeListener` (controller.rs, inside a take): short utterances between pauses, for the
 //!   cancel and finish phrases ("don't worry", "that's all", word for word), and the first thing
-//!   said after the wake word in a take it started (with or without the name in front).
+//!   said after the wake word in a take it started (with or without the name in front). Of longer
+//!   utterances only the end is checked, for a finish phrase said with no pause after dictation.
 //!
 //! Privacy: what the listeners hear is never logged or kept. Only which command fired is logged.
 
@@ -57,6 +58,9 @@ pub const CALL_WAKE_GAP: u64 = (RATE * 3 / 2) as u64;
 // In-take listener
 pub const MIN_CMD_UTT: usize = RATE / 4; // shorter utterances (coughs) are not checked
 pub const MAX_CMD_UTT: usize = RATE * 11 / 5; // 2.2 s: longer is dictation
+// Of a longer utterance only this much at the end is checked: a finish phrase said with no pause
+// after the dictation (or said again and again) runs on into it.
+pub const TAIL_CHECK: usize = MAX_CMD_UTT;
 pub const MAX_FIRST_UTT: usize = RATE * 3; // a wake take's first utterance, wake word included
 pub const FIRST_WINDOW: usize = RATE * 4; // the first command can start up to 4 s after the preroll
 pub const CONFIRM_QUIET: usize = RATE / 2; // 0.5 s of quiet after the phrase before acting
@@ -788,28 +792,39 @@ impl Matcher {
         self.match_wake(text).map(|hit| hit.rest)
     }
 
-    /// `text` without a last sentence that is one of `action`'s phrases ("See you Friday. That's
-    /// all." -> "See you Friday."). Empty when the whole text is the phrase.
-    pub fn strip_trailing(&self, text: &str, action: Action) -> String {
-        // Word for word, as the take's listener matches it while you talk.
+    /// Where the run of `action`'s phrases that ends `text` starts, each a sentence of its own
+    /// and word for word ("See you Friday. That's all. That is all." -> just after "Friday."). 0
+    /// when the text is nothing else; None when it does not end with one.
+    pub fn trailing_phrases(&self, text: &str, action: Action) -> Option<usize> {
         let is_phrase = |s: &str| {
             let target = self.match_wake(s).map(|hit| hit.rest).unwrap_or_else(|| s.to_string());
             self.match_exact(&target, &[action]).is_some()
         };
-        let t = text.trim_end();
-        if is_phrase(t) {
-            return String::new();
-        }
-        let mut last_start = None;
-        for (i, c) in t.char_indices() {
-            let after = i + c.len_utf8();
-            if matches!(c, '.' | '!' | '?') && t[after..].chars().any(char::is_alphanumeric) {
-                last_start = Some(after);
+        let mut end = text.trim_end().len();
+        let mut found = None;
+        while end > 0 {
+            let t = &text[..end];
+            // The last sentence: after the last '.', '!' or '?' that has words after it.
+            let start = t
+                .char_indices()
+                .filter(|&(i, c)| matches!(c, '.' | '!' | '?') && t[i + c.len_utf8()..].chars().any(char::is_alphanumeric))
+                .last()
+                .map_or(0, |(i, c)| i + c.len_utf8());
+            if !is_phrase(&t[start..]) {
+                break;
             }
+            found = Some(start);
+            end = t[..start].trim_end().len();
         }
-        match last_start {
-            Some(s) if is_phrase(&t[s..]) => t[..s].trim_end().to_string(),
-            _ => text.to_string(),
+        found.map(|s| if text[..s].trim().is_empty() { 0 } else { s })
+    }
+
+    /// `text` without the last sentences that are `action`'s phrases ("See you Friday. That's
+    /// all. That's all." -> "See you Friday."). Empty when the whole text is the phrase.
+    pub fn strip_trailing(&self, text: &str, action: Action) -> String {
+        match self.trailing_phrases(text, action) {
+            Some(at) => text[..at].trim_end().to_string(),
+            None => text.to_string(),
         }
     }
 
@@ -1310,6 +1325,9 @@ pub struct TakeCheck {
     pub end: u64,
     /// The first utterance after the wake word, checked from the start of the take.
     pub first: bool,
+    /// Only the last TAIL_CHECK of a longer utterance (dictation), for a finish phrase said
+    /// straight after it.
+    pub tail: bool,
     pub speech_at: u64,
     pub utt_end: u64,
 }
@@ -1421,28 +1439,30 @@ impl TakeListener {
             if s.last_loud_end <= self.heard {
                 return;
             }
-            if s.speech_at < self.preroll + FIRST_WINDOW as u64 {
-                if dur <= MAX_FIRST_UTT as u64 {
-                    self.enqueue(0, end, true, s);
-                } else {
-                    // A long first utterance is dictation.
-                    self.window_open = false;
-                }
+            if s.speech_at < self.preroll + FIRST_WINDOW as u64 && dur <= MAX_FIRST_UTT as u64 {
+                self.enqueue(0, end, true, false, s);
                 return;
             }
+            // Said later, or a long first utterance, which is dictation.
             self.window_open = false;
         }
-        if dur >= MIN_CMD_UTT as u64 && dur <= MAX_CMD_UTT as u64 {
-            self.enqueue(s.start, end, false, s);
+        if dur < MIN_CMD_UTT as u64 {
+            return;
+        }
+        if dur <= MAX_CMD_UTT as u64 {
+            self.enqueue(s.start, end, false, false, s);
+        } else {
+            // Dictation: only its end, for a finish phrase that ran on from it.
+            self.enqueue(end.saturating_sub(TAIL_CHECK as u64).max(s.start), end, false, true, s);
         }
     }
 
-    fn enqueue(&mut self, start: u64, end: u64, first: bool, s: Seg) {
+    fn enqueue(&mut self, start: u64, end: u64, first: bool, tail: bool, s: Seg) {
         if self.queue.len() >= QUEUE_MAX {
             self.queue.pop_front();
         }
         self.next_id += 1;
-        self.queue.push_back(TakeCheck { id: self.next_id, start, end, first, speech_at: s.speech_at, utt_end: s.last_loud_end });
+        self.queue.push_back(TakeCheck { id: self.next_id, start, end, first, tail, speech_at: s.speech_at, utt_end: s.last_loud_end });
     }
 
     pub fn next_check(&mut self) -> Option<TakeCheck> {
@@ -1497,10 +1517,27 @@ impl TakeListener {
         }
     }
 
+    /// Cancel or finish word for word, said once or more ("That's all. That's all.") as an
+    /// utterance of its own. Finish also counts as the last sentence of dictation it ran on from
+    /// ("...the Mac port yet? That's all."): the take then keeps all its audio, and the phrase
+    /// comes off the text (after_take). Cancel never does: "Don't worry." ends many a message.
     fn judge_alone(&mut self, check: &TakeCheck, text: &str, m: &Matcher) {
-        match m.match_in_take(text) {
-            Some(Action::Cancel) => self.set_pending(TakeAction::Cancel { heard: text.to_string() }, check),
-            Some(Action::Finish) => self.set_pending(TakeAction::Finish { cut: check.speech_at.saturating_sub(CUT_MARGIN as u64), heard: text.to_string() }, check),
+        let finish = |cut: u64| TakeAction::Finish { cut, heard: text.to_string() };
+        let before_phrase = check.speech_at.saturating_sub(CUT_MARGIN as u64);
+        if !check.tail {
+            match m.match_in_take(text) {
+                Some(Action::Cancel) => return self.set_pending(TakeAction::Cancel { heard: text.to_string() }, check),
+                Some(Action::Finish) => return self.set_pending(finish(before_phrase), check),
+                _ => {}
+            }
+        }
+        let alone = |action: Action| !check.tail && m.trailing_phrases(text, action) == Some(0) && !m.is_echo(text);
+        if alone(Action::Cancel) {
+            return self.set_pending(TakeAction::Cancel { heard: text.to_string() }, check);
+        }
+        match m.trailing_phrases(text, Action::Finish) {
+            Some(0) if alone(Action::Finish) => self.set_pending(finish(before_phrase), check),
+            Some(at) if !m.is_echo(&text[at..]) => self.set_pending(finish(check.end), check),
             _ => {}
         }
     }
@@ -1988,6 +2025,16 @@ mod tests {
         assert_eq!(m.strip_trailing("That's all I wanted", Action::Finish), "That's all I wanted");
         assert_eq!(m.strip_trailing("That's all.", Action::Finish), "");
         assert_eq!(m.strip_trailing("It costs 3.5 pounds. Navi, that's all.", Action::Finish), "It costs 3.5 pounds.");
+        // Said again and again: every one comes off.
+        assert_eq!(m.strip_trailing("Is it ready yet? That's all. That is all. That's all.", Action::Finish), "Is it ready yet?");
+        assert_eq!(m.strip_trailing("That's all. That's all!", Action::Finish), "");
+        assert_eq!(m.strip_trailing("It costs 3.5 pounds. That's all. That's all.", Action::Finish), "It costs 3.5 pounds.");
+        assert_eq!(m.strip_trailing("Navi. That's all.", Action::Finish), "Navi.");
+        let ends_otherwise = "Is it ready yet? That's all. That is all. That's all. That's it.";
+        assert_eq!(m.strip_trailing(ends_otherwise, Action::Finish), ends_otherwise);
+        assert_eq!(m.trailing_phrases("See you Friday. That's all.", Action::Finish), Some("See you Friday.".len()));
+        assert_eq!(m.trailing_phrases(" That's all.", Action::Finish), Some(0));
+        assert_eq!(m.trailing_phrases("That's all for now.", Action::Finish), None);
     }
 
     #[test]
@@ -2388,17 +2435,24 @@ mod tests {
     #[test]
     fn take_listener() {
         let m = m();
-        // Dictation 2.5 s, quiet 0.6 s, a 0.6 s utterance: one alone check over that utterance.
+        // Dictation 2.5 s: only its end is checked. Then quiet 0.6 s and a 0.6 s utterance: one
+        // alone check over that utterance.
         let (mut ring, mut l) = (Ring::new(), TakeListener::new(false, 0));
         l.arm(0);
         let mut audio = quiet(0.3);
         audio.extend(tone(2.5, 0.2));
         audio.extend(quiet(0.6));
-        audio.extend(tone(0.6, 0.2));
+        let checks = take_feed(&mut l, &mut ring, &audio);
+        assert_eq!(checks.len(), 1, "{checks:?}");
+        let d = checks[0];
+        assert!(d.tail && d.end - d.start == TAIL_CHECK as u64, "only the end of the dictation: {d:?}");
+        assert_eq!(l.on_result(&d, "We could meet on Friday.", &m, ring.end()), None);
+        let mut audio = tone(0.6, 0.2);
         audio.extend(quiet(0.35));
         let checks = take_feed(&mut l, &mut ring, &audio);
         assert_eq!(checks.len(), 1, "{checks:?}");
         let c = checks[0];
+        assert!(!c.tail, "{c:?}");
         let speech_at = (RATE as f32 * 3.4) as u64;
         assert!(!c.first && c.speech_at.abs_diff(speech_at) <= FRAME as u64, "{c:?}");
         assert!(c.start + (LEAD_IN + FRAME) as u64 >= speech_at && c.start <= speech_at, "{c:?}");
@@ -2412,13 +2466,60 @@ mod tests {
         assert_eq!(l.fired_after_ms(), 500);
         assert_eq!(l.next_check(), None, "done after one action");
 
-        // A 3 s utterance is dictation: no check.
+        // A 3 s utterance is dictation: only its last TAIL_CHECK is checked, and only for finish.
+        // Said straight after it, the phrase keeps the audio (it comes off the text).
+        let long_take = || {
+            let (mut ring, mut l) = (Ring::new(), TakeListener::new(false, 0));
+            l.arm(0);
+            let mut audio = quiet(0.3);
+            audio.extend(tone(3.0, 0.2));
+            audio.extend(quiet(0.35));
+            let checks = take_feed(&mut l, &mut ring, &audio);
+            assert_eq!(checks.len(), 1, "{checks:?}");
+            (ring, l, checks[0])
+        };
+        let (ring, mut l, c) = long_take();
+        assert!(c.tail && c.end == c.utt_end + TAIL as u64 && c.end - c.start == TAIL_CHECK as u64, "{c:?}");
+        let said = "start making the Mac port yet? That's all. That is all.";
+        assert_eq!(l.on_result(&c, said, &m, ring.end()), None, "not yet");
+        assert_eq!(l.poll(c.utt_end + CONFIRM_QUIET as u64), Some(TakeAction::Finish { cut: c.end, heard: said.into() }));
+        for said in ["Don't worry.", "You don't worry.", "So that's all.", "That's all for now.", "That's all, thanks.", "That's all. That's it."] {
+            let (ring, mut l, c) = long_take();
+            assert_eq!(l.on_result(&c, said, &m, ring.end()), None, "{said}");
+            assert_eq!(l.poll(c.utt_end + RATE as u64), None, "{said}");
+        }
+        // The end of dictation heard as just the phrase is still dictation before it.
+        let (ring, mut l, c) = long_take();
+        l.on_result(&c, "That's all.", &m, ring.end());
+        assert_eq!(l.poll(c.utt_end + CONFIRM_QUIET as u64), Some(TakeAction::Finish { cut: c.end, heard: "That's all.".into() }));
+
+        // Said more than once in a short utterance: cut before it. Text before it: kept.
+        for (said, before) in [("That's all. That's all.", true), ("Don't worry. Don't worry.", true), ("Cheers. That's all.", false)] {
+            let (mut ring, mut l) = (Ring::new(), TakeListener::new(false, 0));
+            l.arm(0);
+            let mut audio = quiet(0.3);
+            audio.extend(tone(1.2, 0.2));
+            audio.extend(quiet(0.35));
+            let c = take_feed(&mut l, &mut ring, &audio)[0];
+            assert!(!c.tail);
+            l.on_result(&c, said, &m, ring.end());
+            let got = l.poll(c.utt_end + CONFIRM_QUIET as u64);
+            let cut = if before { c.speech_at - CUT_MARGIN as u64 } else { c.end };
+            if said.starts_with("Don't") {
+                assert_eq!(got, Some(TakeAction::Cancel { heard: said.into() }), "{said}");
+            } else {
+                assert_eq!(got, Some(TakeAction::Finish { cut, heard: said.into() }), "{said}");
+            }
+        }
+        // Cancel after other words is dictation ("I'll sort it. Don't worry.").
         let (mut ring, mut l) = (Ring::new(), TakeListener::new(false, 0));
         l.arm(0);
         let mut audio = quiet(0.3);
-        audio.extend(tone(3.0, 0.2));
-        audio.extend(quiet(0.5));
-        assert!(take_feed(&mut l, &mut ring, &audio).is_empty());
+        audio.extend(tone(1.2, 0.2));
+        audio.extend(quiet(0.35));
+        let c = take_feed(&mut l, &mut ring, &audio)[0];
+        l.on_result(&c, "I'll sort it. Don't worry.", &m, ring.end());
+        assert_eq!(l.poll(c.utt_end + RATE as u64), None);
 
         // A match then speech 0.35 s later: dropped.
         let (mut ring, mut l) = (Ring::new(), TakeListener::new(false, 0));
@@ -3014,6 +3115,44 @@ mod tests {
             };
             (joined.split_whitespace().collect::<Vec<_>>().join(" "), ms)
         }
+    }
+
+    /// Replays a take saved in History (NAVI_TAKE_WAV, 16 kHz mono) through the take's listener,
+    /// with the checks on the running engine, and prints what it heard and did. Measures nothing.
+    #[tokio::test]
+    #[ignore]
+    async fn replay_a_take() {
+        let path = std::env::var("NAVI_TAKE_WAV").expect("set NAVI_TAKE_WAV to a take's .wav");
+        let bytes = std::fs::read(path).expect("read wav");
+        let data = bytes.windows(4).position(|w| w == b"data").expect("data chunk") + 8;
+        let samples: Vec<f32> = bytes[data..].chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0).collect();
+        let engine = RunningEngine::find().await.expect("a running Navi");
+        let vc = std::env::var("NAVI_FINISH").map(|p| {
+            let mut vc = VoiceCommandSettings::default();
+            vc.commands.retain(|e| e.action != "finish");
+            vc.commands.push(VoiceCommandEntry { action: "finish".into(), phrases: p.split('|').map(String::from).collect() });
+            vc
+        });
+        let m = Matcher::new(&vc.unwrap_or_default());
+        let (mut ring, mut l) = (Ring::new(), TakeListener::new(false, 0));
+        l.arm(0);
+        let mut padded = samples.clone();
+        padded.extend(quiet(1.5));
+        for chunk in padded.chunks(RATE / 20) {
+            ring.push(chunk);
+            l.advance(&ring);
+            let mut action = None;
+            if let Some(c) = l.next_check() {
+                let (text, ms) = engine.transcribe(&ring.slice(c.start, c.end), "").await;
+                println!("{:5.2}-{:5.2} s{} in {ms} ms: {text:?}", c.start as f32 / RATE as f32, c.end as f32 / RATE as f32, if c.tail { " (end of a longer one)" } else { "" });
+                action = l.on_result(&c, &text, &m, ring.end());
+            }
+            if let Some(a) = action.or_else(|| l.poll(ring.end())) {
+                println!("{a:?} at {:.2} s ({} ms after the phrase)", ring.end() as f32 / RATE as f32, l.fired_after_ms());
+                return;
+            }
+        }
+        println!("nothing fired");
     }
 
     struct LiveCheck {

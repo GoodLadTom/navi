@@ -169,9 +169,13 @@ and the unit tests and the live measurement run the same code.
   by a command ("Navi watch my screen", in one breath or after a short pause), the command runs at
   once with no take. Sliding checks switch off while the engine is slow (another app on the GPU).
 - During a take: `controller::spawn_take_listener` reads the take's audio and checks short
-  utterances between pauses. Cancel and finish count only as a whole utterance with half a second
-  of quiet after it, so "don't worry about the deadline" is dictation; finish cuts the phrase off
-  before transcribing. On a long take or a ramble, the first cancel asks to be said again.
+  utterances between pauses. Cancel and finish count only word for word, with half a second of
+  quiet after them, so "don't worry about the deadline" is dictation. Cancel must be a whole
+  utterance (said once or more); finish cuts the phrase off before transcribing. Finish also counts
+  as the last sentence of dictation it ran on from with no pause ("...the Mac port yet? That's
+  all."), so of every longer utterance the last 2.2 s are checked too (`TAIL_CHECK`); that take
+  keeps its audio and the phrase, said once or more, comes off the text. On a long take or a
+  ramble, the first cancel asks to be said again.
 - On calls the listener only acts on stop taking notes, watch my screen and stop watching; "Navi,
   ..." on a call is still a job.
 - A wake take ends after six seconds of quiet (`WAKE_QUIET`), on the finish phrase, Enter or the
