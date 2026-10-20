@@ -2,8 +2,9 @@
 
 Read this first if you are the developer (or the Claude Code session) building the Mac version.
 It was written on 15 October 2026, on the Windows PC where Navi was built, from a review of every
-Windows-only part of the code. Nothing here has been tried on a Mac yet: treat API details as the
-starting point and check them on the machine.
+Windows-only part of the code, and brought up to date on 20 October with the order of work. Nothing
+here has been tried on a Mac yet: treat API details as the starting point and check them on the
+machine.
 
 ## What we are building
 
@@ -16,10 +17,52 @@ starting point and check them on the machine.
   needed. A signed, notarised download can come later. While the repo is private, cloning it needs
   access to GoodLadTom/navi and a signed-in git or GitHub CLI (`gh auth login`).
 - **Windows must keep working exactly as it does.** Add Mac code beside the Windows code; don't
-  rewrite shared logic unless it truly has to change. The Windows build and its 500 or so tests are
+  rewrite shared logic unless it truly has to change. The Windows build and its 600 or so tests are
   the reference.
 - **Bundle identifier: `com.goodlad.navi`** (already set in `src-tauri/tauri.conf.json`). Mac
   privacy permissions attach to it, so don't change it.
+
+## Decisions to make first
+
+1. **Which Mac.** Apple menu > About This Mac: the chip and the macOS version. Apple silicon (M1 or
+   later) is the target. Call notes need macOS 14.2 or later; Apple's own speech and AI frameworks
+   (below) need macOS 26.
+2. **Lowest macOS supported.** Suggested: 14.2, so every feature works on every supported Mac, with
+   Apple's speech and AI extras switched on only on macOS 26.
+3. **Default shortcut.** Suggested: hold Fn, with set-up telling the user to turn off Fn's own
+   action (emoji picker or Apple Dictation) in System Settings > Keyboard. Right Option as the
+   other preset.
+4. **Dan's access.** While the repo is private, Dan needs adding as a collaborator.
+5. **A signed download, later.** Self-built copies are fine for Tom and Dan. A download for anyone
+   else needs Apple's Developer Program ($99 a year), signing and notarisation. Decide that at the
+   public Mac launch.
+
+## What changed after 15 October
+
+- **Removed:** Short ideas, Interview me and Speak mode. Nothing to port. (The Speak page, which
+  reads text aloud with ElevenLabs, stays.)
+- **Playback while you talk** (`media.rs`, Settings > Sound > While you talk): pauses or mutes other apps' audio
+  during a take. macOS 15.4 stopped third-party apps using MediaRemote, the private framework
+  behind Now Playing, so on the Mac mute first (Core Audio) and pause only as a best effort. macOS
+  mutes the whole output, Navi's own cues included: play the start cue before muting and unmute
+  before the done cue.
+- **Colour themes** (`colours.rs`, "Navi, turn gold"): shared code. The menu bar icon stays
+  monochrome, as Apple requires.
+- **Voice commands** (custom wake words, "don't worry" to cancel, "that's all" to finish): shared
+  code in `spoken.rs`.
+- **Ollama** for local AI rewrites: portable as it is (it talks to `127.0.0.1:11434`). On the Mac,
+  Apple's Foundation Models are also worth testing for this.
+- **Apple options on macOS 26 that could save work.** SpeechAnalyzer is Apple's on-device speech
+  recognition, with the model managed by macOS; Apple's published tests put it ahead of Whisper
+  Small and about three times faster on Apple silicon. Foundation Models is Apple's on-device
+  language model, free for apps on M-series Macs, offline and with no key. Both are Swift-only, so
+  use a small Swift helper that Navi starts beside the speech engine (as it starts
+  `whisper-server`), not a rewrite.
+- Homebrew's whisper.cpp includes `whisper-server` with Metal, a working stopgap before
+  `scripts/mac-setup.sh` builds our own. `tauri-nspanel` (for the bubble and the corner card) is on
+  version 2.1 and supports Tauri v2.
+- **Licence:** GNU GPL v3 only (`LICENSE`, with extra terms in `NOTICE`). Keep the notices in any
+  new file you add.
 
 ## Setting up the Mac
 
@@ -88,7 +131,7 @@ machine unchanged.
 | `context.rs`: app in front | `NSWorkspace.frontmostApplication` (name, bundle ID, pid). Key app categories and modes on bundle IDs (`com.microsoft.VSCode`, `com.apple.Terminal`, `com.googlecode.iterm2`, `com.tinyspeck.slackmacgap` and so on), with migration from stored `.exe` names | none |
 | Window title | AX: focused window of the app, then `kAXTitleAttribute`. Avoid `kCGWindowName`, which needs Screen Recording | Accessibility |
 | A browser's site (`context.rs` `host`, so Auto picks Prompt on chatgpt.com or claude.ai) | AX: the address field of the browser's focused window, keeping only the host (`host_from_address`). Left empty, the tab's title decides, as it does on Windows when the read is too slow | Accessibility |
-| Window identity (the `hwnd`) | No global handle. Use pid plus the frontmost layer-0 `CGWindowID`, or the AX focused-window element compared with `CFEqual`. **Don't stub this as 0**: `controller.rs` checks "same window still in front" before voice edits, and a 0 would always pass | none |
+| Window identity (the `hwnd`) | No global handle. Use pid plus the frontmost layer-0 `CGWindowID`, packed into the `isize` that `context::foreground_hwnd` returns, so the 180 or so places that pass it around don't change. **Don't stub this as 0**: `controller.rs` checks "same window still in front" before voice edits, and a 0 would always pass | none |
 | Text before the cursor, the selection | AX on a worker thread: system-wide focused element, skip `kAXSecureTextFieldSubrole`, then `kAXSelectedTextRangeAttribute` and `kAXStringForRangeParameterizedAttribute` for the text before it. Chromium and Electron apps need `AXManualAccessibility` set | Accessibility |
 | `audio.rs`: microphone | cpal's CoreAudio backend works as is. Add `NSMicrophoneUsageDescription` to Info.plist | Microphone |
 | `wake.rs`: the "Navi" listener | Portable as written. Prefer the built-in mic over AirPods (holding an AirPods mic open drops them into low-quality call audio). The orange mic dot stays on while it listens; say so in Settings | Microphone |
@@ -146,6 +189,45 @@ machine unchanged.
 - Watch my screen and call screenshots.
 - Rebuild, and check every permission is still granted.
 - Then run the Windows build and its tests again on Windows to make sure nothing there changed.
+
+## The order of work
+
+Work on a `mac` branch. Each phase ends with a test on the real Mac; the limit is test rounds on
+the Mac (permissions, calls and screen capture), not coding. After each phase, merge into `main`
+on the PC and run the Windows build and its tests there before pushing the merge.
+
+1. **Builds and runs.** Set the repo's git identity to GoodLad (as on the PC) before any commit.
+   Xcode command-line tools, Rust, Node, CMake, `gh auth login`, clone, `npm install`. The `Navi
+   Local` certificate. `tauri.macos.conf.json`, `Info.plist`, `Entitlements.plist`. The speech
+   engine (Homebrew's `whisper-server` first). Keychain for keys. The platform flag from
+   `commands::app_info` and the Mac words in the interface. App categories and per-app modes keyed
+   by bundle ID as well as `.exe` name. *Done when* Navi.app opens, set-up finishes, the engine
+   loads the model, and History and Settings work.
+2. **Hold to talk and the words appear.** The event tap feeding `HookMachine`, paste and typing,
+   the bubble and firefly as a panel, the menu bar item, sounds, and the permissions page in
+   set-up. *Done when* holding the shortcut and talking puts text into Safari, Chrome, Slack, VS
+   Code, Terminal and Notes, on a UK layout.
+3. **Navi knows where you're typing.** Front app, window title, window identity (not 0), text
+   before the cursor, modes by bundle ID, voice edits, learning from corrections, and Claude Code
+   and Codex found in Mac install folders. *Done when* Prompt mode picks itself in VS Code and
+   Terminal, and "Navi, scratch that" removes the last take.
+4. **Wake word and voice commands.** Shared code; prefer the built-in mic over AirPods. *Done when*
+   "Navi" wakes it within a second every time, "don't worry" cancels and "that's all" finishes.
+5. **Call notes.** Process objects, a process tap (a day comparing cpal 0.18 with a small
+   `objc2-core-audio` module first), and the corner card as a second panel. *Done when* real Zoom,
+   Google Meet (in Chrome) and Teams calls, with speakers and with headphones, give notes with both
+   sides.
+6. **Screen.** ScreenCaptureKit, Vision for the text, Watch my screen and call screenshots. *Done
+   when* a watch session gives a write-up and call notes mention what was shown.
+7. **The newer features.** Playback while you talk (mute first), colour themes, fast AI rewrites,
+   and SpeechAnalyzer and Foundation Models tested against whisper.cpp and Ollama on real takes.
+8. **Hand it to Dan.** `scripts/mac-setup.sh`, the README's "Build on a Mac" section, updates off
+   for self-built copies, and the full test list above on a fresh macOS user account. *Done when*
+   Dan clones the repo, runs one script and dictates.
+
+A GitHub Actions workflow that builds and tests on Windows and macOS for every push is worth
+adding once the repo is public. On a private repo, Mac minutes use the free allowance ten times
+faster.
 
 ## Building it yourself (for the README, once it works)
 
