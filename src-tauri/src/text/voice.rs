@@ -17,6 +17,8 @@
 //!   - rewrite: anything else with a last insertion -> Rewrite{instruction}.
 //!   - transform: `has_selection` true -> Transform{instruction} for any instruction.
 //! * `parse` returns None when there is no wake word, so normal dictation is never hijacked.
+//! * Undo and watch follow Settings > Voice commands: with the Scratch that, Watch my screen or
+//!   Stop watching phrase list emptied there, that command is off and its words here are dictation.
 //!
 //! How hard the wake word has to be (so "Navy blue is my favourite" and "Navi is our new app" stay
 //! dictation):
@@ -42,13 +44,31 @@
 //!   use [`replace_as_rewrite`] to hand the same request to the AI instead.
 
 use crate::text::modes;
-use crate::types::{Settings, VoiceCommand};
+use crate::types::{Settings, VoiceCommand, VoiceCommandSettings};
 use regex::Regex;
 use std::sync::LazyLock;
 
-pub fn parse(transcript: &str, has_selection: bool) -> Option<VoiceCommand> {
+/// The commands here that Settings > Voice commands can switch off: Scratch that, Watch my screen
+/// and Stop watching are off when their phrase list there is empty, and then their words (all of
+/// UNDO, WATCH_ON or WATCH_OFF) are dictation like any others, never a rewrite either.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Allowed {
+    undo: bool,
+    watch_on: bool,
+    watch_off: bool,
+}
+
+impl Allowed {
+    fn of(vc: &VoiceCommandSettings) -> Self {
+        let on = |action: &str| !vc.phrases(action).is_empty();
+        Allowed { undo: on("scratch_that"), watch_on: on("watch_on"), watch_off: on("watch_off") }
+    }
+}
+
+/// `vc`: the user's voice commands, so a command switched off in Settings stays off.
+pub fn parse(transcript: &str, has_selection: bool, vc: &VoiceCommandSettings) -> Option<VoiceCommand> {
     let (rest, strength) = strip_wake(transcript)?;
-    parse_command(rest, strength, strength, has_selection)
+    parse_command(rest, strength, strength, has_selection, Allowed::of(vc))
 }
 
 /// For a take that "Hey Navi" started (wake.rs): the wake phrase began dictation, so only what reads
@@ -56,10 +76,10 @@ pub fn parse(transcript: &str, has_selection: bool) -> Option<VoiceCommand> {
 /// has to point at the text: "Navi, give me a call" or "Navi, not sure I can make it" is the next
 /// line of an email, even straight after Navi typed the last one. With a selection the words would
 /// replace it anyway, so there is nothing to protect and "Navi, shorter" is taken as an edit.
-pub fn parse_after_wake(transcript: &str, has_selection: bool) -> Option<VoiceCommand> {
+pub fn parse_after_wake(transcript: &str, has_selection: bool, vc: &VoiceCommandSettings) -> Option<VoiceCommand> {
     let (rest, strength) = strip_wake(transcript)?;
     let strength = strength.min(Strength::Middle);
-    parse_command(rest, strength, if has_selection { strength } else { Strength::Weak }, has_selection)
+    parse_command(rest, strength, if has_selection { strength } else { Strength::Weak }, has_selection, Allowed::of(vc))
 }
 
 /// The words after a leading "Navi" / "Hey Navi" (any spelling), or None when there is no wake word.
@@ -106,7 +126,7 @@ pub fn job_instruction(line: &str, name_only: bool) -> Option<String> {
 
 /// `strength` is how sure we are the name was said; `edit` is the bar for changing the text
 /// (replace, rewrite, transform), which a take that "Hey Navi" started holds lower.
-fn parse_command(rest: &str, strength: Strength, edit: Strength, has_selection: bool) -> Option<VoiceCommand> {
+fn parse_command(rest: &str, strength: Strength, edit: Strength, has_selection: bool, allowed: Allowed) -> Option<VoiceCommand> {
     let edit = edit.min(strength);
     let command = clean_command(rest);
     if command.is_empty() {
@@ -120,7 +140,11 @@ fn parse_command(rest: &str, strength: Strength, edit: Strength, has_selection: 
     }
     let norm = normalise(&command);
     if UNDO.contains(&norm.as_str()) {
-        return Some(VoiceCommand::Undo);
+        return allowed.undo.then_some(VoiceCommand::Undo);
+    }
+    // Switched off in Settings: the words are dictation, at any strength.
+    if (!allowed.watch_on && WATCH_ON.contains(&norm.as_str())) || (!allowed.watch_off && WATCH_OFF.contains(&norm.as_str())) {
+        return None;
     }
     if strength != Strength::Weak {
         if WATCH_ON.contains(&norm.as_str()) {
@@ -618,8 +642,45 @@ fn edits_the_text(norm: &str) -> bool {
 mod tests {
     use super::*;
 
+    // The tests below run with the voice commands Navi ships with; these stand in for the real
+    // functions (defined here, they win over the glob import).
+    fn parse(transcript: &str, has_selection: bool) -> Option<VoiceCommand> {
+        super::parse(transcript, has_selection, &VoiceCommandSettings::default())
+    }
+
+    fn parse_after_wake(transcript: &str, has_selection: bool) -> Option<VoiceCommand> {
+        super::parse_after_wake(transcript, has_selection, &VoiceCommandSettings::default())
+    }
+
     fn rewrite(s: &str) -> Option<VoiceCommand> {
         Some(VoiceCommand::Rewrite { instruction: s.into() })
+    }
+
+    #[test]
+    fn a_command_with_no_phrases_in_settings_is_off() {
+        let mut vc = VoiceCommandSettings::default();
+        vc.set_phrases("scratch_that", &[]);
+        vc.set_phrases("watch_on", &[]);
+        vc.set_phrases("watch_off", &[]);
+        // Every built-in way of saying them is dictation now, never a rewrite of the last insert.
+        for said in ["Navi, scratch that", "Navi, delete that", "Hey Navi, undo", "Navi, watch my screen", "Hey Navi, start watching", "Navi, stop watching", "Hey Navi, watch off"] {
+            assert_eq!(super::parse(said, false, &vc), None, "{said}");
+            assert_eq!(super::parse(said, true, &vc), None, "{said}, with a selection");
+            assert_eq!(super::parse_after_wake(said, false, &vc), None, "{said}, in a wake take");
+        }
+        // The other edits are untouched.
+        assert_eq!(super::parse("Navi, make that shorter", false, &vc), rewrite("make that shorter"));
+        assert_eq!(super::parse("Navi, change Tuesday to Wednesday", false, &vc), Some(VoiceCommand::Replace { from: "Tuesday".into(), to: "Wednesday".into() }));
+        // Each switch is its own: Stop watching on its own still stops.
+        let mut only_stop = VoiceCommandSettings::default();
+        only_stop.set_phrases("watch_on", &[]);
+        assert_eq!(super::parse("Navi, watch my screen", false, &only_stop), None);
+        assert_eq!(super::parse("Navi, stop watching", false, &only_stop), Some(VoiceCommand::Watch { on: false }));
+        assert_eq!(super::parse("Navi, scratch that", false, &only_stop), Some(VoiceCommand::Undo));
+        // A phrase of the user's own keeps the command on, built-in words included.
+        let mut own = VoiceCommandSettings::default();
+        own.set_phrases("scratch_that", &["bin that"]);
+        assert_eq!(super::parse("Navi, scratch that", false, &own), Some(VoiceCommand::Undo));
     }
 
     #[test]

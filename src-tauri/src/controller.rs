@@ -5,6 +5,7 @@
 //!                       |  Ramble key while held                        -> Recording(Ramble)
 //!                       |  Cancel                                       -> Idle (discarded)
 //! Recording(HandsFree | Ramble) --TalkDown--> Processing
+//!   (a TalkDown less than 45 ms after a TalkUp is a key bounce, ignored, here as in a double tap)
 //! Processing --TalkDown, held--> "Still finishing the last one" (nothing records until Idle)
 //!
 //! The microphone opens the moment the keys go down, but the start sound and the bubble wait a moment
@@ -50,6 +51,11 @@ const COMMAND_AI_DEADLINE: Duration = Duration::from_secs(25);
 /// Letters and digits at the end of the last insert that must still sit just before the caret
 /// before a spoken edit selects back over it. context.rs reads 1,500 characters there, plenty.
 const CARET_CHECK_CHARS: usize = 600;
+/// In a field Navi can't read (reading is off, the app doesn't say, or a terminal), a spoken edit
+/// selects back over what Navi typed only if it typed it this recently and no key has been pressed
+/// since: with nothing to compare, anything older may have had words added after it or the caret
+/// moved away, and selecting back would take the user's own words.
+const BLIND_EDIT_WINDOW: Duration = Duration::from_secs(15);
 /// How long "Still finishing the last one" shows before the bubble goes back to processing.
 const BUSY_NOTE_MS: u64 = 1600;
 /// A wake word take finishes after this much quiet, whether or not anything followed the name yet.
@@ -73,7 +79,30 @@ const RAMBLE_AI_DEADLINE: Duration = Duration::from_secs(90);
 
 pub fn spawn(app: Arc<App>, mut rx: UnboundedReceiver<hotkey::HotkeyMsg>) {
     tauri::async_runtime::spawn(async move {
-        while let Some((ev, at)) = rx.recv().await {
+        loop {
+            // A quick release waiting for a second tap: its window closes DOUBLE_TAP_WINDOW_MS after
+            // the hook saw the release, however late this loop got to it (a slow start), and every
+            // key event the hook saw before then is handled first (`biased`).
+            let window = tap_window(&app);
+            let msg = match window {
+                Some((seq, closes)) => tokio::select! {
+                    biased;
+                    msg = rx.recv() => msg,
+                    _ = tokio::time::sleep_until(closes.into()) => {
+                        single_tap(&app, seq);
+                        continue;
+                    }
+                },
+                None => rx.recv().await,
+            };
+            let Some((ev, at)) = msg else { break };
+            // Seen by the hook after the window closed (it waited behind a slow start): the quick
+            // tap was a single one, so it goes before this event counts.
+            if let Some((seq, closes)) = window {
+                if window_closed(closes, at) {
+                    single_tap(&app, seq);
+                }
+            }
             // The shortcut picker in the interface shows every press. The take itself happens
             // as normal everywhere, Navi's own window included, the way Superwhisper works.
             match ev {
@@ -96,6 +125,63 @@ pub fn spawn(app: Arc<App>, mut rx: UnboundedReceiver<hotkey::HotkeyMsg>) {
     });
 }
 
+/// The take waiting to see whether its quick release becomes a double tap, and when the hook's
+/// window for the second tap closes.
+fn tap_window(app: &App) -> Option<(u64, Instant)> {
+    match &app.session.lock().phase {
+        Phase::Recording(rec) => Some((rec.pending_tap?, double_tap_closes(rec.tap_up_at?))),
+        _ => None,
+    }
+}
+
+/// When the window for a second tap closes: counted from the hook's time of the release, never
+/// from when the controller got round to it.
+fn double_tap_closes(released: Instant) -> Instant {
+    released + Duration::from_millis(DOUBLE_TAP_WINDOW_MS)
+}
+
+/// The hook saw an event (`at`) after the double-tap window closed.
+fn window_closed(closes: Instant, at: Instant) -> bool {
+    at > closes
+}
+
+/// A single quick tap: nothing was said, so it is dropped quietly. Checked under the same lock as
+/// the drop, so a second tap that has just been handled is never lost.
+fn single_tap(app: &Arc<App>, seq: u64) {
+    cancel_if(app, false, "a single quick tap", |r| r.pending_tap == Some(seq));
+}
+
+/// What a press of the talk keys does to a take being recorded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Press {
+    /// The second tap of a double tap: the take goes hands-free.
+    HandsFree,
+    /// Let go and pressed again too fast for a finger (KEY_BOUNCE_MS): the keys bounced while the
+    /// fingers settled on them or came off them. The take carries on as it was.
+    Bounce,
+    /// A hands-free take or a ramble: this press finishes it.
+    Finish,
+    /// Held to talk already: nothing to do.
+    Held,
+}
+
+/// The decision for a press (`at`, the hook's time) during a take of `kind`. `pending_tap`: a quick
+/// release is waiting for a second tap. `released`: when the hook last saw the keys let go in this
+/// take, if it has. A bounce on the second tap of a double tap, or while letting go after starting
+/// a ramble, would otherwise finish the take a moment after it began ("Didn't catch that").
+fn press_while_recording(kind: Kind, pending_tap: bool, released: Option<Instant>, at: Instant) -> Press {
+    let bounced = |up: Option<Instant>| is_key_bounce(up.map_or(0, |up| at.saturating_duration_since(up).as_millis()));
+    if pending_tap {
+        // The release is always kept with the pending tap; without one, no gap at all.
+        return if bounced(released) { Press::Bounce } else { Press::HandsFree };
+    }
+    match kind {
+        Kind::Talk => Press::Held,
+        _ if released.is_some() && bounced(released) => Press::Bounce,
+        _ => Press::Finish,
+    }
+}
+
 /// How long a press waits before Navi plays the start sound and shows the bubble.
 fn grace(settings: &Settings) -> Duration {
     let keys = hotkey::parse_chord(&settings.hotkeys.talk).unwrap_or_default();
@@ -108,9 +194,9 @@ async fn handle(app: &Arc<App>, ev: HotkeyEvent, at: Instant) -> Result<()> {
     let settings = app.settings();
     match ev {
         HotkeyEvent::TalkDown => {
-            // How long the keys were up between a quick release and this press, and how long the
-            // first press lasted, for the log.
-            let (mut gap_ms, mut held_ms) = (0u128, 0u128);
+            // How long the keys were up between the last release and this press, and how long the
+            // first press lasted, for the log (timings only).
+            let (mut gap_ms, mut held_ms, mut kind) = (0u128, 0u128, Kind::Talk);
             let action = {
                 let mut guard = app.session.lock();
                 let s = &mut *guard;
@@ -121,21 +207,28 @@ async fn handle(app: &Arc<App>, ev: HotkeyEvent, at: Instant) -> Result<()> {
                         s.starting = true;
                         1
                     }
-                    Phase::Recording(rec) if rec.pending_tap.is_some() => {
-                        rec.pending_tap = None;
-                        let up_at = rec.tap_up_at.take().unwrap_or(at);
-                        gap_ms = at.saturating_duration_since(up_at).as_millis();
-                        held_ms = up_at.saturating_duration_since(rec.pressed).as_millis();
-                        if is_key_bounce(gap_ms) {
-                            // Let go and pressed again too fast for a finger: a bounce while the
-                            // keys settle, not a second tap. Carry on holding to talk.
-                            5
-                        } else {
-                            rec.kind = Kind::HandsFree;
-                            2
+                    Phase::Recording(rec) => {
+                        let released = rec.tap_up_at.take();
+                        if let Some(up) = released {
+                            gap_ms = at.saturating_duration_since(up).as_millis();
+                            held_ms = up.saturating_duration_since(rec.pressed).as_millis();
+                        }
+                        kind = rec.kind;
+                        let pending = rec.pending_tap.take().is_some();
+                        match press_while_recording(rec.kind, pending, released, at) {
+                            Press::HandsFree => {
+                                rec.kind = Kind::HandsFree;
+                                2
+                            }
+                            // Still holding to talk: the quick release was the keys settling.
+                            Press::Bounce if pending => 5,
+                            // Hands-free or a ramble carries on; the bounce's own release is kept
+                            // in turn, so the press after it is timed from that.
+                            Press::Bounce => 6,
+                            Press::Finish => 3,
+                            Press::Held => 0,
                         }
                     }
-                    Phase::Recording(rec) if rec.kind != Kind::Talk => 3,
                     Phase::Processing => {
                         s.busy_press = Some(at);
                         4
@@ -145,6 +238,7 @@ async fn handle(app: &Arc<App>, ev: HotkeyEvent, at: Instant) -> Result<()> {
             };
             match action {
                 1 => start(app, &settings, at).await?,
+                6 => log::info!("ignored a key bounce in a {} take (keys up for {gap_ms} ms); it carries on", kind.as_str()),
                 5 => {
                     log::info!("ignored a key bounce {held_ms} ms into the take (up for {gap_ms} ms); still holding to talk");
                     // The quick release held the greeting back; give it now.
@@ -215,6 +309,12 @@ async fn handle(app: &Arc<App>, ev: HotkeyEvent, at: Instant) -> Result<()> {
                             Next::Stop
                         }
                     }
+                    // Hands-free or a ramble: letting go changes nothing, but when it happened is
+                    // kept, so a bounce straight after it is not taken for the press that finishes.
+                    Phase::Recording(rec) if rec.kind != Kind::Talk => {
+                        rec.tap_up_at = Some(at);
+                        Next::Nothing
+                    }
                     _ => Next::Nothing,
                 };
                 if let Next::MaybeDoubleTap(seq) = next {
@@ -223,15 +323,9 @@ async fn handle(app: &Arc<App>, ev: HotkeyEvent, at: Instant) -> Result<()> {
                 next
             };
             match next {
-                Next::MaybeDoubleTap(seq) => {
-                    let app2 = app.clone();
-                    tauri::async_runtime::spawn(async move {
-                        tokio::time::sleep(Duration::from_millis(DOUBLE_TAP_WINDOW_MS)).await;
-                        // A single quick tap: nothing was said, drop it quietly. Checked under the
-                        // same lock as the drop, so a second tap that just arrived is never lost.
-                        cancel_if(&app2, false, "a single quick tap", |r| r.pending_tap == Some(seq));
-                    });
-                }
+                // The loop in `spawn` drops it as a single tap once the hook's window closes with
+                // no second tap (`tap_window`).
+                Next::MaybeDoubleTap(_) => {}
                 Next::Drop => cancel(app, false, "released before it began"),
                 Next::Stop => stop(app).await?,
                 Next::Nothing => {}
@@ -1461,11 +1555,13 @@ async fn process_take(app: &Arc<App>, mut rec: Recording, mut samples: Vec<f32>,
     }
 
     let has_selection = rec.ctx.selection.is_some();
+    // A command whose phrases were all removed in Settings is off here too.
+    let vc = &settings.voice_commands;
     let command = match rest.as_deref().filter(|r| rec.from_wake && r.chars().any(char::is_alphabetic)) {
         // After any wake word, custom ones too ("Hey, make that shorter").
-        Some(r) => voice::parse_after_wake(&format!("Navi, {r}"), has_selection),
-        None if rec.from_wake => voice::parse_after_wake(&raw, has_selection),
-        None => voice::parse(&raw, has_selection),
+        Some(r) => voice::parse_after_wake(&format!("Navi, {r}"), has_selection, vc),
+        None if rec.from_wake => voice::parse_after_wake(&raw, has_selection, vc),
+        None => voice::parse(&raw, has_selection, vc),
     };
     if let Some(cmd) = command {
         if command_has_target(app, &rec, &cmd) {
@@ -1827,41 +1923,57 @@ async fn replace_last(app: &Arc<App>, last: &LastInsert, new_text: String, setti
 
 /// Selects back over what Navi typed (`last`) and replaces it with `text`, put in the way Settings
 /// says (`method`), but only if that window is still in front and Navi's text still sits just
-/// before the caret. Checked again here, just before the keys, because the AI can take a while:
-/// you may have moved on, typed more, or clicked into another field of the same window. Reads the
-/// field only as Settings allow (`reading`). Runs on a blocking thread.
+/// before the caret (in a field that can't be read: no key pressed since Navi typed). Checked again
+/// here, just before the keys, because the AI can take a while: you may have moved on, typed more,
+/// or clicked into another field of the same window. Reads the field only as Settings allow
+/// (`reading`). Runs on a blocking thread.
 fn select_back_in(last: &LastInsert, text: &str, method: &str, restore: bool, reading: &ContextSettings) -> Result<InsertOutcome> {
     if context::foreground_hwnd() != last.hwnd {
         return Err(anyhow!("You've moved to another window, so Navi left the text alone."));
     }
     let now = context::capture(reading);
-    if now.category != "terminal" && !ends_with_insert(now.field_text.as_deref(), &last.text) {
-        return Err(anyhow!(TEXT_CHANGED));
-    }
+    // The second look: the time limit was checked before the AI was asked, so only keys count now.
+    select_back_check(now.field_text.as_deref(), now.category == "terminal", &last.text, None, hotkey::keys_pressed_since(last.at)).map_err(|why| anyhow!(why))?;
     insert::select_back_and_replace_with(last.text.encode_utf16().count(), text, method, restore)
 }
 
 const TEXT_CHANGED: &str = "The text has changed since Navi typed it, so Navi left it alone.";
+const KEYS_SINCE: &str = "You've pressed keys since Navi typed, and it can't read this field to check.";
 
-/// Refuses a spoken edit when what Navi typed is no longer just before the caret (you typed after
-/// it, changed it or clicked elsewhere): selecting back from there would delete your own words.
+fn too_old_to_edit_blind() -> String {
+    format!("Navi can't read this field, so it only edits text from the last {} seconds.", BLIND_EDIT_WINDOW.as_secs())
+}
+
+/// Refuses a spoken edit when what Navi typed may no longer be just before the caret (you typed
+/// after it, changed it or clicked elsewhere): selecting back from there would delete your own words.
 fn insert_at_caret(rec: &Recording, last: &LastInsert) -> Result<()> {
-    // Terminals delete with Backspace, which can't reach past the line being typed, and their
-    // screens rarely read back as typed.
-    if rec.ctx.category == "terminal" || ends_with_insert(rec.ctx.field_text.as_deref(), &last.text) {
-        Ok(())
-    } else {
-        Err(anyhow!(TEXT_CHANGED))
+    select_back_check(rec.ctx.field_text.as_deref(), rec.ctx.category == "terminal", &last.text, Some(last.at.elapsed()), hotkey::keys_pressed_since(last.at)).map_err(|why| anyhow!(why))
+}
+
+/// Whether a spoken edit may select back over `inserted` (what Navi typed), and if not, why.
+/// `field`: the text before the caret, None when nothing could be read (reading is off, the app
+/// doesn't say, or the read ran out of time). A terminal counts as unread: its screen rarely reads
+/// back as typed. With the field read, Navi's text must still end just before the caret. Unread,
+/// there is nothing to compare, so only an insert younger than BLIND_EDIT_WINDOW (`age`; None
+/// skips that, for the second look after the AI) with no key pressed since (`keys_since`, from the
+/// hook) is trusted.
+fn select_back_check(field: Option<&str>, terminal: bool, inserted: &str, age: Option<Duration>, keys_since: bool) -> std::result::Result<(), String> {
+    match field.filter(|_| !terminal) {
+        Some(_) if ends_with_insert(field, inserted) => Ok(()),
+        Some(_) => Err(TEXT_CHANGED.into()),
+        None if keys_since => Err(KEYS_SINCE.into()),
+        None if age.is_some_and(|a| a > BLIND_EDIT_WINDOW) => Err(too_old_to_edit_blind()),
+        None => Ok(()),
     }
 }
 
 /// True when `field` (the text before the caret) still ends with what Navi typed. Only letters
 /// and digits are compared, as apps change spacing, quotes and line breaks as text goes in. With
-/// nothing read (the app doesn't say, reading is off, or the read ran out of time) there is
-/// nothing to go on, so it counts. An empty field read refuses, as nothing is before the caret,
-/// but context.rs reports an empty field as nothing read (None) for now, so that case counts too.
+/// nothing read (None) there is nothing to go on, so it does not count; `select_back_check`
+/// decides those. An empty field read refuses, as nothing is before the caret (context.rs reports
+/// an empty field as nothing read for now, which goes the same way).
 fn ends_with_insert(field: Option<&str>, inserted: &str) -> bool {
-    let Some(field) = field else { return true };
+    let Some(field) = field else { return false };
     let squash = |s: &str| s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect::<Vec<char>>();
     let (field, inserted) = (squash(field), squash(inserted));
     let tail = &inserted[inserted.len().saturating_sub(CARET_CHECK_CHARS)..];
@@ -2208,6 +2320,69 @@ mod tests {
     }
 
     #[test]
+    fn a_bounce_never_finishes_a_hands_free_take_or_a_ramble() {
+        let t = Instant::now();
+        let ms = |n: u64| t + Duration::from_millis(n);
+        // The second tap of a double tap bounced: let go, and down again 12 ms later.
+        assert_eq!(press_while_recording(Kind::HandsFree, false, Some(ms(500)), ms(512)), Press::Bounce);
+        // Started a ramble, and the keys bounced on the way up.
+        assert_eq!(press_while_recording(Kind::Ramble, false, Some(ms(2000)), ms(2030)), Press::Bounce);
+        // A real press afterwards finishes either.
+        assert_eq!(press_while_recording(Kind::HandsFree, false, Some(ms(500)), ms(1500)), Press::Finish);
+        assert_eq!(press_while_recording(Kind::Ramble, false, Some(ms(2000)), ms(2045)), Press::Finish);
+        // A take "Navi" started has seen no release: the first press finishes it.
+        assert_eq!(press_while_recording(Kind::HandsFree, false, None, ms(10)), Press::Finish);
+        // The first tap's quick release, as before: a bounce carries on holding to talk, a real
+        // second tap goes hands-free.
+        assert_eq!(press_while_recording(Kind::Talk, true, Some(ms(100)), ms(120)), Press::Bounce);
+        assert_eq!(press_while_recording(Kind::Talk, true, Some(ms(100)), ms(250)), Press::HandsFree);
+        assert_eq!(press_while_recording(Kind::Talk, true, None, ms(250)), Press::Bounce, "no release kept: no gap at all");
+        assert_eq!(press_while_recording(Kind::Talk, false, None, ms(250)), Press::Held);
+    }
+
+    #[test]
+    fn the_double_tap_window_counts_from_the_hooks_release() {
+        let released = Instant::now();
+        let closes = double_tap_closes(released);
+        assert_eq!(closes - released, Duration::from_millis(DOUBLE_TAP_WINDOW_MS));
+        // A slow start: the controller reaches the release long after the hook saw it. The window
+        // is fixed by the hook's times, so a second tap seen 200 ms after the release still
+        // counts, and a press seen after the window is a new take, whenever they are handled.
+        let second = released + Duration::from_millis(200);
+        assert!(!window_closed(closes, second));
+        assert_eq!(press_while_recording(Kind::Talk, true, Some(released), second), Press::HandsFree);
+        assert!(!window_closed(closes, closes));
+        assert!(window_closed(closes, released + Duration::from_millis(DOUBLE_TAP_WINDOW_MS + 1)));
+    }
+
+    #[test]
+    fn an_unread_field_takes_only_a_fresh_untouched_insert() {
+        let secs = |n: u64| Some(Duration::from_secs(n));
+        let typed = "See you on Friday.";
+        // Nothing read (reading is off, or the app doesn't say): just typed, no key since.
+        assert_eq!(select_back_check(None, false, typed, secs(3), false), Ok(()));
+        assert_eq!(select_back_check(None, false, typed, secs(15), false), Ok(()));
+        // A key since: words may have been typed after Navi's.
+        assert_eq!(select_back_check(None, false, typed, secs(3), true), Err(KEYS_SINCE.to_string()));
+        // Too long ago: the caret may have been moved with the mouse.
+        assert_eq!(select_back_check(None, false, typed, secs(16), false), Err(too_old_to_edit_blind()));
+        // The second look, after the AI: only keys count.
+        assert_eq!(select_back_check(None, false, typed, None, false), Ok(()));
+        assert_eq!(select_back_check(None, false, typed, None, true), Err(KEYS_SINCE.to_string()));
+        // A terminal counts as unread, whatever its screen reads back.
+        assert_eq!(select_back_check(Some("PS C:\\> git status"), true, "git status", secs(3), false), Ok(()));
+        assert_eq!(select_back_check(Some("PS C:\\> git status"), true, "git status", secs(3), true), Err(KEYS_SINCE.to_string()));
+        assert_eq!(select_back_check(Some("PS C:\\> git status"), true, "git status", secs(60), false), Err(too_old_to_edit_blind()));
+        // A field that was read decides by itself, as before.
+        assert_eq!(select_back_check(Some("Thanks. See you on Friday."), false, typed, secs(300), true), Ok(()));
+        assert_eq!(select_back_check(Some("See you on Friday. Cheers Alex"), false, typed, secs(1), false), Err(TEXT_CHANGED.to_string()));
+        // Every refusal fits the bubble (short_error keeps 80 characters).
+        for m in [TEXT_CHANGED.to_string(), KEYS_SINCE.to_string(), too_old_to_edit_blind()] {
+            assert!(m.chars().count() <= 80, "{m}");
+        }
+    }
+
+    #[test]
     fn insert_just_before_the_caret_counts() {
         assert!(ends_with_insert(Some("Dear Sam,\nThanks for the notes. See you on Friday."), "See you on Friday."));
         // Apps change spacing, quotes, line breaks and capitals as the text goes in.
@@ -2231,8 +2406,9 @@ mod tests {
     }
 
     #[test]
-    fn nothing_read_or_nothing_to_compare_counts() {
-        assert!(ends_with_insert(None, "anything at all"));
+    fn nothing_to_compare_counts_but_nothing_read_does_not() {
+        // Nothing read is left to select_back_check, which asks for a fresh insert and no keys.
+        assert!(!ends_with_insert(None, "anything at all"));
         assert!(ends_with_insert(Some("whatever"), "?! "));
     }
 

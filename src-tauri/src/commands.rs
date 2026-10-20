@@ -382,10 +382,12 @@ pub fn check_shortcut(app: State<'_, Arc<App>>, keys: Vec<String>) -> hotkey::Ch
 }
 
 /// The same for a mode key; `mode` is the mode it is for, so its own current key is not a clash.
+/// `others`: the other modes' keys to check against, when Settings is about to replace several at
+/// once ("Use F1 to F5"); the saved ones otherwise.
 #[tauri::command]
-pub fn check_mode_key(app: State<'_, Arc<App>>, keys: Vec<String>, mode: String) -> hotkey::ChordCheck {
+pub fn check_mode_key(app: State<'_, Arc<App>>, keys: Vec<String>, mode: String, others: Option<Vec<Vec<String>>>) -> hotkey::ChordCheck {
     let s = app.settings();
-    let others: Vec<Vec<String>> = s.hotkeys.mode_keys.iter().filter(|k| k.mode != mode).map(|k| k.keys.clone()).collect();
+    let others: Vec<Vec<String>> = others.unwrap_or_else(|| s.hotkeys.mode_keys.iter().filter(|k| k.mode != mode).map(|k| k.keys.clone()).collect());
     hotkey::check_mode_key(&keys, &s.hotkeys.talk, &others, &hotkey::display_label)
 }
 

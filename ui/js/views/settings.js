@@ -129,12 +129,25 @@ export async function render(root, { store, arg }) {
   }
   async function useFKeys() {
     const order = ['raw', 'clean', 'message', 'email', 'prompt'].filter((id) => allModes.some((m) => m.id === id));
-    await save((n) => {
-      const keep = (n.hotkeys.modeKeys || []).filter((k) => !order.includes(k.mode) && !/^F[1-5]$/.test((k.keys || []).join('')));
-      n.hotkeys.modeKeys = [...keep, ...order.map((mode, i) => ({ mode, keys: [`F${i + 1}`] }))];
-    });
+    const planned = (list) => {
+      const keep = (list || []).filter((k) => !order.includes(k.mode) && !/^F[1-5]$/.test((k.keys || []).join('')));
+      return [...keep, ...order.map((mode, i) => ({ mode, keys: [`F${i + 1}`] }))];
+    };
+    // The same check as setting a key by hand (an F key in the talk shortcut, say), against the
+    // mode keys as they will be. One refused leaves them all as they were.
+    const next = planned(S().hotkeys.modeKeys);
+    const warnings = [];
+    try {
+      for (const { mode, keys } of next.filter((k) => order.includes(k.mode))) {
+        const others = next.filter((k) => k.mode !== mode).map((k) => k.keys);
+        const check = await invoke('check_mode_key', { keys, mode, others });
+        if (check?.error) { toast(`Your mode keys are unchanged. ${check.error}`, { error: true }); return; }
+        if (check?.warning) warnings.push(check.warning);
+      }
+    } catch (e) { toast(errText(e), { error: true }); return; }
+    await save((n) => { n.hotkeys.modeKeys = planned(n.hotkeys.modeKeys); });
     drawModeKeys();
-    toast('F1 to F5 now switch modes');
+    toast(warnings[0] || 'F1 to F5 now switch modes');
   }
   function drawModeKeys() {
     const rows = [{ id: 'auto', name: 'Auto', note: 'Picks from the app' }, ...allModes.map((m) => ({ id: m.id, name: m.name })), { id: 'next', name: 'Next mode', note: 'Steps through them all' }];

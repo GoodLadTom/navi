@@ -23,6 +23,8 @@
 //!   removed comes back without restarting Navi. A press of the shortcut made by software (a macro
 //!   key sending F13 sends no repeats) survives that; any other held state is dropped.
 //! * `set_monitor` streams every key the hook sees to the live shortcut tester in the interface.
+//! * `keys_pressed_since(t)` says whether a key that reached an app (not swallowed, not a lone
+//!   modifier, not Navi's own) went down since `t`, for spoken edits in a field Navi can't read.
 //! * `pause(true)` stops the shortcut and mode keys firing (the tray's "Pause the shortcut", and
 //!   while the user records a new shortcut in Settings). A take already recording can still be
 //!   cancelled with the cancel key, or finished with Enter if it is hands-free.
@@ -790,7 +792,9 @@ pub fn check_mode_key(keys: &[String], talk: &[String], others: &[Vec<String>], 
     }
     let (Ok(mine), Ok(talk_keys)) = (parse_chord(keys), parse_chord(talk)) else { return check };
     if mine.iter().any(|k| talk_keys.iter().any(|t| keys_overlap(*k, *t))) {
-        check.error = Some(format!("{} is part of your talk shortcut. Pick a key of its own, such as F1.", check.label));
+        // Never suggest a key of the talk shortcut itself (a talk shortcut of F1).
+        let spare = (0x70..=0x7Bu8).find(|vk| !talk_keys.iter().any(|t| t.matches(*vk))).map_or_else(|| "F1".to_string(), vk_name);
+        check.error = Some(format!("{} is part of your talk shortcut. Pick a key of its own, such as {spare}.", check.label));
     } else if others.iter().filter_map(|o| parse_chord(o).ok()).any(|o| o.len() == mine.len() && o.iter().all(|k| mine.contains(k))) {
         check.error = Some(format!("{} already switches to another mode.", check.label));
     }
@@ -1223,6 +1227,60 @@ pub fn captured_chord_names(order: &[u8]) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Keys pressed since Navi typed (for spoken edits in a field Navi can't read)
+// ---------------------------------------------------------------------------------------------
+
+/// A key-down that reached the app in front and may have changed its text or moved the caret:
+/// not one Navi swallowed (the shortcut's own keys, the ramble, cancel and mode keys, Enter
+/// finishing a take), not Ctrl, Shift, Alt or Win on their own, and not a volume or media key.
+/// Navi's own keystrokes never get this far (`NAVI_INPUT_TAG`).
+fn reaches_the_text(vk: u8, up: bool, swallowed: bool) -> bool {
+    !up && !swallowed && Modifier::of_vk(vk).is_none() && !matches!(vk, 0xAD..=0xB3)
+}
+
+/// When the hook last saw such a key, readable from any thread without a lock, so the hook never
+/// waits for it.
+struct TypingClock {
+    base: std::sync::OnceLock<Instant>,
+    /// Nanoseconds after `base`, plus one; 0 while nothing has been seen.
+    last: std::sync::atomic::AtomicU64,
+}
+
+impl TypingClock {
+    const fn new() -> Self {
+        Self { base: std::sync::OnceLock::new(), last: std::sync::atomic::AtomicU64::new(0) }
+    }
+
+    fn note(&self, at: Instant) {
+        let base = *self.base.get_or_init(|| at);
+        // An `at` from before the base counts as the base: later than it was, never earlier.
+        let ns = at.saturating_duration_since(base).as_nanos().min(u64::MAX as u128 - 1) as u64 + 1;
+        self.last.fetch_max(ns, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn since(&self, t: Instant) -> bool {
+        let ns = self.last.load(std::sync::atomic::Ordering::Relaxed);
+        match self.base.get() {
+            Some(base) if ns > 0 => *base + std::time::Duration::from_nanos(ns - 1) > t,
+            _ => false,
+        }
+    }
+}
+
+static TYPING: TypingClock = TypingClock::new();
+
+/// True if a key that could change the text in front was pressed since `t` (`reaches_the_text`),
+/// as the hook saw it. True as well while the hook isn't running, as nothing is known then. Mouse
+/// clicks are never seen.
+pub fn keys_pressed_since(t: Instant) -> bool {
+    #[cfg(windows)]
+    let running = win::running();
+    #[cfg(not(windows))]
+    let running = false;
+    !running || TYPING.since(t)
+}
+
+// ---------------------------------------------------------------------------------------------
 // The service
 // ---------------------------------------------------------------------------------------------
 
@@ -1566,6 +1624,10 @@ mod win {
         RUNNING.store(false, Ordering::SeqCst);
     }
 
+    pub(super) fn running() -> bool {
+        RUNNING.load(Ordering::SeqCst)
+    }
+
     pub(super) fn stop(thread_id: u32, thread: Option<std::thread::JoinHandle<()>>) {
         unsafe {
             let _ = PostThreadMessageW(thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
@@ -1607,6 +1669,8 @@ mod win {
                 }
             };
             LAST_EVENT.store(tick(), Ordering::Relaxed);
+            // Keys pressed before the hook was in place were never seen: count them as pressed.
+            TYPING.note(Instant::now());
             let _ = ready.send(Ok(GetCurrentThreadId()));
             let timer = SetTimer(None, 0, REPAIR_CHECK_MS, None);
 
@@ -1675,6 +1739,12 @@ mod win {
                 *hook = Some(new);
                 REINSTALLS.fetch_add(1, Ordering::Relaxed);
                 LAST_EVENT.store(tick(), Ordering::Relaxed);
+                // Repaired by hand (the tester), the old hook was likely deaf: count the keys it
+                // may have missed as pressed. Not after a quiet minute, which is most often just
+                // nobody typing (talking to "Navi" instead), and would refuse every spoken edit.
+                if now {
+                    TYPING.note(Instant::now());
+                }
             }
             // Tried again on the next check.
             Err(e) => log::warn!("could not reinstall the shortcut listener: {e}"),
@@ -1726,6 +1796,9 @@ mod win {
                         m.push((vk, up, injected, at));
                     }
                 });
+                if reaches_the_text(vk, up, swallow) {
+                    TYPING.note(at);
+                }
                 return swallow;
             };
             let Some(shared) = guard.as_mut() else {
@@ -1747,6 +1820,9 @@ mod win {
             let d = feed(shared, vk, up, injected, at);
             (d.swallow, mask || d.inject_mask)
         };
+        if reaches_the_text(vk, up, swallow) {
+            TYPING.note(at);
+        }
         if mask {
             send_mask();
         }
@@ -1805,6 +1881,35 @@ mod tests {
 
     fn chord(list: &[&str]) -> Vec<Key> {
         parse_chord(&names(list)).expect("valid chord")
+    }
+
+    #[test]
+    fn only_keys_that_reach_the_text_count_as_typing() {
+        assert!(reaches_the_text(b'A', false, false));
+        assert!(reaches_the_text(0x08, false, false), "Backspace");
+        assert!(reaches_the_text(0x25, false, false), "an arrow moves the caret");
+        assert!(!reaches_the_text(b'A', true, false), "a release");
+        assert!(!reaches_the_text(0x14, false, true), "swallowed: the shortcut's own Caps Lock");
+        for vk in [VK_LCONTROL, VK_RCONTROL, VK_LWIN, VK_RWIN, VK_LSHIFT, VK_SHIFT, VK_MENU] {
+            assert!(!reaches_the_text(vk, false, false), "the talk keys and other modifiers on their own: {vk:#x}");
+        }
+        assert!(!reaches_the_text(0xAF, false, false), "Volume Up");
+        assert!(!reaches_the_text(0xB3, false, false), "Play/Pause");
+    }
+
+    #[test]
+    fn the_typing_clock_says_whether_a_key_came_after() {
+        let clock = TypingClock::new();
+        let t0 = Instant::now();
+        assert!(!clock.since(t0), "nothing seen yet");
+        let typed = t0 + std::time::Duration::from_millis(500);
+        clock.note(typed);
+        assert!(clock.since(t0));
+        assert!(!clock.since(typed), "not after itself");
+        assert!(!clock.since(typed + std::time::Duration::from_millis(1)));
+        // A key fed late with its own older time never moves the clock back.
+        clock.note(t0 + std::time::Duration::from_millis(100));
+        assert!(clock.since(t0 + std::time::Duration::from_millis(400)));
     }
 
     /// A machine plus a fake view of Windows' key state that follows every event the machine
@@ -2042,6 +2147,22 @@ mod tests {
         assert!(check_mode_key(&names(&["Ctrl", "1"]), &names(&["Ctrl", "Win"]), &[], &label).error.is_some(), "shares Ctrl with the talk keys");
         assert!(check_mode_key(&names(&["F2"]), &names(&["RCtrl"]), &[names(&["F2"])], &label).error.as_deref().is_some_and(|e| e.contains("another mode")));
         assert!(check_mode_key(&names(&["Ctrl", "V"]), &names(&["RCtrl"]), &[], &label).error.is_some());
+    }
+
+    #[test]
+    fn f1_to_f5_get_the_same_check_as_a_key_set_by_hand() {
+        // What Settings' "Use F1 to F5" asks for each key, against the keys as they will be.
+        let label = |n: &str| key_label(n);
+        let fkeys: Vec<Vec<String>> = (1..=5).map(|i| names(&[&format!("F{i}")])).collect();
+        let others = |i: usize| fkeys.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, k)| k.clone()).collect::<Vec<_>>();
+        for i in 0..5 {
+            assert!(check_mode_key(&fkeys[i], &names(&["Ctrl", "Win"]), &others(i), &label).error.is_none(), "F{}", i + 1);
+        }
+        // A talk shortcut of F3 refuses F3, and the advice never names a talk key.
+        let refused = check_mode_key(&fkeys[2], &names(&["F3"]), &others(2), &label).error.expect("F3 is the talk key");
+        assert!(refused.contains("talk shortcut") && refused.ends_with("such as F1."), "{refused}");
+        let talk_f1 = check_mode_key(&fkeys[0], &names(&["F1"]), &others(0), &label).error.expect("F1 is the talk key");
+        assert!(talk_f1.ends_with("such as F2."), "{talk_f1}");
     }
 
     #[test]

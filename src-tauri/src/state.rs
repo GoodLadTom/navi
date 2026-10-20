@@ -83,7 +83,9 @@ pub struct Recording {
     pub cue_word: Option<&'static str>,
     /// Released quickly once: waiting to see whether a second tap makes it hands-free.
     pub pending_tap: Option<u64>,
-    /// When that quick release happened, so a key bounce is told from a second tap.
+    /// When the hook last saw the talk keys let go in this take, so a key bounce is told from a
+    /// real press: in a take held to talk, the quick release that may begin a double tap (and its
+    /// window counts from it); in a hands-free take or a ramble, any release.
     pub tap_up_at: Option<Instant>,
     /// 16 kHz sample range covered by the ramble cue when a take turned into a ramble.
     pub ramble_cue: Option<(usize, usize)>,
