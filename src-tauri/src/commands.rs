@@ -89,7 +89,11 @@ pub async fn save_settings(app: State<'_, Arc<App>>, settings: Settings) -> Res<
     let e1 = &before.engine;
     let e2 = &settings.engine;
     if e1.model != e2.model || e1.use_gpu != e2.use_gpu || e1.language != e2.language || e1.vad != e2.vad || e1.server_path != e2.server_path || e1.model_path != e2.model_path {
-        crate::start_engine(app.clone());
+        // Trim silences turned on fetches its model first, so it works straight away.
+        crate::restart_engine_for_settings(app.clone());
+    } else if before.privacy.local_only && !settings.privacy.local_only {
+        // Local only kept the silence model from downloading; now it can.
+        crate::ensure_vad_model(app.clone());
     }
     if before.privacy.keep_audio_days != settings.privacy.keep_audio_days {
         crate::purge_old_audio(&app);
@@ -656,6 +660,16 @@ pub async fn test_ai(app: State<'_, Arc<App>>) -> Res<String> {
         }
     })?;
     llm.test().await.map_err(err)
+}
+
+/// Settings > AI with Ollama: whether Ollama answers at its address, and the models it has pulled
+/// to choose from (GET /api/tags). Always asks, so a moment after Ollama starts it shows as running.
+#[tauri::command]
+pub async fn ollama_status(app: State<'_, Arc<App>>) -> Res<crate::text::llm::OllamaStatus> {
+    let s = app.settings();
+    // The same field holds Claude Code's or Codex's path while one of them is in use.
+    let address = if s.ai.provider == "ollama" { s.ai.base_url.clone() } else { None };
+    Ok(crate::text::llm::ollama_status(address.as_deref(), s.privacy.local_only).await)
 }
 
 /// The subscription tools on this computer (Claude Code, Codex), for Settings > AI. The tool in use

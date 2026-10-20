@@ -157,6 +157,7 @@ pub fn run() {
             commands::set_secret,
             commands::has_secret,
             commands::test_ai,
+            commands::ollama_status,
             commands::test_integration,
             commands::generate_style_notes,
             commands::add_project,
@@ -820,21 +821,62 @@ pub async fn start_engine_and_wait(app: Arc<App>) {
 }
 
 /// The tiny silence-trimming model stops silence being transcribed as "Thank you."; fetch it once.
-fn ensure_vad_model(app: Arc<App>) {
-    let settings = app.settings();
-    if !settings.engine.vad || settings.privacy.local_only || models::find_vad_model(&app.paths).is_some() {
+/// The engine runs without it meanwhile and restarts to use it when it arrives. Also used when
+/// Local only is turned off with Trim silences on.
+pub fn ensure_vad_model(app: Arc<App>) {
+    if !wants_vad_download(&app) {
         return;
     }
     tauri::async_runtime::spawn(async move {
-        let quiet: models::ProgressCallback = Arc::new(|_| {});
-        match models::download_model(models::VAD_ID, &app.paths, quiet).await {
-            Ok(_) => {
-                log::info!("silence trimming model installed; restarting the engine to use it");
-                start_engine_and_wait(app).await;
-            }
-            Err(e) => log::warn!("could not fetch the silence trimming model: {e:#}"),
+        if let Ok(true) = fetch_vad_model(&app).await {
+            log::info!("silence trimming model installed; restarting the engine to use it");
+            start_engine_and_wait(app).await;
         }
     });
+}
+
+/// Settings changed the speech engine (the model, the graphics card, Trim silences...): restart
+/// it. With Trim silences on and its model missing, the model (under 1 MB) is fetched first, so the
+/// one restart trims silences straight away. Local only stops the fetch, and the engine then runs
+/// without trimming (Settings says why).
+pub fn restart_engine_for_settings(app: Arc<App>) {
+    if !wants_vad_download(&app) {
+        start_engine(app);
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        // Restarted either way: whatever else changed applies too.
+        let _ = fetch_vad_model(&app).await;
+        start_engine_and_wait(app).await;
+    });
+}
+
+fn wants_vad_download(app: &App) -> bool {
+    let s = app.settings();
+    vad_needs_fetching(s.engine.vad, s.privacy.local_only, models::find_vad_model(&app.paths).is_some())
+}
+
+/// Trim silences is on, its model is missing, and Local only allows the download.
+fn vad_needs_fetching(vad_on: bool, local_only: bool, installed: bool) -> bool {
+    vad_on && !local_only && !installed
+}
+
+/// Downloads the silence model, one fetch at a time. Ok(true) when this call installed it,
+/// Ok(false) when it was there already (another fetch got it first).
+async fn fetch_vad_model(app: &Arc<App>) -> anyhow::Result<bool> {
+    static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _one = ONE_AT_A_TIME.lock().await;
+    if models::find_vad_model(&app.paths).is_some() {
+        return Ok(false);
+    }
+    let quiet: models::ProgressCallback = Arc::new(|_| {});
+    match models::download_model(models::VAD_ID, &app.paths, quiet).await {
+        Ok(_) => Ok(true),
+        Err(e) => {
+            log::warn!("could not fetch the silence trimming model: {e:#}");
+            Err(e)
+        }
+    }
 }
 
 pub fn purge_old_audio(app: &Arc<App>) {
@@ -926,6 +968,14 @@ mod tests {
 
     fn key(mode: &str, k: &str) -> ModeKey {
         ModeKey { mode: mode.into(), keys: vec![k.into()] }
+    }
+
+    #[test]
+    fn trim_silences_fetches_its_model_unless_local_only() {
+        assert!(vad_needs_fetching(true, false, false), "turned on without its model: fetch it now");
+        assert!(!vad_needs_fetching(true, true, false), "Local only stops the download");
+        assert!(!vad_needs_fetching(true, false, true), "already there");
+        assert!(!vad_needs_fetching(false, false, false), "turned off");
     }
 
     #[test]

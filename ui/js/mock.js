@@ -325,14 +325,14 @@ const daily = Array.from({ length: 14 }, (_, i) => ({ date: new Date(now - (13 -
 
 const state = {
   settings: {
-    version: 1, onboarded: true, userName: 'Alex',
+    onboarded: true, userName: 'Alex',
     hotkeys: { talk: ['Ctrl', 'Win'], rambleKey: 'Space', doubleTapHandsFree: true, cancelKey: 'Escape', modeKeys: [{ mode: 'email', keys: ['F4'] }] },
     sounds: { enabled: true, set: 'hush', volume: 0.7, custom: {}, whileTalking: 'pause' },
     mic: { device: null, trimCue: true },
     engine: { model: 'large-v3-turbo', language: 'en', useGpu: true, serverPath: null, modelPath: null, vad: true },
     // Claude Code on the Claude plan the sample user already has: no API key (text/cli_ai.rs).
     ai: { provider: 'claude-code', model: 'haiku', baseUrl: null, longModel: '' },
-    writing: { british: true, noEmDashes: true, removeFillers: true, styleNotes: 'Short, warm, direct. British spelling. No em dashes. Sign off with "Cheers, Alex" on email.', styleSamples: [] },
+    writing: { british: true, noEmDashes: true, removeFillers: true, styleNotes: 'Short, warm, direct. British spelling. No em dashes. Sign off with "Cheers, Alex" on email.' },
     context: { readApp: true, readField: true, ocr: false, excludedApps: ['1Password.exe', 'KeePass.exe', 'Bitwarden.exe'] },
     modes: { defaultMode: 'clean', autoByApp: true, active: '' },
     learning: { enabled: true, autoAddAfter: 2, checkAfterSecs: 25 },
@@ -340,7 +340,7 @@ const state = {
     ramble: { notesDir: null, pasteNotes: false, tasksTo: 'clickup', clickupListId: '901204', notionDatabaseId: null },
     privacy: { localOnly: false, keepAudioDays: 30, saveHistory: true },
     general: { launchAtLogin: true, startMinimised: true, pasteMethod: 'paste', restoreClipboard: true, showPill: true, showFirefly: true, closeToTray: true, trayTipShown: false, checkUpdates: true, theme: 'light', colour: 'lilac' },
-    speak: { voiceId: 'v2', voiceName: 'George', model: 'eleven_v4_turbo' },
+    speak: { voiceId: 'v2', model: 'eleven_v4_turbo' },
     notes: { detectCalls: true, systemAudio: true, autoStop: true, callJobs: true, callScreenshots: false, actionsTo: 'clickup' },
     voiceCommands: { enabled: true, commands: structuredClone(DEFAULT_VOICE_COMMANDS) },
     watch: { everySecs: 10 },
@@ -372,6 +372,8 @@ const state = {
     { id: 'large-v3-turbo-q5_0', name: 'Whisper Large v3 Turbo (compact)', file: 'ggml-large-v3-turbo-q5_0.bin', url: '', sizeMb: 574, languages: '99 languages', speed: 4, accuracy: 4, recommended: false, installed: false, path: null },
     { id: 'small.en', name: 'Whisper Small (English)', file: 'ggml-small.en.bin', url: '', sizeMb: 488, languages: 'English', speed: 5, accuracy: 3, recommended: false, installed: false, path: null },
     { id: 'base.en', name: 'Whisper Base (English)', file: 'ggml-base.en.bin', url: '', sizeMb: 148, languages: 'English', speed: 5, accuracy: 2, recommended: false, installed: false, path: null },
+    // As models.rs: the silence model is listed too (Settings shows it only under Trim silences).
+    { id: 'vad', name: 'Silence trimming (Silero VAD)', file: 'ggml-silero-v5.1.2.bin', url: '', sizeMb: 1, languages: 'Any language', speed: 5, accuracy: 0, recommended: false, installed: true, path: 'C:\\Users\\you\\AppData\\Roaming\\com.goodlad.navi\\models\\ggml-silero-v5.1.2.bin' },
   ],
   devices: [{ name: 'Microphone (USB microphone)', isDefault: true }, { name: 'Laptop microphone array', isDefault: false }],
 };
@@ -381,7 +383,13 @@ const state = {
   const q = new URLSearchParams(location.search);
   if (q.get('colour')) state.settings.general.colour = q.get('colour');
   if (q.get('theme')) state.settings.general.theme = q.get('theme');
+  // Settings > AI with Ollama: index.html?ollama=on opens with it chosen and running, ?ollama=off
+  // with it chosen but not running, as llm.rs ollama_status reports them.
+  if (q.get('ollama')) { state.settings.ai = { provider: 'ollama', model: 'llama3.2', baseUrl: null, longModel: '' }; state.ollamaRunning = q.get('ollama') !== 'off'; }
 }
+// What Ollama has pulled in the preview (sizes as Ollama lists them).
+const OLLAMA_MODELS = [{ name: 'llama3.2', size: 2019393189 }, { name: 'qwen3:8b', size: 5225388164 }, { name: 'gemma3', size: 3338801804 }];
+const ollamaAddress = () => (state.settings.ai.provider === 'ollama' && state.settings.ai.baseUrl) || 'http://127.0.0.1:11434';
 
 let levelTimer = null;
 function startLevels() {
@@ -562,7 +570,19 @@ const handlers = {
   save_speech: async ({ path }) => { await wait(400); return path; },
   reveal_file: () => null,
   open_link: () => null,
-  test_ai: async () => { await wait(700); return 'ready'; },
+  test_ai: async () => {
+    // As llm.rs describe: Ollama not running says so, with the address nothing answered at.
+    if (state.settings.ai.provider === 'ollama' && state.ollamaRunning === false) { await wait(1000); throw `Ollama isn't installed or isn't running. Nothing answered at ${ollamaAddress()}.`; }
+    await wait(700); return 'ready';
+  },
+  // As llm.rs ollama_status (GET /api/tags): running with what it has pulled, or why not.
+  ollama_status: async () => {
+    const address = ollamaAddress();
+    if (state.settings.privacy.localOnly && !/^https?:\/\/(localhost|127\.|\[::1\])/i.test(address)) return { address, running: false, models: [], message: 'Local only is on, so Navi won\'t ask Ollama at an address off this computer.' };
+    if (state.ollamaRunning === false) { await wait(1000); return { address, running: false, models: [], message: 'Ollama isn\'t installed or isn\'t running.' }; }
+    await wait(150);
+    return { address, running: true, models: structuredClone(OLLAMA_MODELS), message: '' };
+  },
   test_integration: async ({ name }) => {
     // As commands.rs test_integration_blocked: Local only keeps the Test buttons offline too.
     if (state.settings.privacy.localOnly) throw `Local only is on, so Navi won't contact ${name === 'clickup' ? 'ClickUp' : 'Notion'}. Turn it off in Settings > Context and privacy.`;

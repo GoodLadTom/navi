@@ -1318,12 +1318,53 @@ fn no_engine(status: &EngineStatus) -> NoEngine {
     }
 }
 
-async fn transcribe(app: &Arc<App>, samples: &[f32], settings: &Settings, ctx: &AppContext, screen: Option<&str>) -> Result<String> {
-    let engine = app.engine.read().await.clone();
-    let Some(engine) = engine else {
+/// The longest a take waits for a speech engine that is starting or restarting (a new model, the
+/// graphics card switched, the silence model just fetched). Warming up takes about 10 seconds on
+/// the processor and 2 to 3 on the graphics card.
+const ENGINE_WAIT: Duration = Duration::from_secs(30);
+/// How often the bubble says again that the take is waiting, so it never fades meanwhile.
+const ENGINE_WAIT_NOTE_EVERY: Duration = Duration::from_secs(3);
+const ENGINE_WAIT_NOTE: &str = "Waiting for the speech engine to start\u{2026}";
+
+/// Whether a take should wait for the engine rather than fail: a start is under way, or the
+/// status doesn't say it can't start (no model, no engine, an error).
+fn engine_on_its_way(state: &str, start_under_way: bool) -> bool {
+    start_under_way || !matches!(state, "missing-model" | "missing-engine" | "error")
+}
+
+/// The speech engine for a take. A restart takes the old one away at once and the new one is only
+/// there once it has warmed up, so a take in between waits for it (up to ENGINE_WAIT, the bubble
+/// saying so), as call notes hold their audio, rather than failing with "still starting".
+async fn engine_for_take(app: &Arc<App>) -> Result<Arc<crate::engine::Engine>> {
+    let since = Instant::now();
+    let mut noted: Option<Instant> = None;
+    loop {
+        if let Some(engine) = app.engine.read().await.clone() {
+            if noted.is_some() {
+                log::info!("speech engine ready after the take waited {} ms", since.elapsed().as_millis());
+                let mode_name = app.session.lock().processing_mode.clone();
+                app.pill(PillState::Processing { mode_name });
+            }
+            return Ok(engine);
+        }
         let status = app.engine_status.lock().clone();
-        return Err(no_engine(&status).into());
-    };
+        let under_way = app.engine_start.try_lock().is_err();
+        if !engine_on_its_way(&status.state, under_way) || since.elapsed() >= ENGINE_WAIT {
+            return Err(no_engine(&status).into());
+        }
+        if noted.is_none_or(|at| at.elapsed() >= ENGINE_WAIT_NOTE_EVERY) {
+            if noted.is_none() {
+                log::info!("the speech engine is starting ({}); the take waits for it", status.state);
+            }
+            app.pill(PillState::Notice { message: ENGINE_WAIT_NOTE.into() });
+            noted = Some(Instant::now());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+async fn transcribe(app: &Arc<App>, samples: &[f32], settings: &Settings, ctx: &AppContext, screen: Option<&str>) -> Result<String> {
+    let engine = engine_for_take(app).await?;
     let mut prompt = app.db.vocabulary_prompt(600).unwrap_or_default();
     let mut names = context_terms(ctx.field_text.as_deref());
     for n in context_terms(screen) {
@@ -1418,7 +1459,7 @@ pub fn make_llm_long(settings: &Settings) -> Option<Llm> {
             s.ai.model = "sonnet".into();
         }
     }
-    make_llm(&s)
+    make_llm(&s).map(Llm::for_long_jobs)
 }
 
 /// Whether `model` (Settings > AI > Model for longer jobs) can belong to `provider`. It is kept
@@ -1701,18 +1742,35 @@ async fn process_take(app: &Arc<App>, mut rec: Recording, mut samples: Vec<f32>,
 /// The bubble's short version of a pipeline warning ("AI step skipped: no reply in time. ...").
 fn ai_fallback_note(warning: &str) -> String {
     let w = warning.to_lowercase();
-    let why = if w.contains("no reply in time") {
-        "The AI didn't answer in time"
+    let why = if w.contains("no reply in time") || w.contains("no reply within") || w.contains("took longer than") {
+        "The AI didn't answer in time".to_string()
     } else if w.contains("replied to your words") || w.contains("answered your question") {
-        "The AI answered instead of rewriting"
+        "The AI answered instead of rewriting".to_string()
     } else if w.contains("far more") || w.contains("wrote code") {
-        "The AI added things you didn't say"
+        "The AI added things you didn't say".to_string()
     } else if w.contains("returned nothing") {
-        "The AI sent back nothing"
+        "The AI sent back nothing".to_string()
     } else {
-        "The AI step didn't work"
+        // The AI's own error, named ("Ollama isn't running", "Claude rejected the API key").
+        warning.strip_prefix("AI step skipped: ").and_then(ai_error_reason).unwrap_or_else(|| "The AI step didn't work".to_string())
     };
     format!("{why}, so Navi typed a plain tidy instead.")
+}
+
+/// An AI error from llm.rs or cli_ai.rs in a few words for the bubble: its first sentence, less any
+/// detail in brackets, when that is short and plain ("Claude rejected the API key", "No connection
+/// to OpenAI", "Claude Code isn't signed in"). None for raw detail (an address, a tool's output).
+fn ai_error_reason(error: &str) -> Option<String> {
+    if error.starts_with("Ollama isn't installed or isn't running") {
+        return Some("Ollama isn't running".into());
+    }
+    let first = error.split(". ").next()?.trim().trim_end_matches(['.', '?']);
+    let first = match first.rfind(" (") {
+        Some(i) if first.ends_with(')') => &first[..i],
+        _ => first,
+    };
+    let plain = !first.is_empty() && first.chars().count() <= 70 && !first.contains(": ") && !first.contains("://");
+    plain.then(|| first.to_string())
 }
 
 /// A spoken edit needs something to act on: the text Navi just typed into this window (rewrite,
@@ -2548,6 +2606,44 @@ mod tests {
         for state in ["starting", "missing-model", "missing-engine", "error"] {
             assert!(no_engine(&status(state)).to_string().chars().count() <= 80, "{state}");
         }
+    }
+
+    #[test]
+    fn a_take_waits_for_an_engine_on_its_way() {
+        // A restart: the old engine stopped, the new one starting or warming up.
+        for state in ["starting", "stopped", "ready"] {
+            assert!(engine_on_its_way(state, false), "{state}");
+        }
+        // One that can't start isn't waited for, unless a new start is already under way (the
+        // model was just downloaded, or Settings changed it).
+        for state in ["missing-model", "missing-engine", "error"] {
+            assert!(!engine_on_its_way(state, false), "{state}");
+            assert!(engine_on_its_way(state, true), "{state}");
+        }
+        // About 10 seconds on the processor: well within the wait, and the bubble keeps saying so.
+        assert!(ENGINE_WAIT >= Duration::from_secs(25));
+        assert!(ENGINE_WAIT_NOTE_EVERY < Duration::from_secs(4), "bubble.js hides a notice after four seconds");
+        assert!(!ENGINE_WAIT_NOTE.contains('\u{2014}'));
+    }
+
+    #[test]
+    fn the_bubble_names_why_the_ai_was_skipped() {
+        let skipped = |e: &str| ai_fallback_note(&format!("AI step skipped: {e} Your words were tidied offline instead."));
+        assert_eq!(skipped("Ollama isn't installed or isn't running. Nothing answered at http://127.0.0.1:11434."), "Ollama isn't running, so Navi typed a plain tidy instead.");
+        assert_eq!(skipped("Claude rejected the API key."), "Claude rejected the API key, so Navi typed a plain tidy instead.");
+        assert_eq!(skipped("No connection to OpenAI. Check your internet connection."), "No connection to OpenAI, so Navi typed a plain tidy instead.");
+        assert_eq!(skipped("Couldn't reach the AI server. Is it running at http://127.0.0.1:1234/v1?"), "Couldn't reach the AI server, so Navi typed a plain tidy instead.");
+        assert_eq!(skipped("Ollama doesn't have the model \"qwen2.5:14b\". Run: ollama pull qwen2.5:14b"), "Ollama doesn't have the model \"qwen2.5:14b\", so Navi typed a plain tidy instead.");
+        assert_eq!(skipped("Claude had a server error (500). Try again shortly."), "Claude had a server error, so Navi typed a plain tidy instead.");
+        assert_eq!(skipped("Claude Code isn't signed in. Open a terminal, run claude and sign in, then try again."), "Claude Code isn't signed in, so Navi typed a plain tidy instead.");
+        assert_eq!(skipped("Ollama took longer than 60 seconds to reply."), "The AI didn't answer in time, so Navi typed a plain tidy instead.");
+        assert_eq!(skipped("Claude Code didn't answer: no reply within 25 seconds"), "The AI didn't answer in time, so Navi typed a plain tidy instead.");
+        // Raw detail stays in History, not the bubble.
+        assert_eq!(skipped("Claude refused the request: messages: text content blocks must be non-empty"), "The AI step didn't work, so Navi typed a plain tidy instead.");
+        assert_eq!(skipped("Codex: error: unexpected argument found"), "The AI step didn't work, so Navi typed a plain tidy instead.");
+        // The pipeline's own warnings keep their notes.
+        assert_eq!(ai_fallback_note("AI step skipped: no reply in time. Your words were tidied offline instead."), "The AI didn't answer in time, so Navi typed a plain tidy instead.");
+        assert_eq!(ai_fallback_note("The AI replied to your words instead of rewriting them, so Navi kept the offline version."), "The AI answered instead of rewriting, so Navi typed a plain tidy instead.");
     }
 
     #[test]

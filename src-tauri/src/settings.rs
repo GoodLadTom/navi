@@ -162,6 +162,29 @@ mod tests {
     }
 
     #[test]
+    fn fields_navi_no_longer_keeps_still_load_and_go_on_the_next_save() {
+        let paths = Paths::for_tests("settings-dead-fields");
+        let old = json!({
+            "version": 1,
+            "onboarded": true,
+            "writing": { "british": false, "styleNotes": "Short and warm.", "styleSamples": ["C:\\Users\\you\\Documents\\letter.docx"] },
+            "speak": { "voiceId": "v2", "voiceName": "George", "model": "eleven_v4" }
+        });
+        std::fs::write(&paths.settings, serde_json::to_string_pretty(&old).unwrap()).unwrap();
+        let s = load(&paths);
+        assert!(!paths.settings.with_extension("json.bad").exists(), "read cleanly");
+        assert!(s.onboarded && !s.writing.british);
+        assert_eq!(s.writing.style_notes, "Short and warm.");
+        assert_eq!((s.speak.voice_id.as_str(), s.speak.model.as_str()), ("v2", "eleven_v4"));
+        save(&paths, &s).unwrap();
+        let text = std::fs::read_to_string(&paths.settings).unwrap();
+        for gone in ["\"version\"", "styleSamples", "voiceName", "letter.docx"] {
+            assert!(!text.contains(gone), "{gone} is still saved");
+        }
+        let _ = std::fs::remove_dir_all(&paths.data);
+    }
+
+    #[test]
     fn a_file_missing_a_command_gets_it_back_on_load() {
         let paths = Paths::for_tests("settings-complete");
         let text = r#"{ "voiceCommands": { "enabled": true, "commands": [{ "action": "wake", "phrases": ["Hey"] }, { "action": "finish", "phrases": [] }] } }"#;
