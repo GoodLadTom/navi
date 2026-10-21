@@ -191,6 +191,13 @@ pub fn run() {
             let quitting = handle.try_state::<Arc<App>>().map(|s| s.quitting.load(Ordering::SeqCst)).unwrap_or(true);
             if !quitting && code.is_none() {
                 api.prevent_exit();
+                // A Mac: Navi's windows only ever hide, so this is a real Quit (Command + Q, the
+                // Dock's Quit, logging out): save work and stop the speech engines, then go.
+                #[cfg(target_os = "macos")]
+                if let Some(state) = handle.try_state::<Arc<App>>() {
+                    let app = state.inner().clone();
+                    tauri::async_runtime::spawn(async move { quit(app).await });
+                }
             }
         }
     });

@@ -992,11 +992,24 @@ mod job {
             Ok(JobHandle)
         }
 
-        /// Notes the server's pid (the main and the quick server each add theirs).
+        /// Notes the server's pid (the main and the quick server each add theirs), and starts a
+        /// watchdog that stops the server once Navi's process is gone, however Navi ended: a Quit
+        /// sent as an Apple Event, Force Quit or a crash never reach Navi's own clean-up.
         pub fn assign(&self, child: &std::process::Child) -> anyhow::Result<()> {
             use std::io::Write;
             let mut file = std::fs::OpenOptions::new().create(true).append(true).open(pid_file())?;
             writeln!(file, "{}", child.id())?;
+            let watch = format!(
+                "while kill -0 {navi} 2>/dev/null && kill -0 {engine} 2>/dev/null; do sleep 2; done; kill {engine} 2>/dev/null",
+                navi = std::process::id(),
+                engine = child.id()
+            );
+            std::process::Command::new("/bin/sh")
+                .args(["-c", &watch])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()?;
             Ok(())
         }
     }
