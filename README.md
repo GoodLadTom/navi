@@ -138,8 +138,10 @@ the AI stays off until you turn it on in Settings > AI. It's used for the rewrit
 write-ups and "what's wrong with this?". Only text is sent, never audio or pictures.
 
 Settings offers the AI you already pay for first. If Claude Code (your Claude plan) or Codex
-(your ChatGPT plan) is installed, Navi runs it for you and needs no API key. A rewrite takes a few
-seconds this way, so Clean mode skips it and stays instant. You can also use an API key for
+(your ChatGPT plan) is installed, Navi runs it for you and needs no API key. If Navi doesn't see it
+straight away, press Find it on its card: Navi searches the computer, connects it, and if it isn't
+signed in, Sign in opens its own sign-in. A rewrite takes a few seconds this way, so Clean mode
+skips it and stays instant. You can also use an API key for
 Claude (Anthropic) or OpenAI, which is usually quicker but paid per use. Or use any
 OpenAI-compatible endpoint, where the key is optional.
 

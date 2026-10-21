@@ -79,7 +79,7 @@ impl Launcher {
     }
 
     /// The path Settings shows: the script for a Node tool, otherwise the program.
-    fn shown(&self) -> String {
+    pub fn shown(&self) -> String {
         self.script.as_ref().unwrap_or(&self.program).display().to_string()
     }
 }
@@ -96,7 +96,7 @@ pub fn detect() -> Vec<CliTool> {
             found: claude.is_some(),
             path: claude.map(|l| l.shown()),
             models: vec!["haiku".into(), "sonnet".into(), "opus".into()],
-            install_hint: "Install Claude Code from claude.com/claude-code, then run claude once in a terminal to sign in.".into(),
+            install_hint: "To install it, go to claude.com/claude-code.".into(),
         },
         CliTool {
             id: "codex".into(),
@@ -105,7 +105,7 @@ pub fn detect() -> Vec<CliTool> {
             found: codex.is_some(),
             path: codex.map(|l| l.shown()),
             models: codex_models(),
-            install_hint: "Install Codex with: npm install -g @openai/codex, then run codex once in a terminal to sign in.".into(),
+            install_hint: "To install it, run npm install -g @openai/codex in a terminal.".into(),
         },
     ]
 }
@@ -204,7 +204,7 @@ async fn codex(model: &str, system: &str, user: &str, path_override: Option<&str
 fn explain(tool: &str, raw: &str) -> String {
     let lower = raw.to_lowercase();
     if lower.contains("login") || lower.contains("log in") || lower.contains("sign in") || lower.contains("not authenticated") || lower.contains("api key") {
-        return format!("{tool} isn't signed in. Open a terminal, run {} and sign in, then try again.", if tool == "Codex" { "codex" } else { "claude" });
+        return format!("{tool} isn't signed in. Open Settings > AI and press Sign in on its card, then try again.");
     }
     if lower.contains("rate limit") || lower.contains("usage limit") || lower.contains("limit reached") || lower.contains("429") {
         return format!("{tool} says you've reached your plan's limit for now. Try again later, or pick another AI in Settings.");
@@ -225,7 +225,11 @@ struct Output {
 
 /// Starts the tool with no window, writes `input` to it, waits (see DEADLINE) and collects what it
 /// printed.
-async fn run(mut cmd: tokio::process::Command, input: &str) -> Result<Output> {
+async fn run(cmd: tokio::process::Command, input: &str) -> Result<Output> {
+    run_for(cmd, input, deadline_for(input.len())).await
+}
+
+async fn run_for(mut cmd: tokio::process::Command, input: &str, deadline: Duration) -> Result<Output> {
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
@@ -234,7 +238,6 @@ async fn run(mut cmd: tokio::process::Command, input: &str) -> Result<Output> {
         stdin.write_all(input.as_bytes()).await.ok();
         // Dropping stdin closes it, so the tool knows the text has ended.
     }
-    let deadline = deadline_for(input.len());
     let output = tokio::time::timeout(deadline, child.wait_with_output())
         .await
         .map_err(|_| anyhow!("no reply within {} seconds", deadline.as_secs()))??;
@@ -279,6 +282,351 @@ pub fn find_codex(path_override: Option<&str>) -> Option<Launcher> {
     npm_js.or_else(|| from_shims("codex.cmd")).or_else(|| on_path("codex.exe").map(|program| Launcher { program, script: None }))
 }
 
+// ---- Settings' Find button: a proper search ----
+
+/// A tool the Find button found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Found {
+    pub launcher: Launcher,
+    /// The file to keep in Settings, from which `launcher_for_path` starts the same thing. None
+    /// when it is where Navi looks anyway.
+    pub path: Option<PathBuf>,
+}
+
+/// What each tool's files are called.
+struct Names {
+    /// The program itself: claude.exe, or claude on a Mac.
+    program: &'static str,
+    /// An npm-style shim (Windows only).
+    shim: &'static str,
+    /// Its Node script in a global node_modules folder.
+    script: &'static [&'static str],
+    /// The folder-name start of the editor extension that carries a copy of it.
+    extension: &'static str,
+}
+
+fn names(id: &str) -> Names {
+    let exe = cfg!(windows);
+    if id == "codex" {
+        Names { program: if exe { "codex.exe" } else { "codex" }, shim: "codex.cmd", script: &["@openai", "codex", "bin", "codex.js"], extension: "openai.chatgpt-" }
+    } else {
+        Names { program: if exe { "claude.exe" } else { "claude" }, shim: "claude.cmd", script: &["@anthropic-ai", "claude-code", "cli.js"], extension: "anthropic.claude-code-" }
+    }
+}
+
+/// Looks properly for `id` ("claude-code" or "codex"): where Navi looks anyway, then the PATH as
+/// the system has it now (a tool installed after Navi started isn't on Navi's own copy, and an app
+/// opened from the Mac's Finder gets a short one), then the folders installers and Node version
+/// managers use, then the copies editor extensions carry (Claude Code's VS Code extension has its
+/// own claude.exe). Blocking: a second or so at most.
+pub fn search(id: &str) -> Option<Found> {
+    let usual = if id == "codex" { find_codex(None) } else { find_claude(None) };
+    if let Some(launcher) = usual {
+        return Some(Found { launcher, path: None });
+    }
+    let n = names(id);
+    let mut dirs = fresh_path();
+    dirs.extend(install_dirs());
+    search_dirs(&dirs, &n).or_else(|| search_extensions(&extension_roots(), &n))
+}
+
+/// The first of `dirs` holding the tool: the program, an npm shim that leads somewhere real, or
+/// the Node script in the folder's node_modules (or, on a Mac, lib/node_modules).
+fn search_dirs(dirs: &[PathBuf], n: &Names) -> Option<Found> {
+    let found = |path: PathBuf| launcher_for_path(&path.to_string_lossy()).map(|launcher| Found { launcher, path: Some(path) });
+    dirs.iter().find_map(|dir| {
+        let program = dir.join(n.program);
+        if program.is_file() {
+            return found(program);
+        }
+        let shim = dir.join(n.shim);
+        if cfg!(windows) && shim.is_file() {
+            if let Some(f) = found(shim) {
+                return Some(f);
+            }
+        }
+        let modules = if cfg!(windows) { dir.join("node_modules") } else { dir.join("..").join("lib").join("node_modules") };
+        let script = n.script.iter().fold(modules, |p, part| p.join(part));
+        script.is_file().then(|| found(script)).flatten()
+    })
+}
+
+/// The newest editor extension in `roots` that carries the tool (VS Code, Cursor, Windsurf),
+/// searched a few folders deep. These move when the extension updates, so they come last.
+fn search_extensions(roots: &[PathBuf], n: &Names) -> Option<Found> {
+    let mut exts: Vec<(std::time::SystemTime, PathBuf)> = roots
+        .iter()
+        .filter_map(|r| std::fs::read_dir(r).ok())
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().to_ascii_lowercase().starts_with(n.extension))
+        .map(|e| (e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH), e.path()))
+        .collect();
+    exts.sort_by(|a, b| b.0.cmp(&a.0));
+    exts.iter().find_map(|(_, dir)| find_file(dir, n.program, 4)).map(|program| Found { launcher: Launcher { program: program.clone(), script: None }, path: Some(program) })
+}
+
+/// `name` in `dir` or up to `depth` folders below it.
+fn find_file(dir: &Path, name: &str, depth: u32) -> Option<PathBuf> {
+    let here = dir.join(name);
+    if here.is_file() {
+        return Some(here);
+    }
+    if depth == 0 {
+        return None;
+    }
+    let mut subs: Vec<PathBuf> = std::fs::read_dir(dir).ok()?.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| e.path()).collect();
+    subs.sort();
+    subs.iter().find_map(|d| find_file(d, name, depth - 1))
+}
+
+/// Folders where VS Code, Cursor and Windsurf keep extensions.
+fn extension_roots() -> Vec<PathBuf> {
+    let Some(home) = dirs::home_dir() else { return Vec::new() };
+    [".vscode", ".vscode-insiders", ".cursor", ".windsurf"].iter().map(|d| home.join(d).join("extensions")).collect()
+}
+
+/// Every folder in `parent` (a version manager's Node versions), newest name last as listed.
+fn subfolders(parent: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = std::fs::read_dir(parent).map(|r| r.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| e.path()).collect()).unwrap_or_default();
+    out.sort();
+    out.reverse();
+    out
+}
+
+/// Where installers and Node version managers put command-line tools on Windows.
+#[cfg(windows)]
+fn install_dirs() -> Vec<PathBuf> {
+    let home = dirs::home_dir();
+    let roaming = dirs::data_dir();
+    let local = dirs::data_local_dir();
+    let mut out: Vec<PathBuf> = [
+        home.as_ref().map(|h| h.join(".local").join("bin")),
+        home.as_ref().map(|h| h.join(".claude").join("local")),
+        roaming.as_ref().map(|r| r.join("npm")),
+        local.as_ref().map(|l| l.join("Volta").join("bin")),
+        local.as_ref().map(|l| l.join("pnpm")),
+        local.as_ref().map(|l| l.join("Yarn").join("bin")),
+        home.as_ref().map(|h| h.join("scoop").join("shims")),
+        local.as_ref().map(|l| l.join("Microsoft").join("WinGet").join("Links")),
+        std::env::var_os("ProgramFiles").map(|p| PathBuf::from(p).join("nodejs")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    // Each Node version nvm-windows and fnm keep, newest first.
+    if let Some(r) = &roaming {
+        out.extend(subfolders(&r.join("nvm")));
+        out.extend(subfolders(&r.join("fnm").join("node-versions")).into_iter().map(|v| v.join("installation")));
+    }
+    out
+}
+
+/// Where installers, Homebrew and Node version managers put command-line tools on a Mac or Linux.
+#[cfg(not(windows))]
+fn install_dirs() -> Vec<PathBuf> {
+    let Some(home) = dirs::home_dir() else { return Vec::new() };
+    let mut out: Vec<PathBuf> = vec![
+        home.join(".local").join("bin"),
+        home.join(".claude").join("local"),
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+        home.join(".npm-global").join("bin"),
+        home.join(".volta").join("bin"),
+        home.join(".bun").join("bin"),
+        home.join("Library").join("pnpm"),
+        home.join(".yarn").join("bin"),
+    ];
+    out.extend(subfolders(&home.join(".nvm").join("versions").join("node")).into_iter().map(|v| v.join("bin")));
+    for fnm in [home.join(".fnm"), home.join("Library").join("Application Support").join("fnm")] {
+        out.extend(subfolders(&fnm.join("node-versions")).into_iter().map(|v| v.join("installation").join("bin")));
+    }
+    out
+}
+
+/// The PATH as the system has it now: on Windows the user's and the machine's from the registry;
+/// elsewhere the one the user's login shell sets up (nvm and Homebrew add to it there).
+#[cfg(windows)]
+fn fresh_path() -> Vec<PathBuf> {
+    win::fresh_path()
+}
+
+#[cfg(not(windows))]
+fn fresh_path() -> Vec<PathBuf> {
+    login_shell_path().clone()
+}
+
+/// The PATH from `$SHELL -ilc`, asked once (it can take a second) and remembered.
+#[cfg(not(windows))]
+fn login_shell_path() -> &'static Vec<PathBuf> {
+    static PATH: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        const MARK: &str = "__NAVI_PATH__";
+        let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/zsh".into());
+        let Ok(mut child) = std::process::Command::new(shell)
+            .args(["-ilc", &format!("printf '\\n{MARK}%s\\n' \"$PATH\"")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            return Vec::new();
+        };
+        let started = std::time::Instant::now();
+        while child.try_wait().ok().flatten().is_none() {
+            if started.elapsed() > Duration::from_secs(3) {
+                let _ = child.kill();
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let Ok(out) = child.wait_with_output() else { return Vec::new() };
+        let text = String::from_utf8_lossy(&out.stdout);
+        text.lines().find_map(|l| l.strip_prefix(MARK)).map(|p| std::env::split_paths(p).collect()).unwrap_or_default()
+    })
+}
+
+/// Whether a tool is signed in, from its own status command (`claude auth status`, `codex login
+/// status`), which asks no model and takes a moment. None when it couldn't tell (an older version
+/// without the command, or it didn't start).
+pub async fn signed_in(id: &str, launcher: &Launcher) -> Option<bool> {
+    let mut cmd = launcher.command();
+    cmd.current_dir(std::env::temp_dir());
+    if id == "codex" {
+        cmd.args(["login", "status"]);
+    } else {
+        cmd.args(["auth", "status"]);
+    }
+    let out = run_for(cmd, "", Duration::from_secs(15)).await.ok()?;
+    if id == "codex" {
+        codex_status(&out.stdout, &out.stderr, out.code)
+    } else {
+        claude_status(&out.stdout)
+    }
+}
+
+/// `claude auth status` prints JSON with "loggedIn".
+fn claude_status(stdout: &str) -> Option<bool> {
+    let start = stdout.find('{')?;
+    let v: serde_json::Value = serde_json::from_str(stdout[start..].trim()).ok()?;
+    v.get("loggedIn").and_then(|b| b.as_bool())
+}
+
+/// `codex login status` says "Logged in using ChatGPT" (or an API key), or "Not logged in".
+fn codex_status(stdout: &str, stderr: &str, code: Option<i32>) -> Option<bool> {
+    let said = format!("{stdout}\n{stderr}").to_lowercase();
+    if said.contains("not logged in") {
+        Some(false)
+    } else if said.contains("logged in") && code == Some(0) {
+        Some(true)
+    } else {
+        None
+    }
+}
+
+/// The command that signs a tool in, run in a terminal window the user can see.
+fn sign_in_args(id: &str) -> &'static [&'static str] {
+    if id == "codex" {
+        &["login"]
+    } else {
+        &["auth", "login"]
+    }
+}
+
+/// Opens a terminal window that runs the tool's own sign-in (`claude auth login`, `codex login`),
+/// which opens the browser. Navi never sees the sign-in itself.
+pub fn open_sign_in(id: &str, launcher: &Launcher) -> Result<()> {
+    let name = if id == "codex" { "Codex" } else { "Claude Code" };
+    let mut parts: Vec<String> = vec![launcher.program.display().to_string()];
+    parts.extend(launcher.script.iter().map(|s| s.display().to_string()));
+    parts.extend(sign_in_args(id).iter().map(|s| s.to_string()));
+    let folder = std::env::temp_dir().join("navi-ai");
+    std::fs::create_dir_all(&folder).context("Navi couldn't make a folder for the sign-in")?;
+    open_terminal(name, &parts, &folder)
+}
+
+/// The batch file the Windows sign-in window runs: each part quoted (a batch file needs nothing
+/// else escaped but %), and UTF-8 for any accents in the paths.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn sign_in_batch(name: &str, parts: &[String]) -> String {
+    let line = parts.iter().map(|p| format!("\"{}\"", p.replace('%', "%%"))).collect::<Vec<_>>().join(" ");
+    format!(
+        "@echo off\r\nchcp 65001 >nul\r\ntitle Sign in to {name}\r\necho Sign in to {name} below. It opens your browser.\r\necho When it says you're signed in, close this window and go back to Navi.\r\necho.\r\n{line}\r\necho.\r\npause\r\n"
+    )
+}
+
+/// The script the Mac's Terminal runs for the sign-in, each part quoted for the shell.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn sign_in_shell(name: &str, parts: &[String], folder: &Path) -> String {
+    let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+    let line = parts.iter().map(|p| quote(p)).collect::<Vec<_>>().join(" ");
+    format!(
+        "#!/bin/bash\ncd {}\necho \"Sign in to {name} below. It opens your browser.\"\necho \"When it says you're signed in, close this window and go back to Navi.\"\necho\n{line}\n",
+        quote(&folder.display().to_string())
+    )
+}
+
+#[cfg(windows)]
+fn open_terminal(name: &str, parts: &[String], folder: &Path) -> Result<()> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+    let script = sign_in_batch(name, parts);
+    let file = folder.join(format!("sign-in-{}.cmd", if name == "Codex" { "codex" } else { "claude" }));
+    std::fs::write(&file, script).context("Navi couldn't write the sign-in script")?;
+    std::process::Command::new("cmd.exe").arg("/c").arg(&file).current_dir(folder).creation_flags(CREATE_NEW_CONSOLE).spawn().context("Navi couldn't open a terminal")?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn open_terminal(name: &str, parts: &[String], folder: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let script = sign_in_shell(name, parts, folder);
+    let file = folder.join(format!("sign-in-{}.command", if name == "Codex" { "codex" } else { "claude" }));
+    std::fs::write(&file, script).context("Navi couldn't write the sign-in script")?;
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755))?;
+    std::process::Command::new("open").args(["-a", "Terminal"]).arg(&file).spawn().context("Navi couldn't open Terminal")?;
+    Ok(())
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn open_terminal(name: &str, parts: &[String], _folder: &Path) -> Result<()> {
+    bail!("Open a terminal and run {} to sign in to {name}.", parts.join(" "))
+}
+
+#[cfg(windows)]
+mod win {
+    use std::path::PathBuf;
+    use windows::core::{HSTRING, PCWSTR};
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
+
+    /// The machine's PATH, then the user's, as the registry has them now (expanded).
+    pub fn fresh_path() -> Vec<PathBuf> {
+        let machine = read(HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment", "Path");
+        let user = read(HKEY_CURRENT_USER, "Environment", "Path");
+        [machine, user].into_iter().flatten().flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>()).collect()
+    }
+
+    fn read(root: HKEY, key: &str, value: &str) -> Option<String> {
+        let (key, value) = (HSTRING::from(key), HSTRING::from(value));
+        // Asked for as REG_SZ (without RRF_NOEXPAND), a REG_EXPAND_SZ value, as the user's PATH
+        // usually is, comes back with %USERPROFILE% and the like filled in.
+        let flags = RRF_RT_REG_SZ;
+        let mut size = 0u32;
+        for _ in 0..3 {
+            let mut buf = vec![0u16; size as usize / 2 + 1];
+            let mut got = (buf.len() * 2) as u32;
+            let status = unsafe { RegGetValueW(root, PCWSTR(key.as_ptr()), PCWSTR(value.as_ptr()), flags, None, Some(buf.as_mut_ptr().cast()), Some(&mut got)) };
+            if status.is_ok() {
+                let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+                return Some(String::from_utf16_lossy(&buf[..len]));
+            }
+            // Too small (the expanded text can be longer than the size first given): try again.
+            size = got.max(size * 2).max(1024);
+        }
+        None
+    }
+}
+
 /// A tool path typed into Settings: a program, a Node script, or an npm-style `.cmd` shim.
 fn launcher_for_path(path: &str) -> Option<Launcher> {
     let p = PathBuf::from(path.trim());
@@ -289,8 +637,19 @@ fn launcher_for_path(path: &str) -> Option<Launcher> {
     match ext.as_str() {
         "js" | "cjs" | "mjs" => node_launcher(p.clone(), p.parent()?),
         "cmd" | "bat" => launcher_from_shim(&p),
+        // npm's `claude` on a Mac is a link to cli.js, which starts with "#!/usr/bin/env node":
+        // from the Finder there is no node on the PATH, so Navi runs it with Node itself.
+        _ if !cfg!(windows) => match std::fs::canonicalize(&p) {
+            Ok(real) if is_script(&real) => node_launcher(real, p.parent()?),
+            _ => Some(Launcher { program: p, script: None }),
+        },
         _ => Some(Launcher { program: p, script: None }),
     }
+}
+
+fn is_script(p: &Path) -> bool {
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or_default().to_ascii_lowercase();
+    matches!(ext.as_str(), "js" | "cjs" | "mjs")
 }
 
 /// The first `shim` (claude.cmd, codex.cmd) in npm's global folder or on the PATH that leads to a
@@ -322,9 +681,15 @@ fn launcher_from_shim_within(shim: &Path, hops: u32) -> Option<Launcher> {
     }
 }
 
-/// Node runs `script`: the node.exe beside the shim, as the shim itself would pick, or the PATH's.
+/// Node runs `script`: the node.exe beside the shim, as the shim itself would pick, then the one
+/// of the Node install whose node_modules holds the script (nvm and fnm keep one per version),
+/// then the PATH's.
 fn node_launcher(script: PathBuf, dir: &Path) -> Option<Launcher> {
-    let node = Some(dir.join("node.exe")).filter(|p| p.is_file()).or_else(|| on_path("node.exe"))?;
+    let node = if cfg!(windows) { "node.exe" } else { "node" };
+    // <prefix>\node_modules\... on Windows, <prefix>/lib/node_modules/... with <prefix>/bin/node elsewhere.
+    let prefix = script.ancestors().find(|a| a.file_name().is_some_and(|n| n == "node_modules")).and_then(Path::parent);
+    let of_prefix = prefix.map(|p| if cfg!(windows) { p.join(node) } else { p.parent().unwrap_or(p).join("bin").join(node) });
+    let node = Some(dir.join(node)).filter(|p| p.is_file()).or_else(|| of_prefix.filter(|p| p.is_file())).or_else(|| on_path(node))?;
     Some(Launcher { program: node, script: Some(script) })
 }
 
@@ -381,8 +746,11 @@ pub fn codex_models() -> Vec<String> {
     models.into_iter().map(|(_, _, slug)| slug).collect()
 }
 
+/// `exe` on Navi's PATH, else on the PATH as the system has it now (fresh_path).
 fn on_path(exe: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|paths| std::env::split_paths(&paths).map(|dir| dir.join(exe)).find(|p| p.is_file()))
+    std::env::var_os("PATH")
+        .and_then(|paths| std::env::split_paths(&paths).map(|dir| dir.join(exe)).find(|p| p.is_file()))
+        .or_else(|| fresh_path().into_iter().map(|dir| dir.join(exe)).find(|p| p.is_file()))
 }
 
 #[cfg(test)]
@@ -476,6 +844,117 @@ mod tests {
         assert!(!is_cli("anthropic") && !is_cli("off"));
         let tools = detect();
         assert_eq!(tools.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["claude-code", "codex"]);
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("navi-find-{name}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn the_search_finds_programs_shims_and_scripts() {
+        let n = names("codex");
+        let (empty, with_program, with_script) = (scratch("empty"), scratch("program"), scratch("script"));
+        std::fs::write(with_program.join(n.program), "").unwrap();
+        let found = search_dirs(&[empty.clone(), with_program.clone()], &n).expect("the program");
+        assert_eq!(found.launcher, Launcher { program: with_program.join(n.program), script: None });
+        assert_eq!(found.path, Some(with_program.join(n.program)), "kept in Settings, as it isn't where Navi looks");
+        // A Node version folder (nvm-windows) holding the package, with its own node beside it.
+        if cfg!(windows) {
+            let script = n.script.iter().fold(with_script.join("node_modules"), |p, part| p.join(part));
+            std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+            std::fs::write(&script, "").unwrap();
+            std::fs::write(with_script.join("node.exe"), "").unwrap();
+            let found = search_dirs(&[empty.clone(), with_script.clone()], &n).expect("the script");
+            assert_eq!(found.launcher, Launcher { program: with_script.join("node.exe"), script: Some(script.clone()) }, "run with that version's own Node");
+            assert_eq!(launcher_for_path(&found.path.unwrap().to_string_lossy()), Some(found.launcher), "the kept path starts the same thing");
+        }
+        assert_eq!(search_dirs(&[empty.clone()], &n), None);
+        for d in [empty, with_program, with_script] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn the_newest_editor_extension_wins() {
+        let n = names("claude-code");
+        let root = scratch("extensions");
+        let old = root.join("anthropic.claude-code-2.1.278-win32-x64").join("resources").join("native-binary");
+        let other = root.join("someone.else-1.0.0").join("bin");
+        for d in [&old, &other] {
+            std::fs::create_dir_all(d).unwrap();
+            std::fs::write(d.join(n.program), "").unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(20));
+        let new = root.join("anthropic.claude-code-2.1.296-win32-x64").join("resources").join("native-binary");
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(new.join(n.program), "").unwrap();
+        let found = search_extensions(&[root.clone(), root.join("missing")], &n).expect("found");
+        assert_eq!(found.launcher.program, new.join(n.program));
+        assert_eq!(search_extensions(&[root.join("missing")], &n), None);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn node_comes_from_the_install_that_holds_the_script() {
+        let prefix = scratch("prefix");
+        let script = if cfg!(windows) { prefix.join("node_modules") } else { prefix.join("lib").join("node_modules") }.join("@openai").join("codex").join("bin").join("codex.js");
+        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+        std::fs::write(&script, "").unwrap();
+        let node = if cfg!(windows) { prefix.join("node.exe") } else { prefix.join("bin").join("node") };
+        std::fs::create_dir_all(node.parent().unwrap()).unwrap();
+        std::fs::write(&node, "").unwrap();
+        let elsewhere = scratch("elsewhere");
+        assert_eq!(node_launcher(script.clone(), &elsewhere), Some(Launcher { program: node, script: Some(script) }));
+        let _ = std::fs::remove_dir_all(prefix);
+        let _ = std::fs::remove_dir_all(elsewhere);
+    }
+
+    #[test]
+    fn sign_in_status() {
+        assert_eq!(claude_status("{\n  \"loggedIn\": true,\n  \"authMethod\": \"claude.ai\"\n}"), Some(true));
+        assert_eq!(claude_status("{\"loggedIn\": false}"), Some(false));
+        assert_eq!(claude_status("error: unknown command 'auth'"), None, "an older Claude Code");
+        assert_eq!(codex_status("Logged in using ChatGPT\n", "", Some(0)), Some(true));
+        assert_eq!(codex_status("", "Not logged in\n", Some(1)), Some(false));
+        assert_eq!(codex_status("", "error: unrecognized subcommand 'status'", Some(2)), None);
+    }
+
+    #[test]
+    fn sign_in_scripts_quote_every_path() {
+        let parts: Vec<String> = [r"C:\Program Files\nodejs\node.exe", r"C:\Users\Zoë 100%\npm\codex.js", "login"].map(String::from).to_vec();
+        let bat = sign_in_batch("Codex", &parts);
+        assert!(bat.starts_with("@echo off\r\nchcp 65001 >nul\r\n"), "{bat}");
+        assert!(bat.contains("\r\n\"C:\\Program Files\\nodejs\\node.exe\" \"C:\\Users\\Zoë 100%%\\npm\\codex.js\" \"login\"\r\n"), "{bat}");
+        let parts: Vec<String> = ["/Users/zoe/.nvm/versions/node/v22.1.0/bin/node", "/Users/zoe/it's here/cli.js", "auth", "login"].map(String::from).to_vec();
+        let sh = sign_in_shell("Claude Code", &parts, Path::new("/tmp/navi-ai"));
+        assert!(sh.starts_with("#!/bin/bash\ncd '/tmp/navi-ai'\n"), "{sh}");
+        assert!(sh.contains("\n'/Users/zoe/.nvm/versions/node/v22.1.0/bin/node' '/Users/zoe/it'\\''s here/cli.js' 'auth' 'login'\n"), "{sh}");
+    }
+
+    /// The real search and status checks on this computer. Run by hand:
+    /// cargo test --lib text::cli_ai::tests::live_search -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn live_search() {
+        #[cfg(windows)]
+        println!("fresh PATH: {} folders, {} unexpanded", win::fresh_path().len(), win::fresh_path().iter().filter(|p| p.to_string_lossy().contains('%')).count());
+        for id in ["claude-code", "codex"] {
+            let t = std::time::Instant::now();
+            let found = search(id);
+            println!("{id}: {:?} in {} ms", found.as_ref().map(|f| (f.launcher.shown(), &f.path)), t.elapsed().as_millis());
+            let n = names(id);
+            let mut dirs = fresh_path();
+            dirs.extend(install_dirs());
+            let searched = search_dirs(&dirs, &n).map(|f| f.launcher.shown());
+            let extension = search_extensions(&extension_roots(), &n).map(|f| f.launcher.shown());
+            println!("  in folders: {searched:?}\n  in editors: {extension:?}");
+            if let Some(f) = found {
+                let t = std::time::Instant::now();
+                println!("  signed in: {:?} in {} ms", signed_in(id, &f.launcher).await, t.elapsed().as_millis());
+            }
+        }
     }
 
     /// Asks the real Claude Code on this computer for a tiny rewrite (uses a sliver of the plan).

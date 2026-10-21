@@ -226,6 +226,19 @@ Measured on the owner's PC (20 Oct 2026, Ollama 0.40.6, llama3.2 already loaded)
 0.7 s; with nothing listening, the first call gave up after 1.0 s (2.0 to 2.3 s before) and the
 next at once.
 
+Claude Code and Codex in Settings (`cli_ai::detect`, then the Find it button): a card for a tool
+Navi doesn't see offers Find it, never just a path box. `find_ai_tool` (`cli_ai::search`) looks
+where Navi always looks, then on the PATH as the system has it now (the registry on Windows, so a
+tool installed after Navi started counts; the login shell's on a Mac, whose Finder gives apps a
+short one), then in installer and Node version-manager folders (npm, nvm, fnm, Volta, pnpm, Yarn,
+Scoop, WinGet; Homebrew on a Mac), then in VS Code, Cursor and Windsurf extensions (Claude Code's
+carries its own claude.exe). The card connects what it finds, keeping a path in Settings only when
+Navi wouldn't find it anyway, and asks the tool's own status command (`claude auth status`, `codex
+login status`; no model call, 0.1 to 0.2 s) whether it is signed in. If not, Sign in
+(`sign_in_ai_tool`) opens a terminal window running `claude auth login` or `codex login`, and the
+card checks every 3 s for three minutes. The tool in use is checked when Settings opens, and an AI
+step that fails because it isn't signed in points to that button.
+
 "What's wrong with this?" (`VoiceCommand::Critique`): the selection (or the last insertion) goes to
 the AI with a prompt that asks for flaws, never praise, and the answer appears on the `prompt`
 card (`PromptState::Answer`) to read and copy. It runs in the background so the next take is never

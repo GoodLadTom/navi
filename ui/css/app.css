@@ -403,6 +403,10 @@ body:has(.onb) .titlebar { background: none; }
 .ai-tool-path { display: grid; gap: 5px; margin-top: 2px; min-width: 0; }
 .ai-tool-path .input { height: 32px; font-size: 12px; }
 .ai-tool-path .faint { overflow-wrap: anywhere; }
+/* What Find it and Sign in say on a card. */
+.ai-tool-note { display: grid; gap: 8px; min-width: 0; }
+.ai-tool-note p { display: flex; align-items: flex-start; gap: 6px; overflow-wrap: anywhere; }
+.ai-tool-note .i { color: var(--accent-ink); margin-top: 1px; flex: none; }
 
 /* ------------------------------------------------------------------ settings */
 .settings { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 28px; align-items: start; }

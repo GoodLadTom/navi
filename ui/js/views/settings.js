@@ -536,6 +536,75 @@ export async function render(root, { store, arg }) {
     }
     modelInput.value = S().ai.model; testOut.textContent = ''; drawAi();
   };
+  // The Find button: search this computer for the tool, connect it, then make sure it is signed
+  // in, so nobody has to type a path. What each card says while that happens, by tool id.
+  const toolNotes = {};
+  const note = (id, n) => { toolNotes[id] = n; drawAi(); };
+  const connectTool = async (t, path) => {
+    const ok = await save((n) => {
+      if (n.ai.provider !== t.id) {
+        n.ai.provider = t.id;
+        n.ai.longModel = '';
+        if (t.models?.length) n.ai.model = t.models[0];
+      }
+      // Null when it is where Navi looks anyway; a path from another provider never carries over.
+      n.ai.baseUrl = path || null;
+    });
+    if (!ok) return false;
+    await redetect();
+    modelInput.value = S().ai.model; baseInput.value = S().ai.baseUrl || ''; testOut.textContent = '';
+    return true;
+  };
+  // `signedIn` from the search, or asked now. Quiet: only say something when it isn't signed in.
+  const checkSignIn = async (t, signedIn, { quiet = false } = {}) => {
+    if (signedIn === undefined) signedIn = await invoke('ai_tool_signed_in', { id: t.id }).catch(() => null);
+    if (signedIn === false) note(t.id, { text: `${t.name} isn’t signed in yet. Sign in with ${t.plan} and Navi can use it.`, signIn: true });
+    else if (quiet) return;
+    else if (signedIn) { note(t.id, { text: `${t.name} is connected and signed in.`, good: true }); toast(`Connected to ${t.name}`); }
+    else note(t.id, { text: `${t.name} is connected. Press Test below to check it works.` });
+  };
+  const findTool = async (t) => {
+    note(t.id, { text: `Looking for ${t.name} on this computer…`, busy: true });
+    let r;
+    try { r = await invoke('find_ai_tool', { id: t.id }); } catch (e) { note(t.id, { text: errText(e) }); return; }
+    if (!r.found) { note(t.id, { text: `Navi looked in all the usual places and couldn’t find ${t.name}. ${t.installHint.replace(/\.$/, '')}, then press Find it again.` }); return; }
+    if (!(await connectTool(t, r.path))) { note(t.id, null); return; }
+    // Found, whatever the card's last look said.
+    tools = tools.map((x) => (x.id === t.id && !x.found ? { ...x, found: true, path: r.shown } : x));
+    await checkSignIn(t, r.signedIn);
+  };
+  // Opens the tool's own sign-in in a terminal window, then checks every few seconds for three
+  // minutes, or until Settings is closed.
+  const polling = new Set();
+  const signIn = async (t) => {
+    try { await invoke('sign_in_ai_tool', { id: t.id }); } catch (e) { note(t.id, { text: errText(e), signIn: true }); return; }
+    note(t.id, { text: `A window has opened for ${t.name}’s sign-in, which goes on in your browser. Navi will notice when you’re done.`, busy: true, signIn: true });
+    // Pressed again (the window was closed too soon): the same check carries on.
+    if (polling.has(t.id)) return;
+    polling.add(t.id);
+    try {
+      const until = Date.now() + 180000;
+      while (Date.now() < until && subHost.isConnected) {
+        await new Promise((r) => setTimeout(r, 3000));
+        if (!toolNotes[t.id]?.busy) return;
+        if (await invoke('ai_tool_signed_in', { id: t.id }).catch(() => null)) {
+          note(t.id, { text: `Signed in. Navi is using ${t.name}.`, good: true });
+          toast(`Connected to ${t.name}`);
+          return;
+        }
+      }
+      if (subHost.isConnected) note(t.id, { text: `${t.name} still isn’t signed in. Finish signing in in the window that opened, then press Check again.`, signIn: true });
+    } finally { polling.delete(t.id); }
+  };
+  const toolNote = (t) => {
+    const n = toolNotes[t.id];
+    if (!n) return null;
+    const again = btn('Check again', { size: 'sm', variant: 'ghost', icon: 'rerun', onClick: () => { note(t.id, { ...n, busy: true }); checkSignIn(t); } });
+    return h('div', { class: 'ai-tool-note' },
+      h('p', { class: `small ${n.good ? '' : 'quiet'}` }, n.good ? ico('check', 14) : null, n.text),
+      n.signIn ? h('div', { class: 'row', style: { gap: '8px' } },
+        btn('Sign in', { size: 'sm', icon: 'external', onClick: () => signIn(t) }), n.busy ? null : again) : null);
+  };
   const testRow = () => setRow('Check it works', testOut, btn('Test', { size: 'sm', icon: 'spark', onClick: async () => {
     testOut.textContent = 'Asking…';
     try { const r = await invoke('test_ai'); testOut.textContent = `Working: “${String(r).slice(0, 40)}”`; } catch (e) { testOut.textContent = errText(e); }
@@ -599,14 +668,18 @@ export async function render(root, { store, arg }) {
         const pathIn = h('input', { class: 'input', value: path, placeholder: t.id === 'codex' ? 'C:\\Users\\you\\AppData\\Roaming\\npm\\codex.cmd' : 'C:\\Users\\you\\.local\\bin\\claude.exe', spellcheck: 'false' });
         pathIn.addEventListener('change', () => setToolPath(t, pathIn.value.trim()));
         pathRow = h('div', { class: 'ai-tool-path' },
-          h('span', { class: 'small quiet' }, 'Path to the tool'), pathIn,
-          h('span', { class: 'small faint' }, 'Only if Navi can’t find it. A program, a .js file or an npm .cmd file.', using && t.found && t.path ? ` Navi is using ${t.path}.` : ''));
+          h('span', { class: 'small quiet' }, t.found ? 'Path to the tool' : 'Or type where it is'), pathIn,
+          h('span', { class: 'small faint' }, 'Only if Find it can’t. A program, a .js file or an npm .cmd file.', using && t.found && t.path ? ` Navi is using ${t.path}.` : ''));
       }
+      const finding = toolNotes[t.id]?.busy && !toolNotes[t.id]?.signIn;
+      const action = using ? chip('In use', 'accent', true)
+        : t.found ? btn(`Use ${t.name}`, { size: 'sm', onClick: async () => { await setProvider(t.id, models[0]); checkSignIn(t, undefined, { quiet: true }); } })
+          : btn(finding ? 'Looking…' : 'Find it', { size: 'sm', icon: 'search', disabled: finding, onClick: () => findTool(t) });
       return h('div', { class: `ai-tool ${using ? 'on' : ''} ${t.found ? '' : 'missing'}` },
         h('div', { class: 'ai-tool-head' },
           h('div', {}, h('div', { class: 'h3' }, t.name), h('div', { class: 'small faint' }, `Uses ${t.plan}. No API key.`)),
-          using ? chip('In use', 'accent', true) : t.found ? btn(`Use ${t.name}`, { size: 'sm', onClick: () => setProvider(t.id, models[0]) }) : chip('Not installed', 'line')),
-        !t.found ? h('p', { class: 'small quiet' }, t.installHint) : null,
+          action),
+        toolNote(t) || (!t.found ? h('p', { class: 'small quiet' }, `Already installed? Press Find it and Navi connects it. ${t.installHint}`) : null),
         modelPick ? h('div', { class: 'row', style: { gap: '10px', marginTop: '4px' } }, h('span', { class: 'small quiet' }, 'Model'), modelPick) : null,
         // Its own line under the model switch: beside it, it only ever fitted in a very wide window.
         modelPick && t.id === 'claude-code' ? h('span', { class: 'small faint' }, 'Haiku is quickest.') : null,
@@ -663,7 +736,12 @@ export async function render(root, { store, arg }) {
     h('p', { class: 'small quiet', style: { marginBottom: '12px' } }, 'Navi can borrow Claude Code or Codex if they are on this computer, with no API key. Rewrites take a few seconds this way: about 3 with Claude Code and about 4 or 5 with Codex. Clean mode stays instant, because its polish skips these tools.'),
     subHost, apiHost, offHost);
   drawAi();
-  invoke('detect_ai_tools').then((list) => { tools = list || []; drawAi(); }).catch(() => {});
+  invoke('detect_ai_tools').then((list) => {
+    tools = list || []; drawAi();
+    // The tool in use, signed out since: its card offers the sign-in.
+    const inUse = tools.find((t) => t.id === S().ai.provider && t.found);
+    if (inUse) checkSignIn(inUse, undefined, { quiet: true });
+  }).catch(() => {});
   if (S().ai.provider === 'ollama') checkOllama();
 
   // ---------------------------------------------------------------- voice (ElevenLabs)

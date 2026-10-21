@@ -324,6 +324,7 @@ function normaliseVoiceCommands(vc, before = null) {
 const daily = Array.from({ length: 14 }, (_, i) => ({ date: new Date(now - (13 - i) * 86400000).toISOString().slice(0, 10), words: [320, 610, 180, 0, 890, 1240, 760, 430, 980, 1120, 640, 1510, 1380, 1730][i] }));
 
 const state = {
+  cli: { 'claude-code': { found: true, signedIn: true }, codex: { found: false, signedIn: false } },
   settings: {
     onboarded: true, userName: 'Alex',
     hotkeys: { talk: ['Ctrl', 'Win'], rambleKey: 'Space', doubleTapHandsFree: true, cancelKey: 'Escape', modeKeys: [{ mode: 'email', keys: ['F4'] }] },
@@ -534,10 +535,18 @@ const handlers = {
   capture_shortcut: async () => { await wait(1600); return ['Backslash']; },
   check_shortcut: ({ keys }) => ({ ...checkShortcut(keys), labels: keys.map((k) => ({ RCtrl: 'Right Ctrl', RAlt: 'Right Alt', CapsLock: 'Caps Lock', Backslash: '\\', Oem8: '`' }[k] || k)) }),
   cancel_shortcut_capture: () => null,
+  // Codex starts out not found, so the preview shows the Find button and the sign-in after it.
   detect_ai_tools: () => [
-    { id: 'claude-code', name: 'Claude Code', plan: 'your Claude plan', found: true, path: 'C:\\Users\\you\\.local\\bin\\claude.exe', models: ['haiku', 'sonnet', 'opus'], installHint: 'Install Claude Code from claude.com/claude-code, then run claude once in a terminal to sign in.' },
-    { id: 'codex', name: 'Codex', plan: 'your ChatGPT plan', found: true, path: 'codex.js', models: ['gpt-6-luna', 'gpt-5.6-luna', 'gpt-6.1-sol'], installHint: 'Install Codex with: npm install -g @openai/codex, then run codex once in a terminal to sign in.' },
+    { id: 'claude-code', name: 'Claude Code', plan: 'your Claude plan', found: true, path: 'C:\\Users\\you\\.local\\bin\\claude.exe', models: ['haiku', 'sonnet', 'opus'], installHint: 'To install it, go to claude.com/claude-code.' },
+    { id: 'codex', name: 'Codex', plan: 'your ChatGPT plan', found: !!state.cli.codex.found, path: state.cli.codex.found ? 'codex.js' : null, models: ['gpt-6-luna', 'gpt-5.6-luna', 'gpt-6.1-sol'], installHint: 'To install it, run npm install -g @openai/codex in a terminal.' },
   ],
+  find_ai_tool: async ({ id }) => {
+    await wait(900);
+    state.cli[id].found = true;
+    return { found: true, shown: id === 'codex' ? 'C:\\Users\\you\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\bin\\codex.js' : 'C:\\Users\\you\\.local\\bin\\claude.exe', path: null, signedIn: state.cli[id].signedIn };
+  },
+  ai_tool_signed_in: async ({ id }) => { await wait(200); return state.cli[id].signedIn; },
+  sign_in_ai_tool: ({ id }) => { setTimeout(() => { state.cli[id].signedIn = true; }, 4000); },
   list_sound_sets: async () => {
     try { return await (await fetch('sounds/sets/index.json')).json(); } catch { return { default: 'hush', sets: [] }; }
   },

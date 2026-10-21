@@ -696,6 +696,77 @@ pub async fn detect_ai_tools(app: State<'_, Arc<App>>) -> Res<Vec<crate::text::c
     .map_err(err)
 }
 
+/// What Settings' Find button found.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FoundAiTool {
+    pub found: bool,
+    /// Where it is, as the card shows it.
+    pub shown: Option<String>,
+    /// What to keep as the tool's path in Settings. None when Navi finds it there anyway.
+    pub path: Option<String>,
+    /// From the tool's own status command; None when it couldn't tell.
+    pub signed_in: Option<bool>,
+}
+
+/// Searches this computer for Claude Code or Codex (cli_ai::search) and asks whether it is
+/// signed in, so a card can connect it with one click instead of asking for a path.
+#[tauri::command]
+pub async fn find_ai_tool(id: String) -> Res<FoundAiTool> {
+    use crate::text::cli_ai;
+    if !cli_ai::is_cli(&id) {
+        return Err(format!("Navi doesn't know the AI tool \u{201c}{id}\u{201d}."));
+    }
+    let search_for = id.clone();
+    let Some(found) = tokio::task::spawn_blocking(move || cli_ai::search(&search_for)).await.map_err(err)? else {
+        log::info!("AI tools: the search found no {id}");
+        return Ok(FoundAiTool { found: false, shown: None, path: None, signed_in: None });
+    };
+    let signed_in = cli_ai::signed_in(&id, &found.launcher).await;
+    let said = match signed_in {
+        Some(true) => "signed in",
+        Some(false) => "not signed in",
+        None => "sign-in not known",
+    };
+    log::info!("AI tools: found {id} {}, {said}", if found.path.is_some() { "by searching" } else { "where Navi looks" });
+    Ok(FoundAiTool { found: true, shown: Some(found.launcher.shown()), path: found.path.map(|p| p.display().to_string()), signed_in })
+}
+
+/// The tool `id` as Navi would start it: with the path in Settings while it is the AI in use, else
+/// where Navi looks, else by searching.
+fn ai_tool_launcher(app: &App, id: &str) -> Option<crate::text::cli_ai::Launcher> {
+    use crate::text::cli_ai;
+    let ai = app.settings().ai;
+    let path = ai.base_url.as_deref().map(str::trim).filter(|p| ai.provider == id && !p.is_empty() && !p.contains("://"));
+    let usual = if id == "codex" { cli_ai::find_codex(path) } else { cli_ai::find_claude(path) };
+    usual.or_else(|| cli_ai::search(id).map(|f| f.launcher))
+}
+
+async fn ai_tool_launcher_for(app: &Arc<App>, id: &str) -> Res<crate::text::cli_ai::Launcher> {
+    if !crate::text::cli_ai::is_cli(id) {
+        return Err(format!("Navi doesn't know the AI tool \u{201c}{id}\u{201d}."));
+    }
+    let (app, look_for) = (app.clone(), id.to_string());
+    tokio::task::spawn_blocking(move || ai_tool_launcher(&app, &look_for)).await.map_err(err)?.ok_or_else(|| "Navi can\u{2019}t find it on this computer.".to_string())
+}
+
+/// Whether Claude Code or Codex is signed in (null when it couldn't tell), for the card's check
+/// after the sign-in window opened.
+#[tauri::command]
+pub async fn ai_tool_signed_in(app: State<'_, Arc<App>>, id: String) -> Res<Option<bool>> {
+    let launcher = ai_tool_launcher_for(app.inner(), &id).await?;
+    Ok(crate::text::cli_ai::signed_in(&id, &launcher).await)
+}
+
+/// Opens a terminal window with the tool's own sign-in (`claude auth login`, `codex login`).
+#[tauri::command]
+pub async fn sign_in_ai_tool(app: State<'_, Arc<App>>, id: String) -> Res<()> {
+    let launcher = ai_tool_launcher_for(app.inner(), &id).await?;
+    crate::text::cli_ai::open_sign_in(&id, &launcher).map_err(err)?;
+    log::info!("AI tools: opened the sign-in for {id}");
+    Ok(())
+}
+
 fn eleven_key(app: &App) -> Res<String> {
     if app.settings().privacy.local_only {
         return Err("Local only is on, so ElevenLabs is blocked.".into());

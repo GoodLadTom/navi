@@ -2635,7 +2635,7 @@ mod tests {
         assert_eq!(skipped("Couldn't reach the AI server. Is it running at http://127.0.0.1:1234/v1?"), "Couldn't reach the AI server, so Navi typed a plain tidy instead.");
         assert_eq!(skipped("Ollama doesn't have the model \"qwen2.5:14b\". Run: ollama pull qwen2.5:14b"), "Ollama doesn't have the model \"qwen2.5:14b\", so Navi typed a plain tidy instead.");
         assert_eq!(skipped("Claude had a server error (500). Try again shortly."), "Claude had a server error, so Navi typed a plain tidy instead.");
-        assert_eq!(skipped("Claude Code isn't signed in. Open a terminal, run claude and sign in, then try again."), "Claude Code isn't signed in, so Navi typed a plain tidy instead.");
+        assert_eq!(skipped("Claude Code isn't signed in. Open Settings > AI and press Sign in on its card, then try again."), "Claude Code isn't signed in, so Navi typed a plain tidy instead.");
         assert_eq!(skipped("Ollama took longer than 60 seconds to reply."), "The AI didn't answer in time, so Navi typed a plain tidy instead.");
         assert_eq!(skipped("Claude Code didn't answer: no reply within 25 seconds"), "The AI didn't answer in time, so Navi typed a plain tidy instead.");
         // Raw detail stays in History, not the bubble.
