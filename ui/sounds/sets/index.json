@@ -1,5 +1,5 @@
 {
-  "default": "hush",
+  "default": "bubble",
   "sets": [
     {
       "id": "hush",
@@ -25,11 +25,6 @@
       "id": "bubble",
       "name": "Bubble",
       "description": "A low, round bloop."
-    },
-    {
-      "id": "bowl",
-      "name": "Bowl",
-      "description": "A small singing bowl."
     },
     {
       "id": "dusk",

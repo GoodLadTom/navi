@@ -178,6 +178,14 @@ pub fn run() {
     };
 
     app.run(|handle, event| {
+        // A Mac: clicking Navi in the Dock (or opening it again from Finder) shows the window.
+        #[cfg(target_os = "macos")]
+        if let RunEvent::Reopen { .. } = event {
+            if let Some(state) = handle.try_state::<Arc<App>>() {
+                state.show_main();
+            }
+            return;
+        }
         if let RunEvent::ExitRequested { api, code, .. } = event {
             // Closing the last window must not quit: Navi lives in the tray.
             let quitting = handle.try_state::<Arc<App>>().map(|s| s.quitting.load(Ordering::SeqCst)).unwrap_or(true);
@@ -299,7 +307,15 @@ fn setup(handle: &AppHandle, started_hidden: bool) -> anyhow::Result<()> {
     }
 
     // Stay in the tray only when Windows launched Navi at sign-in and the user chose that.
-    build_windows(handle, &app, started_hidden && settings.onboarded && settings.general.start_minimised)?;
+    // Setup runs on the main thread, where a Mac lets Navi read the keyboard layout.
+    hotkey::refresh_layout();
+    let hidden = started_hidden && settings.onboarded && settings.general.start_minimised;
+    build_windows(handle, &app, hidden)?;
+    // A Mac: started at login into the menu bar, Navi stays out of the Dock until its window opens.
+    #[cfg(target_os = "macos")]
+    if hidden {
+        let _ = handle.set_dock_visibility(false);
+    }
     build_tray(handle, &app)?;
 
     // Hotkeys.
@@ -454,6 +470,9 @@ fn build_windows(handle: &AppHandle, app: &Arc<App>, hidden: bool) -> anyhow::Re
     if let Ok(hwnd) = prompt.hwnd() {
         meeting::guard_card(hwnd.0 as isize);
     }
+    // On a Mac it floats over every app and Space like the bubble, but takes clicks.
+    #[cfg(target_os = "macos")]
+    overlay::mac::float(&prompt, false)?;
     Ok(())
 }
 
@@ -516,6 +535,10 @@ fn build_tray(handle: &AppHandle, app: &Arc<App>) -> anyhow::Result<()> {
     *app.tray_toggles.lock() = vec![hey_navi.clone(), watch_item.clone()];
 
     // The logo on its tile, in the colour from Settings > General > Colour.
+    // On a Mac, the menu bar's one-colour template icon instead.
+    #[cfg(target_os = "macos")]
+    let icon = colours::menu_bar_icon()?;
+    #[cfg(not(target_os = "macos"))]
     let icon = colours::tray_icon(&app.settings().general.colour)?;
     let app_for_menu = app.clone();
     {
@@ -525,9 +548,11 @@ fn build_tray(handle: &AppHandle, app: &Arc<App>) -> anyhow::Result<()> {
     }
     TrayIconBuilder::with_id("navi")
         .icon(icon)
+        .icon_as_template(cfg!(target_os = "macos"))
         .tooltip("Navi")
         .menu(&menu)
-        .show_menu_on_left_click(false)
+        // A Mac's menu bar items open their menu on a click; Windows' tray opens Navi.
+        .show_menu_on_left_click(cfg!(target_os = "macos"))
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
                 if let Some(state) = tray.app_handle().try_state::<Arc<App>>() {
@@ -594,6 +619,9 @@ pub fn close_main_window(app: &Arc<App>) {
     if let Some(w) = app.handle.get_webview_window("main") {
         let _ = w.hide();
     }
+    // A Mac: Navi leaves the Dock with its window, as menu bar apps do.
+    #[cfg(target_os = "macos")]
+    let _ = app.handle.set_dock_visibility(false);
     // A hidden window can't be recording a shortcut or showing keys.
     leave_shortcut_picker(app);
     // Nor testing the microphone: left running, it kept the mic open and blocked voice commands.

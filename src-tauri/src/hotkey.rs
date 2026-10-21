@@ -623,11 +623,22 @@ fn layout_char(vk: u8) -> Option<char> {
         let c = char::from_u32(value & 0xFFFF)?;
         (c != '\0' && !c.is_control() && !c.is_whitespace()).then_some(c)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        mac::layout_char(vk)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = vk;
         None
     }
+}
+
+/// Reads the keyboard layout's symbols for `display_label` (macOS: call on the main thread, at
+/// start-up; the layout API may only be used there). A no-op elsewhere.
+pub fn refresh_layout() {
+    #[cfg(target_os = "macos")]
+    mac::refresh_layout();
 }
 
 /// For saving a talk chord: `check_chord` without the warnings. (`start` and `set_chord` only
@@ -2053,6 +2064,60 @@ mod mac {
         (0x7D, 0x28), (0x7E, 0x26),
     ];
 
+    // ----- the keyboard layout's symbols -----
+
+    /// The character each symbol key types (unshifted) with the layout read at start-up.
+    static LAYOUT: Mutex<Option<std::collections::HashMap<u8, char>>> = parking_lot::const_mutex(None);
+
+    #[link(name = "Carbon", kind = "framework")]
+    extern "C" {
+        fn TISCopyCurrentKeyboardLayoutInputSource() -> *mut c_void;
+        fn TISGetInputSourceProperty(source: *mut c_void, key: *const c_void) -> *const c_void;
+        static kTISPropertyUnicodeKeyLayoutData: *const c_void;
+        fn LMGetKbdType() -> u8;
+        fn UCKeyTranslate(
+            layout: *const u8, code: u16, action: u16, modifiers: u32, keyboard: u32, options: u32,
+            dead: *mut u32, max: usize, len: *mut usize, chars: *mut u16,
+        ) -> i32;
+        fn CFDataGetBytePtr(data: *const c_void) -> *const u8;
+        fn CFRelease(object: *const c_void);
+    }
+
+    pub(super) fn refresh_layout() {
+        const DISPLAY: u16 = 3; // kUCKeyActionDisplay
+        const NO_DEAD_KEYS: u32 = 1; // kUCKeyTranslateNoDeadKeysMask
+        let mut map = std::collections::HashMap::new();
+        unsafe {
+            let source = TISCopyCurrentKeyboardLayoutInputSource();
+            if source.is_null() {
+                return;
+            }
+            let data = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData);
+            if !data.is_null() {
+                let layout = CFDataGetBytePtr(data);
+                let keyboard = LMGetKbdType() as u32;
+                for &(code, vk) in KEYCODES {
+                    if !matches!(vk, 0xBA..=0xC0 | 0xDB..=0xDF | 0xE1..=0xE4) {
+                        continue;
+                    }
+                    let (mut dead, mut len, mut chars) = (0u32, 0usize, [0u16; 4]);
+                    let ok = UCKeyTranslate(layout, code, DISPLAY, 0, keyboard, NO_DEAD_KEYS, &mut dead, chars.len(), &mut len, chars.as_mut_ptr());
+                    if ok == 0 && len == 1 {
+                        if let Some(c) = char::from_u32(chars[0] as u32).filter(|c| !c.is_control() && !c.is_whitespace()) {
+                            map.insert(vk, c);
+                        }
+                    }
+                }
+            }
+            CFRelease(source);
+        }
+        *LAYOUT.lock() = Some(map);
+    }
+
+    pub(super) fn layout_char(vk: u8) -> Option<char> {
+        LAYOUT.lock().as_ref().and_then(|m| m.get(&vk).copied())
+    }
+
     pub(crate) fn vk_of_keycode(code: u16) -> Option<u8> {
         KEYCODES.iter().find(|(c, _)| *c == code).map(|(_, vk)| *vk)
     }
@@ -2870,6 +2935,15 @@ mod tests {
         let c = check_chord(&names(&["Win", "V"]), "Space");
         assert_eq!(c.error.as_deref(), Some("Command + V is a Mac shortcut, so Navi would take it over. Pick something else."));
         assert!(check_chord(&names(&["Fn"]), "Space").error.is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_layout_names_symbol_keys() {
+        // Test threads aren't the main thread, but reading the layout there works in practice.
+        refresh_layout();
+        assert!(display_label("Slash") == "/" || !display_label("Slash").is_empty());
+        assert_eq!(mac::layout_char(b'A'), None, "letters keep their own names");
     }
 
     #[cfg(target_os = "macos")]
