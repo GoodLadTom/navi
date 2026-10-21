@@ -131,7 +131,7 @@ mod tests {
         let old = json!({
             "version": 1,
             "onboarded": true,
-            "userName": "Tom",
+            "userName": "Alex",
             "hotkeys": { "talk": ["Ctrl", "Alt"], "rambleKey": "Space" },
             "general": { "theme": "dark" },
             "watch": { "everySecs": 30 },
@@ -140,7 +140,7 @@ mod tests {
         std::fs::write(&paths.settings, serde_json::to_string_pretty(&old).unwrap()).unwrap();
         let s = load(&paths);
         assert!(s.onboarded);
-        assert_eq!(s.user_name, "Tom");
+        assert_eq!(s.user_name, "Alex");
         assert_eq!(s.general.theme, "dark");
         assert_eq!(s.hotkeys.talk, ["Ctrl", "Alt"]);
         assert_eq!(s.watch.every_secs, 30);

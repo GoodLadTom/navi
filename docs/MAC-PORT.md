@@ -81,8 +81,8 @@ of work. The Status section above says what has since been built and tested on a
 3. **Default shortcut.** Suggested: hold Fn, with set-up telling the user to turn off Fn's own
    action (emoji picker or Apple Dictation) in System Settings > Keyboard. Right Option as the
    other preset.
-4. **Dan's access.** To push changes, Dan needs adding as a collaborator on GoodLadTom/navi.
-5. **A signed download, later.** Self-built copies are fine for Tom and Dan. A download for anyone
+4. **Collaborators.** Anyone else who pushes changes needs adding as a collaborator on GoodLadTom/navi.
+5. **A signed download, later.** Building from source is fine for developers. A download for anyone
    else needs Apple's Developer Program ($99 a year), signing and notarisation. Decide that at the
    public Mac launch.
 
@@ -270,9 +270,9 @@ on the PC and run the Windows build and its tests there before pushing the merge
    when* a watch session gives a write-up and call notes mention what was shown.
 7. **The newer features.** Playback while you talk (mute first), colour themes, fast AI rewrites,
    and SpeechAnalyzer and Foundation Models tested against whisper.cpp and Ollama on real takes.
-8. **Hand it to Dan.** `scripts/mac-setup.sh`, the README's "Build on a Mac" section, updates off
+8. **Hand it over.** `scripts/mac-setup.sh`, the README's "Build on a Mac" section, updates off
    for self-built copies, and the full test list above on a fresh macOS user account. *Done when*
-   Dan clones the repo, runs one script and dictates.
+   someone else clones the repo, runs one script and dictates.
 
 A GitHub Actions workflow that builds and tests on Windows and macOS for every push is worth
 adding once the repo is public. On a private repo, Mac minutes use the free allowance ten times
