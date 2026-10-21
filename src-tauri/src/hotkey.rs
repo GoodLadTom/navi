@@ -515,6 +515,12 @@ pub fn check_chord_with(names: &[String], ramble_key: &str, label: &dyn Fn(&str)
             Key::Vk(vk) if types_text(vk) => {
                 check.warning = Some(format!("You won't be able to type {} while Navi is running.", label(&vk_name(vk))))
             }
+            Key::Vk(VK_LCONTROL) if cfg!(target_os = "macos") => {
+                check.warning = Some("Left Control is part of shortcuts like Control + Tab, and moves the cursor with letters in text fields, so Navi may start listening when you don't mean it to. Right Option is a safer pick.".into())
+            }
+            Key::Vk(VK_LMENU) if cfg!(target_os = "macos") => {
+                check.warning = Some("Left Option types accents and symbols with other keys, so Navi may start listening when you don't mean it to. Right Option is a safer pick.".into())
+            }
             Key::Vk(VK_LCONTROL) => {
                 check.warning = Some("Left Ctrl is part of everyday shortcuts like Ctrl + C, so Navi may start listening when you don't mean it to. Right Ctrl is a safer pick.".into())
             }
@@ -569,7 +575,14 @@ fn everyday_shortcut(keys: &[Key]) -> Option<&'static str> {
     if cfg!(target_os = "macos") && only(&[Modifier::Ctrl]) && key == 0x20 {
         return Some("a Mac shortcut");
     }
-    if only(&[Modifier::Ctrl]) {
+    // A Mac's copy, paste and the rest are Command + a letter, and Control + a letter moves the
+    // cursor in text fields.
+    let copy_family = if cfg!(target_os = "macos") { Modifier::Win } else { Modifier::Ctrl };
+    if cfg!(target_os = "macos") && only(&[Modifier::Ctrl]) && (letter_or_digit || key == 0x09) {
+        return Some("an everyday shortcut in many apps");
+    }
+    // (Command + Space and the like go on to the Mac's own shortcuts below.)
+    if only(&[copy_family]) && (!cfg!(target_os = "macos") || letter_or_digit || key == 0x09) {
         return Some(match key {
             b'C' => "Copy in most apps",
             b'V' => "Paste in most apps",
@@ -727,8 +740,6 @@ fn for_this_mac(text: String) -> String {
         .replace("Right Alt", "Right Option")
         .replace("Left Ctrl", "Left Control")
         .replace("Left Alt", "Left Option")
-        .replace("Ctrl + C", "Command + C")
-        .replace("Alt + Tab", "Command + Tab")
         .replace("Add Ctrl or Alt", "Add Control, Option or Command")
         .replace("The Windows key", "Command")
         .replace("a Windows shortcut", "a Mac shortcut")
@@ -866,7 +877,7 @@ fn chord_needs_mask(chord: &[Key]) -> bool {
 pub fn check_mode_key(keys: &[String], talk: &[String], others: &[Vec<String>], label: &dyn Fn(&str) -> String) -> ChordCheck {
     let mut check = check_chord_with(keys, "", label);
     if mode_key_never_fires(keys) {
-        check.error = Some(format!("{} is used with other keys all the time, so it would switch modes while you work. Pick a key of its own, such as F1.", check.label));
+        check.error = Some(format!("{} is used with other keys all the time, so it would switch modes while you work. Pick a key of its own, such as {}.", check.label, if cfg!(target_os = "macos") { "F13" } else { "F1" }));
         check.warning = None;
         return check;
     }
@@ -876,7 +887,9 @@ pub fn check_mode_key(keys: &[String], talk: &[String], others: &[Vec<String>], 
     let (Ok(mine), Ok(talk_keys)) = (parse_chord(keys), parse_chord(talk)) else { return check };
     if mine.iter().any(|k| talk_keys.iter().any(|t| keys_overlap(*k, *t))) {
         // Never suggest a key of the talk shortcut itself (a talk shortcut of F1).
-        let spare = (0x70..=0x7Bu8).find(|vk| !talk_keys.iter().any(|t| t.matches(*vk))).map_or_else(|| "F1".to_string(), vk_name);
+        // A Mac's F1 to F12 are brightness and volume unless fn is held: suggest F13 to F19 there.
+        let spares = if cfg!(target_os = "macos") { 0x7Cu8..=0x82 } else { 0x70u8..=0x7B };
+        let spare = spares.clone().find(|vk| !talk_keys.iter().any(|t| t.matches(*vk))).map_or_else(|| vk_name(*spares.start()), vk_name);
         check.error = Some(format!("{} is part of your talk shortcut. Pick a key of its own, such as {spare}.", check.label));
     } else if others.iter().filter_map(|o| parse_chord(o).ok()).any(|o| o.len() == mine.len() && o.iter().all(|k| mine.contains(k))) {
         check.error = Some(format!("{} already switches to another mode.", check.label));
@@ -2653,9 +2666,11 @@ mod tests {
         }
         // A talk shortcut of F3 refuses F3, and the advice never names a talk key.
         let refused = check_mode_key(&fkeys[2], &names(&["F3"]), &others(2), &label).error.expect("F3 is the talk key");
-        assert!(refused.contains("talk shortcut") && refused.ends_with("such as F1."), "{refused}");
+        // A Mac suggests F13 and up (its F1 to F12 are brightness and volume).
+        let (first, second) = if cfg!(target_os = "macos") { ("F13", "F13") } else { ("F1", "F2") };
+        assert!(refused.contains("talk shortcut") && refused.ends_with(&format!("such as {first}.")), "{refused}");
         let talk_f1 = check_mode_key(&fkeys[0], &names(&["F1"]), &others(0), &label).error.expect("F1 is the talk key");
-        assert!(talk_f1.ends_with("such as F2."), "{talk_f1}");
+        assert!(talk_f1.ends_with(&format!("such as {second}.")), "{talk_f1}");
     }
 
     // Windows key names; a Mac shows its own (see mac_labels_use_mac_words).
@@ -2933,7 +2948,11 @@ mod tests {
         assert_eq!(parse_key("Right Option"), Some(Key::Vk(VK_RMENU)));
         assert_eq!(parse_key("globe"), Some(Key::Vk(VK_FN)));
         let c = check_chord(&names(&["Win", "V"]), "Space");
-        assert_eq!(c.error.as_deref(), Some("Command + V is a Mac shortcut, so Navi would take it over. Pick something else."));
+        assert_eq!(c.error.as_deref(), Some("Command + V is Paste in most apps, so Navi would take it over. Pick something else."));
+        assert_eq!(check_chord(&names(&["Ctrl", "A"]), "Space").error.as_deref(), Some("Control + A is an everyday shortcut in many apps, so Navi would take it over. Pick something else."));
+        assert!(check_chord(&names(&["Win", "Space"]), "Space").error.as_deref().is_some_and(|e| e.contains("a Mac shortcut")));
+        assert!(check_chord(&names(&["LCtrl"]), "Space").warning.as_deref().is_some_and(|w| w.contains("Right Option") && !w.contains("Ctrl")));
+        assert!(check_mode_key(&names(&["RAlt"]), &names(&["RAlt"]), &[], &|n: &str| key_label(n)).error.as_deref().is_some_and(|e| e.contains("F13")));
         assert!(check_chord(&names(&["Fn"]), "Space").error.is_none());
     }
 
