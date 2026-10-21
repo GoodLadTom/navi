@@ -337,8 +337,11 @@ impl Inner {
             let _ = tokio::task::spawn_blocking(move || drop(server)).await;
             bail!("it did not start");
         }
-        log::info!("quick speech engine ready on port {} for voice commands", server.port);
         let port = server.port;
+        // The first request on a new server sets up the GPU and is slow: get it over with here,
+        // so the first "Navi" doesn't wait and the listener doesn't think checks are slow.
+        self.warm_up(port).await;
+        log::info!("quick speech engine ready on port {port} for voice commands");
         *guard = Some(server);
         Ok(port)
     }
