@@ -16,6 +16,8 @@
 //!   it over, so nothing is paused twice or played again under a new take.
 //! * What Navi muted is written to `media-muted.json` in the data folder until it is unmuted, so a
 //!   crash mid-take can't leave other apps silent: the next start unmutes them (`recover`).
+//! * On a Mac, muting mutes the output device itself and pausing mutes too (see `mac`). Muting
+//!   waits for the start cue to finish, and the sound comes back while any later cue plays.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -100,6 +102,9 @@ pub fn hold(app: &Arc<App>, seq: u64) {
         return;
     }
     let app = app.clone();
+    // macOS mutes the whole output, Navi's start cue with it: the cue (just played) ends first.
+    #[cfg(target_os = "macos")]
+    let cue_wait = Duration::from_millis(app.sounds.duration_ms(crate::sounds::Cue::Talk, &settings.sounds) as u64 + 50);
     tauri::async_runtime::spawn(async move {
         {
             let mut state = STATE.lock().await;
@@ -107,6 +112,13 @@ pub fn hold(app: &Arc<App>, seq: u64) {
                 // The last take's sound hasn't come back yet: this take carries on holding it.
                 Some(held) => held.owner = seq,
                 None => {
+                    #[cfg(target_os = "macos")]
+                    {
+                        tokio::time::sleep(cue_wait).await;
+                        if !matches!(&app.session.lock().phase, Phase::Recording(rec) if rec.seq == seq) {
+                            return;
+                        }
+                    }
                     let dir = app.paths.data.clone();
                     let held = tokio::task::spawn_blocking(move || apply(choice, &dir, seq)).await.unwrap_or_default();
                     if !held.paused.is_empty() || !held.muted.is_empty() {
@@ -134,6 +146,13 @@ pub fn hold(app: &Arc<App>, seq: u64) {
     });
 }
 
+/// A Navi cue of `duration_ms` is about to play (sounds.rs). On a Mac, where muting silences the
+/// whole output, the sound comes back for it and is muted again afterwards while a take holds it.
+#[cfg(target_os = "macos")]
+pub fn cue_playing(duration_ms: u32) {
+    mac::cue_playing(duration_ms);
+}
+
 /// At start: unmutes whatever a previous run muted and never got to unmute.
 pub fn recover(data_dir: PathBuf) {
     let file = data_dir.join(MUTED_FILE);
@@ -147,6 +166,15 @@ pub fn recover(data_dir: PathBuf) {
 }
 
 fn apply(choice: Choice, data_dir: &Path, owner: u64) -> Held {
+    // Nothing can pause another app's player on a Mac (see `mac`), so a pause mutes there.
+    #[cfg(target_os = "macos")]
+    let choice = if choice.pauses() {
+        static SAID: std::sync::Once = std::sync::Once::new();
+        SAID.call_once(|| log::info!("while you talk: macOS lets no app pause another's player, so Navi mutes the sound instead"));
+        Choice::Mute
+    } else {
+        choice
+    };
     let mut held = Held { owner, ..Default::default() };
     if choice.pauses() {
         held.paused = win::pause_playing();
@@ -375,7 +403,347 @@ mod win {
     }
 }
 
-#[cfg(not(windows))]
+/// The Mac half stands in for `win`, so the shared code above calls one set of names.
+#[cfg(target_os = "macos")]
+use mac as win;
+
+/// macOS has no per-app volume, so "mute" mutes the default output device itself (Core Audio), or
+/// turns its volume to nothing where it has no mute, and puts back exactly what it changed.
+/// Pausing isn't possible: macOS 15.4 closed MediaRemote (the private framework behind Now
+/// Playing) to other apps, so `apply` mutes instead. A muted device silences Navi's own cues too,
+/// so the sound comes back while a cue plays (`cue_playing`) and is muted again after it, for as
+/// long as the take holds it.
+#[cfg(target_os = "macos")]
+mod mac {
+    use objc2_core_audio::{
+        kAudioDevicePropertyDeviceUID, kAudioDevicePropertyMute, kAudioDevicePropertyVolumeScalar, kAudioHardwarePropertyDefaultOutputDevice,
+        kAudioHardwarePropertyDevices, kAudioObjectPropertyElementMain, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyScopeOutput,
+        kAudioObjectSystemObject, AudioObjectGetPropertyData, AudioObjectGetPropertyDataSize, AudioObjectHasProperty, AudioObjectID,
+        AudioObjectIsPropertySettable, AudioObjectPropertyAddress, AudioObjectSetPropertyData,
+    };
+    use objc2_core_foundation::{CFRetained, CFString};
+    use parking_lot::Mutex;
+    use std::ffi::c_void;
+    use std::ptr::NonNull;
+    use std::time::Duration;
+
+    /// A volume at or below this counts as the nothing Navi set.
+    const SILENT: f32 = 0.001;
+    /// How long after a cue's end the sound is muted again.
+    const CUE_TAIL: Duration = Duration::from_millis(150);
+
+    #[derive(Default)]
+    pub struct Paused;
+
+    impl Paused {
+        pub fn len(&self) -> usize {
+            0
+        }
+        pub fn is_empty(&self) -> bool {
+            true
+        }
+    }
+
+    pub fn pause_playing() -> Paused {
+        Paused
+    }
+    pub fn resume(_paused: &Paused) {}
+
+    /// One change Navi made, written as a string for `media-muted.json`:
+    /// "mac-mute:<element>:<device uid>" or "mac-volume:<element>:<level before>:<device uid>"
+    /// (the uid last, as it may hold colons).
+    #[derive(Clone, Debug, PartialEq)]
+    enum Change {
+        Mute { element: u32, uid: String },
+        Volume { element: u32, level: f32, uid: String },
+    }
+
+    impl Change {
+        fn key(&self) -> String {
+            match self {
+                Change::Mute { element, uid } => format!("mac-mute:{element}:{uid}"),
+                Change::Volume { element, level, uid } => format!("mac-volume:{element}:{level}:{uid}"),
+            }
+        }
+
+        fn parse(key: &str) -> Option<Change> {
+            if let Some(rest) = key.strip_prefix("mac-mute:") {
+                let (element, uid) = rest.split_once(':')?;
+                return Some(Change::Mute { element: element.parse().ok()?, uid: uid.to_string() }).filter(|_| !uid.is_empty());
+            }
+            let rest = key.strip_prefix("mac-volume:")?;
+            let mut parts = rest.splitn(3, ':');
+            let (element, level, uid) = (parts.next()?.parse().ok()?, parts.next()?.parse::<f32>().ok()?, parts.next()?);
+            (!uid.is_empty() && level.is_finite()).then(|| Change::Volume { element, level: level.clamp(0.0, 1.0), uid: uid.to_string() })
+        }
+    }
+
+    /// What Navi has muted and still holds, and whether the sound is back for a cue just now.
+    struct Hold {
+        changes: Vec<Change>,
+        given_back: bool,
+        /// Counts cues, so only the last one's timer mutes again.
+        cue: u64,
+    }
+
+    static HOLD: Mutex<Option<Hold>> = parking_lot::const_mutex(None);
+
+    fn address(selector: u32, scope: u32, element: u32) -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress { mSelector: selector, mScope: scope, mElement: element }
+    }
+
+    fn has(id: AudioObjectID, addr: &AudioObjectPropertyAddress) -> bool {
+        unsafe { AudioObjectHasProperty(id, NonNull::from(addr)) }
+    }
+
+    fn settable(id: AudioObjectID, addr: &AudioObjectPropertyAddress) -> bool {
+        let mut yes = 0u8;
+        has(id, addr) && unsafe { AudioObjectIsPropertySettable(id, NonNull::from(addr), NonNull::from(&mut yes)) } == 0 && yes != 0
+    }
+
+    /// A plain value (u32, f32, an object id) of a property.
+    fn get<T: Copy + Default>(id: AudioObjectID, addr: &AudioObjectPropertyAddress) -> Option<T> {
+        let mut value = T::default();
+        let mut size = std::mem::size_of::<T>() as u32;
+        let status = unsafe { AudioObjectGetPropertyData(id, NonNull::from(addr), 0, std::ptr::null(), NonNull::from(&mut size), NonNull::from(&mut value).cast::<c_void>()) };
+        (status == 0 && size as usize == std::mem::size_of::<T>()).then_some(value)
+    }
+
+    fn set<T: Copy>(id: AudioObjectID, addr: &AudioObjectPropertyAddress, value: T) -> bool {
+        let mut value = value;
+        let size = std::mem::size_of::<T>() as u32;
+        unsafe { AudioObjectSetPropertyData(id, NonNull::from(addr), 0, std::ptr::null(), size, NonNull::from(&mut value).cast::<c_void>()) == 0 }
+    }
+
+    fn default_output() -> Option<AudioObjectID> {
+        let addr = address(kAudioHardwarePropertyDefaultOutputDevice, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain);
+        get::<AudioObjectID>(kAudioObjectSystemObject as AudioObjectID, &addr).filter(|id| *id != 0)
+    }
+
+    fn devices() -> Vec<AudioObjectID> {
+        let system = kAudioObjectSystemObject as AudioObjectID;
+        let addr = address(kAudioHardwarePropertyDevices, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain);
+        let mut size = 0u32;
+        if unsafe { AudioObjectGetPropertyDataSize(system, NonNull::from(&addr), 0, std::ptr::null(), NonNull::from(&mut size)) } != 0 || size == 0 {
+            return Vec::new();
+        }
+        let mut ids = vec![0 as AudioObjectID; size as usize / std::mem::size_of::<AudioObjectID>()];
+        let status = unsafe { AudioObjectGetPropertyData(system, NonNull::from(&addr), 0, std::ptr::null(), NonNull::from(&mut size), NonNull::new(ids.as_mut_ptr().cast::<c_void>()).unwrap()) };
+        if status != 0 {
+            return Vec::new();
+        }
+        ids.truncate(size as usize / std::mem::size_of::<AudioObjectID>());
+        ids
+    }
+
+    /// A device's persistent id, which survives a restart (its object id may not).
+    fn uid(id: AudioObjectID) -> Option<String> {
+        let addr = address(kAudioDevicePropertyDeviceUID, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain);
+        let raw = get::<usize>(id, &addr)?;
+        // SAFETY: the property is a CFStringRef that the caller owns (+1), released when dropped.
+        let text: CFRetained<CFString> = unsafe { CFRetained::from_raw(NonNull::new(raw as *mut CFString)?) };
+        Some(text.to_string()).filter(|s| !s.is_empty())
+    }
+
+    fn device_with_uid(wanted: &str) -> Option<AudioObjectID> {
+        devices().into_iter().find(|id| uid(*id).as_deref() == Some(wanted))
+    }
+
+    fn mute_address(element: u32) -> AudioObjectPropertyAddress {
+        address(kAudioDevicePropertyMute, kAudioObjectPropertyScopeOutput, element)
+    }
+
+    fn volume_address(element: u32) -> AudioObjectPropertyAddress {
+        address(kAudioDevicePropertyVolumeScalar, kAudioObjectPropertyScopeOutput, element)
+    }
+
+    /// Mutes the default output: its mute switch (the whole device, else each of the first two
+    /// channels), or failing that its volume. Returns what it changed; nothing if it was silent
+    /// already.
+    fn mute_default_output() -> Vec<Change> {
+        let Some(device) = default_output() else { return Vec::new() };
+        let Some(uid) = uid(device) else { return Vec::new() };
+        let main = [kAudioObjectPropertyElementMain];
+        let channels = [1, 2];
+        let mut changes = Vec::new();
+        let mute_elements: &[u32] = if settable(device, &mute_address(main[0])) { &main } else { &channels };
+        for &element in mute_elements {
+            let addr = mute_address(element);
+            if !settable(device, &addr) {
+                continue;
+            }
+            if get::<u32>(device, &addr) == Some(0) && set(device, &addr, 1u32) {
+                changes.push(Change::Mute { element, uid: uid.clone() });
+            }
+        }
+        if mute_elements.iter().any(|e| settable(device, &mute_address(*e))) {
+            return changes;
+        }
+        let volume_elements: &[u32] = if settable(device, &volume_address(main[0])) { &main } else { &channels };
+        for &element in volume_elements {
+            let addr = volume_address(element);
+            if !settable(device, &addr) {
+                continue;
+            }
+            if let Some(level) = get::<f32>(device, &addr).filter(|l| *l > SILENT) {
+                if set(device, &addr, 0f32) {
+                    changes.push(Change::Volume { element, level, uid: uid.clone() });
+                }
+            }
+        }
+        if changes.is_empty() && !volume_elements.iter().any(|e| settable(device, &volume_address(*e))) {
+            log::info!("while you talk: the sound output has no mute or volume Navi can set, so it plays on");
+        }
+        changes
+    }
+
+    /// Puts one change back, if it is still as Navi left it (one you unmuted or turned up yourself
+    /// meanwhile is left alone). True when it was put back.
+    fn restore(change: &Change) -> bool {
+        match change {
+            Change::Mute { element, uid } => {
+                let Some(device) = device_with_uid(uid) else { return false };
+                let addr = mute_address(*element);
+                get::<u32>(device, &addr).is_some_and(|m| m != 0) && set(device, &addr, 0u32)
+            }
+            Change::Volume { element, level, uid } => {
+                let Some(device) = device_with_uid(uid) else { return false };
+                let addr = volume_address(*element);
+                get::<f32>(device, &addr).is_some_and(|l| l <= SILENT) && set(device, &addr, *level)
+            }
+        }
+    }
+
+    /// Makes one change again after a cue.
+    fn reapply(change: &Change) {
+        match change {
+            Change::Mute { element, uid } => {
+                if let Some(device) = device_with_uid(uid) {
+                    set(device, &mute_address(*element), 1u32);
+                }
+            }
+            Change::Volume { element, uid, .. } => {
+                if let Some(device) = device_with_uid(uid) {
+                    set(device, &volume_address(*element), 0f32);
+                }
+            }
+        }
+    }
+
+    pub fn mute_others() -> Vec<String> {
+        let changes = mute_default_output();
+        let keys = changes.iter().map(Change::key).collect();
+        if !changes.is_empty() {
+            *HOLD.lock() = Some(Hold { changes, given_back: false, cue: 0 });
+        }
+        keys
+    }
+
+    /// Puts back the changes with these keys (from this run, or one that crashed). Returns how many.
+    pub fn unmute(ids: &[String]) -> usize {
+        let mut hold = HOLD.lock();
+        let changes: Vec<Change> = ids.iter().filter_map(|k| Change::parse(k)).collect();
+        if let Some(h) = hold.as_mut() {
+            h.changes.retain(|c| !changes.contains(c));
+            if h.changes.is_empty() {
+                *hold = None;
+            }
+        }
+        changes.iter().filter(|c| restore(c)).count()
+    }
+
+    /// A cue of `duration_ms` is about to play: the sound comes back now, and is muted again just
+    /// after the cue if Navi still holds it then (a take's last cues find it already let go).
+    pub fn cue_playing(duration_ms: u32) {
+        let cue = {
+            let mut hold = HOLD.lock();
+            let Some(h) = hold.as_mut() else { return };
+            if !h.given_back {
+                h.changes.iter().for_each(|c| {
+                    restore(c);
+                });
+                h.given_back = true;
+            }
+            h.cue += 1;
+            h.cue
+        };
+        let _ = std::thread::Builder::new().name("navi-media-cue".into()).spawn(move || {
+            std::thread::sleep(Duration::from_millis(duration_ms as u64) + CUE_TAIL);
+            let mut hold = HOLD.lock();
+            if let Some(h) = hold.as_mut().filter(|h| h.cue == cue && h.given_back) {
+                h.changes.iter().for_each(reapply);
+                h.given_back = false;
+            }
+        });
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn changes_round_trip_as_text() {
+            let mute = Change::Mute { element: 0, uid: "AppleUSBAudioEngine:Apple:Speakers:1".into() };
+            let volume = Change::Volume { element: 2, level: 0.62, uid: "BuiltInSpeakerDevice".into() };
+            assert_eq!(Change::parse(&mute.key()), Some(mute.clone()));
+            assert_eq!(Change::parse(&volume.key()), Some(volume));
+            // A Windows session id, an empty uid or rubbish is ignored, never a panic.
+            assert_eq!(Change::parse("{0.0.0.00000000}.{not-a-real-session}"), None);
+            assert_eq!(Change::parse("mac-mute:0:"), None);
+            assert_eq!(Change::parse("mac-volume:x:0.5:dev"), None);
+            assert_eq!(Change::parse("mac-volume:1:NaN:dev"), None);
+        }
+
+        /// Mutes the default output and puts it back, silently, then checks it is exactly as it
+        /// was. Run by hand:
+        /// cargo test --lib media::mac::tests::live_mute_round_trip -- --ignored --nocapture
+        #[test]
+        #[ignore]
+        fn live_mute_round_trip() {
+            let device = default_output().expect("a default output device");
+            let uid = uid(device).expect("its uid");
+            let main = kAudioObjectPropertyElementMain;
+            let state = || {
+                [main, 1, 2].map(|e| (get::<u32>(device, &mute_address(e)), get::<f32>(device, &volume_address(e))))
+            };
+            let before = state();
+            println!("default output {device} ({uid}): mute and volume by element {before:?}");
+            // Only the mute switch is tried here, so the volume never moves during the test.
+            if !settable(device, &mute_address(main)) && !settable(device, &mute_address(1)) {
+                println!("this output has no mute switch; nothing was changed");
+                return;
+            }
+            let keys = mute_others();
+            println!("muted: {keys:?}");
+            assert!(keys.iter().all(|k| k.starts_with("mac-mute:")), "only the mute switch should be used here: {keys:?}");
+            let muted = || keys.iter().filter_map(|k| Change::parse(k)).all(|c| matches!(c, Change::Mute { element, .. } if get::<u32>(device, &mute_address(element)) == Some(1)));
+            if keys.is_empty() {
+                println!("the output was muted already; nothing was changed");
+                return;
+            }
+            assert!(muted());
+            // A cue: the sound is back while it plays, muted again after it.
+            cue_playing(50);
+            assert_eq!(state(), before, "the sound is back for the cue");
+            std::thread::sleep(Duration::from_millis(500));
+            assert!(muted(), "muted again after the cue");
+            // A crash: nothing held in memory, the file's keys put it back on the next start.
+            *HOLD.lock() = None;
+            let dir = std::env::temp_dir().join(format!("navi-mac-mute-test-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(super::super::MUTED_FILE), serde_json::to_string(&keys).unwrap()).unwrap();
+            super::super::recover(dir.clone());
+            assert!(!dir.join(super::super::MUTED_FILE).exists());
+            let _ = std::fs::remove_dir_all(&dir);
+            assert_eq!(state(), before, "the output is back as it was");
+            // Putting back again changes nothing.
+            assert_eq!(unmute(&keys), 0);
+            assert_eq!(state(), before);
+        }
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 mod win {
     #[derive(Default)]
     pub struct Paused;
