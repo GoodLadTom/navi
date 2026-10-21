@@ -2,7 +2,8 @@
 //! kept only when enough of it has changed, with the text on it read on this computer.
 //!
 //! * `capture` copies the monitor the window in front is on, scaled to at most `max_width` pixels
-//!   wide (GDI). Apps listed under Settings > Context and privacy > "Never read these apps"
+//!   wide (GDI; ScreenCaptureKit on a Mac, where the never-read apps and Navi are left out of the
+//!   picture rather than blacked out). Apps listed under Settings > Context and privacy > "Never read these apps"
 //!   (password managers) are never captured: no picture is taken while one is in front, and
 //!   wherever else their windows show (beside the window in front, or peeking out from behind it)
 //!   is blacked out before the picture is kept or read. A window hidden behind others is left be.
@@ -10,7 +11,7 @@
 //!   noticeably from another, so a ticking clock or a moving cursor never counts as a new screen.
 //!   Compare with the last screenshot KEPT, so slow changes (a page being typed) still add up.
 //! * `save_jpeg` writes the picture under the app data folder (shots/<note id>/), where the
-//!   interface can show it. `read_text` is Windows' own OCR.
+//!   interface can show it. `read_text` is Windows' own OCR (Apple's Vision on a Mac).
 //! * Nothing here leaves the computer. The AI is only ever given the text read off a screenshot,
 //!   the app's name and (while "Read the window title" is on) the window's title, never the picture.
 
@@ -115,7 +116,26 @@ pub fn capture(reading: &ContextSettings) -> Option<Frame> {
         }
         Some(frame)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        // Under `npm run dev` Navi isn't a bundle, so it may not be named "navi.exe".
+        let pid = crate::context::foreground_pid()?;
+        if pid == std::process::id() as i32 {
+            return None;
+        }
+        // ScreenCaptureKit leaves Navi and the never-read apps out of the picture altogether (what
+        // is behind them shows instead), so nothing needs blacking out afterwards.
+        let front = crate::context::mac::front_window_of(pid);
+        let shot = crate::mac::capture::display(front, |name| crate::context::is_excluded(name, excluded_apps), MAX_WIDTH as u32)?;
+        let frame = Frame { width: shot.width, height: shot.height, bgra: shot.bgra, app, window };
+        // Apps that block screen capture come out black, and so does a sleeping screen.
+        if mostly_black(&frame) {
+            log::debug!("screenshot skipped: it came out black");
+            return None;
+        }
+        Some(frame)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = (app, window);
         None
@@ -537,5 +557,51 @@ mod diag {
         let text = super::read_text(&frame);
         println!("read: {text:?}");
         assert!(text.to_lowercase().contains("pricing"), "OCR read {text:?}");
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod mac_diag {
+    /// Draws two known lines into an off-screen picture with AppKit and reads them back with Vision,
+    /// so the text reading (and the picture's top-down row order) is checked without touching the
+    /// screen. Run by hand:
+    /// cargo test --lib screen::mac_diag::ocr_reads_drawn_text -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn ocr_reads_drawn_text() {
+        use objc2::runtime::AnyObject;
+        use objc2_app_kit::{NSFont, NSFontAttributeName, NSGraphicsContext, NSStringDrawing};
+        use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+        use objc2_core_graphics::{CGBitmapContextCreate, CGColorSpace, CGContext, CGImageAlphaInfo, CGImageByteOrderInfo};
+        use objc2_foundation::{NSDictionary, NSString};
+        let (width, height) = (1000usize, 260usize);
+        let mut pixels = vec![0u8; width * height * 4];
+        objc2::rc::autoreleasepool(|_| {
+            let space = CGColorSpace::new_device_rgb().expect("colour space");
+            let info = CGImageByteOrderInfo::Order32Little.0 | CGImageAlphaInfo::PremultipliedFirst.0;
+            let cg = unsafe { CGBitmapContextCreate(pixels.as_mut_ptr().cast(), width, height, 8, width * 4, Some(&space), info) }.expect("picture");
+            CGContext::set_rgb_fill_color(Some(&cg), 1.0, 1.0, 1.0, 1.0);
+            CGContext::fill_rect(Some(&cg), CGRect { origin: CGPoint { x: 0.0, y: 0.0 }, size: CGSize { width: width as f64, height: height as f64 } });
+            let ns = NSGraphicsContext::graphicsContextWithCGContext_flipped(&cg, false);
+            NSGraphicsContext::setCurrentContext(Some(&ns));
+            let font = NSFont::systemFontOfSize(64.0);
+            let attrs: objc2::rc::Retained<NSDictionary<NSString, AnyObject>> =
+                NSDictionary::from_slices(&[unsafe { NSFontAttributeName }], &[&*font as &AnyObject]);
+            // Core Graphics counts up from the bottom: the first line is drawn higher.
+            unsafe {
+                NSString::from_str("Quarterly pricing review 2026").drawAtPoint_withAttributes(CGPoint { x: 30.0, y: 150.0 }, Some(&attrs));
+                NSString::from_str("Navi reads the screen").drawAtPoint_withAttributes(CGPoint { x: 30.0, y: 40.0 }, Some(&attrs));
+            }
+            NSGraphicsContext::setCurrentContext(None);
+        });
+        pixels.iter_mut().skip(3).step_by(4).for_each(|a| *a = 255);
+        let frame = super::Frame { width: width as u32, height: height as u32, bgra: pixels, app: String::new(), window: String::new() };
+        let t = std::time::Instant::now();
+        let text = super::read_text(&frame);
+        println!("read in {} ms: {text:?}", t.elapsed().as_millis());
+        let lower = text.to_lowercase();
+        assert!(lower.contains("quarterly pricing review 2026"), "OCR read {text:?}");
+        assert!(lower.contains("navi reads the screen"), "OCR read {text:?}");
+        assert!(lower.find("pricing") < lower.find("navi"), "lines out of order: {text:?}");
     }
 }

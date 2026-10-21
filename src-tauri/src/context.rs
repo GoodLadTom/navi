@@ -112,13 +112,18 @@ pub fn read_focused_text(hwnd: isize, settings: &ContextSettings) -> Option<Stri
 
 /// On-device OCR of the window with Windows.Media.Ocr (lines joined with "\n"). Only when `hwnd` is
 /// the foreground window, because it reads the window's pixels from the screen. None if Windows has
-/// no OCR language installed or recognition fails. Blocks for up to 5 s.
+/// no OCR language installed or recognition fails. Blocks for up to 5 s. On a Mac: ScreenCaptureKit
+/// and Vision, which need the Screen Recording permission.
 pub fn ocr_window(hwnd: isize) -> Option<String> {
     #[cfg(windows)]
     {
         win::ocr_window(hwnd)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        mac::ocr_window(hwnd)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = hwnd;
         None
@@ -126,13 +131,17 @@ pub fn ocr_window(hwnd: isize) -> Option<String> {
 }
 
 /// On-device OCR of a picture (top-down BGRA, opaque), for screenshots (screen.rs). Blocks for up to
-/// 5 s; None when Windows has no OCR language or reads nothing.
+/// 5 s; None when Windows has no OCR language or reads nothing. On a Mac: Vision.
 pub fn ocr_bgra(width: u32, height: u32, pixels: Vec<u8>) -> Option<String> {
     #[cfg(windows)]
     {
         win::ocr_bgra(width, height, pixels)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        mac::ocr_bgra(width, height, pixels)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = (width, height, pixels);
         None
@@ -1743,6 +1752,108 @@ pub(crate) mod mac {
         let name = objc2_foundation::NSFullUserName().to_string();
         (!name.trim().is_empty()).then_some(name)
     }
+
+    // ----- OCR (Vision) -----
+
+    /// The longest side handed to Vision, as Windows' OCR limit: text on a bigger window is still
+    /// readable at this size, and recognition stays well inside OCR_TIMEOUT.
+    const OCR_MAX_SIDE: u32 = 2_600;
+
+    /// Window `hwnd`, if it is still in front, read with ScreenCaptureKit and Vision.
+    pub(super) fn ocr_window(hwnd: isize) -> Option<String> {
+        if hwnd == 0 {
+            return None;
+        }
+        let (tx, rx) = mpsc::channel();
+        // A thread of its own, so a slow capture or recognition can be abandoned.
+        std::thread::Builder::new()
+            .name("navi-ocr".into())
+            .spawn(move || {
+                let text = objc2::rc::autoreleasepool(|_| {
+                    if foreground_hwnd() != hwnd {
+                        return None;
+                    }
+                    let shot = crate::mac::capture::window(unpack(hwnd).1, OCR_MAX_SIDE)?;
+                    recognise_pixels(shot.width, shot.height, &shot.bgra)
+                });
+                let _ = tx.send(text);
+            })
+            .ok()?;
+        rx.recv_timeout(OCR_TIMEOUT).ok().flatten()
+    }
+
+    /// OCR of a screenshot on a thread of its own, waiting up to 5 s.
+    pub(super) fn ocr_bgra(width: u32, height: u32, pixels: Vec<u8>) -> Option<String> {
+        if width < 16 || height < 16 || pixels.len() < (width as usize) * (height as usize) * 4 {
+            return None;
+        }
+        let (tx, rx) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("navi-ocr".into())
+            .spawn(move || {
+                let text = objc2::rc::autoreleasepool(|_| recognise_pixels(width, height, &pixels));
+                let _ = tx.send(text);
+            })
+            .ok()?;
+        rx.recv_timeout(OCR_TIMEOUT).ok().flatten()
+    }
+
+    fn recognise_pixels(width: u32, height: u32, pixels: &[u8]) -> Option<String> {
+        use objc2::AllocAnyThread;
+        use objc2_foundation::{NSArray, NSDictionary, NSString};
+        use objc2_vision::{VNImageRequestHandler, VNRecognizeTextRequest, VNRequest, VNRequestTextRecognitionLevel};
+        let image = crate::mac::capture::bgra_to_image(width, height, pixels)?;
+        let request = VNRecognizeTextRequest::new();
+        request.setRecognitionLevel(VNRequestTextRecognitionLevel::Accurate);
+        request.setUsesLanguageCorrection(true);
+        // British English first where this Mac's Vision has it, then American. A language Vision
+        // doesn't know would fail the whole request, so only known ones are asked for.
+        let known: Vec<String> = unsafe { request.supportedRecognitionLanguagesAndReturnError() }
+            .map(|list| list.iter().map(|l| l.to_string()).collect())
+            .unwrap_or_default();
+        let wanted: Vec<_> = ["en-GB", "en-US"].iter().filter(|l| known.iter().any(|k| k == *l)).map(|l| NSString::from_str(l)).collect();
+        if !wanted.is_empty() {
+            request.setRecognitionLanguages(&NSArray::from_retained_slice(&wanted));
+        }
+        let handler = unsafe { VNImageRequestHandler::initWithCGImage_options(VNImageRequestHandler::alloc(), &image, &NSDictionary::new()) };
+        let as_request: &VNRequest = &request;
+        if let Err(e) = handler.performRequests_error(&NSArray::from_slice(&[as_request])) {
+            log::debug!("text recognition failed: {}", e.localizedDescription());
+            return None;
+        }
+        // (text, left, bottom, top), in Vision's 0 to 1 coordinates with the origin bottom left.
+        let mut lines: Vec<(String, f64, f64, f64)> = Vec::new();
+        for observation in request.results()?.iter() {
+            let Some(best) = observation.topCandidates(1).iter().next() else { continue };
+            let text = best.string().to_string();
+            if text.trim().is_empty() {
+                continue;
+            }
+            let b = unsafe { observation.boundingBox() };
+            lines.push((text, b.origin.x, b.origin.y, b.origin.y + b.size.height));
+        }
+        non_empty(head_chars(&reading_order(lines).join("\n"), OCR_MAX_CHARS))
+    }
+
+    /// Lines top to bottom, and left to right within a row (a line whose middle is level with the
+    /// row's first line belongs to that row), as Windows' OCR gives them.
+    pub(crate) fn reading_order(mut lines: Vec<(String, f64, f64, f64)>) -> Vec<String> {
+        lines.sort_by(|a, b| b.3.total_cmp(&a.3));
+        let mut rows: Vec<Vec<(String, f64, f64, f64)>> = Vec::new();
+        for line in lines {
+            let middle = (line.2 + line.3) / 2.0;
+            match rows.last_mut() {
+                Some(row) if middle >= row[0].2 && middle <= row[0].3 => row.push(line),
+                _ => rows.push(vec![line]),
+            }
+        }
+        rows.into_iter()
+            .flat_map(|mut row| {
+                row.sort_by(|a, b| a.1.total_cmp(&b.1));
+                row.into_iter().map(|l| l.0)
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -1964,5 +2075,29 @@ mod tests {
             assert!(!name.is_empty());
             assert!(!name.contains(' '));
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn vision_lines_come_in_reading_order() {
+        // (text, left, bottom, top), origin bottom left as Vision gives them, in a jumbled order.
+        let line = |t: &str, x: f64, y: f64| (t.to_string(), x, y, y + 0.05);
+        let lines = vec![line("bottom", 0.1, 0.1), line("right", 0.6, 0.805), line("top", 0.1, 0.9), line("left", 0.1, 0.8)];
+        assert_eq!(mac::reading_order(lines), vec!["top", "left", "right", "bottom"]);
+        assert!(mac::reading_order(Vec::new()).is_empty());
+    }
+
+    /// Reads the window in front with ScreenCaptureKit and Vision (needs Screen Recording for
+    /// whatever runs the test). Run by hand:
+    /// cargo test --lib context::tests::live_ocr_window -- --ignored --nocapture
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore]
+    fn live_ocr_window() {
+        let hwnd = foreground_hwnd();
+        println!("front: {:?}, window {:?}", foreground_app(), mac::unpack(hwnd));
+        let t = std::time::Instant::now();
+        let text = ocr_window(hwnd).expect("OCR of the window in front");
+        println!("OCR {} chars in {} ms: {:?}", text.len(), t.elapsed().as_millis(), text.chars().take(160).collect::<String>());
     }
 }

@@ -228,6 +228,9 @@ impl SoundService {
             return;
         }
         let Some(clip) = self.resolve(cue, settings) else { return };
+        // On a Mac, "While you talk" mutes the whole output, cues included: it lets this one through.
+        #[cfg(target_os = "macos")]
+        crate::media::cue_playing(clip.duration_ms());
         if let Some(player) = &self.player {
             if player.send(PlayerCommand::Play { clip, gain }).is_err() {
                 log::warn!("the sound player has stopped; cue '{}' not played", cue.key());
