@@ -418,6 +418,8 @@ mod tests {
         assert!(!explain("Codex", "x").contains('\u{2014}'));
     }
 
+    // npm's Windows .cmd shims.
+    #[cfg(windows)]
     #[test]
     fn shims_lead_to_their_scripts() {
         let dir = Path::new("C:\\Users\\you\\AppData\\Roaming\\npm");

@@ -49,7 +49,10 @@ use tokio::io::AsyncWriteExt;
 pub type ProgressCallback = Arc<dyn Fn(DownloadProgress) + Send + Sync>;
 
 pub const VAD_ID: &str = "vad";
+#[cfg(windows)]
 const SERVER_EXE: &str = "whisper-server.exe";
+#[cfg(not(windows))]
+const SERVER_EXE: &str = "whisper-server";
 const ENGINE_MARKER: &str = "current.txt";
 const RELEASES_URL: &str = "https://api.github.com/repos/ggml-org/whisper.cpp/releases?per_page=20";
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
@@ -272,6 +275,21 @@ pub fn find_server(settings: &EngineSettings, paths: &Paths) -> Option<PathBuf> 
         let known = home.join(".local").join("tools").join("whisper-cuda").join("Release").join(SERVER_EXE);
         if known.is_file() {
             return Some(known);
+        }
+    }
+    // A Mac app opened from Finder gets a short PATH, so the usual install folders are checked by
+    // name: the build scripts/mac-setup.sh makes first, then Homebrew's whisper-cpp.
+    #[cfg(target_os = "macos")]
+    {
+        let mut known: Vec<PathBuf> = Vec::new();
+        if let Some(home) = dirs::home_dir() {
+            known.push(home.join(".local").join("tools").join("whisper.cpp").join("build").join("bin").join(SERVER_EXE));
+            known.push(home.join(".local").join("bin").join(SERVER_EXE));
+        }
+        known.push(PathBuf::from("/opt/homebrew/bin").join(SERVER_EXE));
+        known.push(PathBuf::from("/usr/local/bin").join(SERVER_EXE));
+        if let Some(found) = known.into_iter().find(|p| p.is_file()) {
+            return Some(found);
         }
     }
     std::env::var_os("PATH").and_then(|path| {
@@ -577,6 +595,15 @@ pub async fn download_engine(paths: &Paths, gpu: bool, progress: ProgressCallbac
 }
 
 async fn download_engine_inner(paths: &Paths, gpu: bool, progress: &ProgressCallback) -> Result<PathBuf> {
+    // whisper.cpp publishes Windows builds only. On a Mac the engine is built by
+    // scripts/mac-setup.sh (with Metal), or comes from Homebrew.
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (paths, gpu, progress);
+        bail!("Navi can't download the speech engine on a Mac. Run scripts/mac-setup.sh from the Navi folder, or install it with Homebrew: brew install whisper-cpp");
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
     let asset = find_engine_release(gpu).await?;
     let engine_dir = paths.engine.clone();
     tokio::fs::create_dir_all(&engine_dir)
@@ -593,6 +620,7 @@ async fn download_engine_inner(paths: &Paths, gpu: bool, progress: &ProgressCall
         .map_err(|e| anyhow!("Unpacking the speech engine failed: {e}"))??;
     report(progress, "engine", asset.size, asset.size, "done", format!("Speech engine {} is ready", asset.tag));
     Ok(server)
+    }
 }
 
 fn sanitise(tag: &str) -> String {
@@ -670,6 +698,39 @@ fn remove_old_engines(engine_dir: &Path, keep: &Path) {
 // ---------------------------------------------------------------------------------------------
 
 pub fn detect_gpu() -> Option<GpuInfo> {
+    #[cfg(target_os = "macos")]
+    {
+        mac_gpu()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        nvidia_gpu()
+    }
+}
+
+/// Apple silicon runs the engine on its GPU through Metal. Its memory is shared with the
+/// processor, so the whole of it counts towards which models fit. Intel Macs get None (CPU only).
+#[cfg(target_os = "macos")]
+fn mac_gpu() -> Option<GpuInfo> {
+    let brand = sysctl_string("machdep.cpu.brand_string")?;
+    if !brand.starts_with("Apple") {
+        return None;
+    }
+    let vram_mb = sysctl_string("hw.memsize").and_then(|b| b.parse::<u64>().ok()).map(|b| b / (1024 * 1024)).unwrap_or(0);
+    Some(GpuInfo { name: format!("{brand} GPU"), vram_mb })
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn sysctl_string(name: &str) -> Option<String> {
+    let mut cmd = Command::new("/usr/sbin/sysctl");
+    cmd.args(["-n", name]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    let out = run_with_timeout(cmd, Duration::from_secs(2))?;
+    let out = out.trim();
+    (!out.is_empty()).then(|| out.to_string())
+}
+
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn nvidia_gpu() -> Option<GpuInfo> {
     let exe = nvidia_smi()?;
     let mut cmd = Command::new(exe);
     cmd.args(["--query-gpu=name,memory.total", "--format=csv,noheader,nounits"])
@@ -806,6 +867,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&paths.data);
     }
 
+    // Windows engine folders and zips.
+    #[cfg(windows)]
     #[test]
     fn finds_the_server() {
         let paths = Paths::for_tests("models-server");
@@ -870,6 +933,8 @@ mod tests {
         assert!(parse_nvidia_smi("").is_none());
     }
 
+    // Windows engine folders and zips.
+    #[cfg(windows)]
     #[test]
     fn engine_zip_installs_and_records_itself() {
         let paths = Paths::for_tests("models-engine-zip");

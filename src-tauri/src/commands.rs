@@ -26,6 +26,8 @@ pub struct AppInfo {
     data_dir: String,
     engine: EngineStatus,
     onboarded: bool,
+    /// "windows" or "mac", so the interface can use each system's words and keys.
+    platform: String,
 }
 
 #[tauri::command]
@@ -37,6 +39,7 @@ pub fn app_info(app: State<'_, Arc<App>>) -> AppInfo {
         data_dir: app.paths.data.display().to_string(),
         engine: app.engine_status.lock().clone(),
         onboarded: s.onboarded,
+        platform: if cfg!(target_os = "macos") { "mac" } else if cfg!(windows) { "windows" } else { "linux" }.into(),
     }
 }
 

@@ -1,4 +1,5 @@
-//! API keys and tokens, kept in the Windows Credential Manager (never in settings.json or logs).
+//! API keys and tokens, kept in the Windows Credential Manager or, on a Mac, the login Keychain
+//! (never in settings.json or logs).
 //!
 //! OWNER: data agent. STATUS: implemented, with unit tests.
 //!
@@ -16,6 +17,12 @@
 use anyhow::{anyhow, bail, Result};
 use keyring::Entry;
 
+/// Where saved keys live, as the user knows it.
+#[cfg(target_os = "macos")]
+const STORE: &str = "Keychain";
+#[cfg(not(target_os = "macos"))]
+const STORE: &str = "Windows Credential Manager";
+
 /// The service name every Navi credential is filed under.
 const SERVICE: &str = "Navi";
 
@@ -24,7 +31,7 @@ fn entry(name: &str) -> Result<Entry> {
     if name.is_empty() {
         bail!("A saved key needs a name.");
     }
-    Entry::new(SERVICE, name).map_err(|e| anyhow!("Couldn't reach the Windows Credential Manager for \"{name}\": {e}"))
+    Entry::new(SERVICE, name).map_err(|e| anyhow!("Couldn't reach the {STORE} for \"{name}\": {e}"))
 }
 
 /// Saves `value` under `name`, replacing any earlier value. An empty value deletes the entry.
@@ -38,7 +45,7 @@ pub fn set(name: &str, value: &str) -> Result<()> {
             Err(e) => Err(anyhow!("Couldn't remove the saved key \"{name}\": {e}")),
         };
     }
-    entry.set_password(value).map_err(|e| anyhow!("Couldn't save the key \"{name}\" in the Windows Credential Manager: {e}"))
+    entry.set_password(value).map_err(|e| anyhow!("Couldn't save the key \"{name}\" in the {STORE}: {e}"))
 }
 
 /// The saved value, or None if there is none (or the Credential Manager cannot be read).
@@ -96,12 +103,16 @@ mod tests {
         set(TEST_NAME, "kéy-ñ-✓-日本").unwrap();
         assert_eq!(get(TEST_NAME).as_deref(), Some("kéy-ñ-✓-日本"), "non-ASCII survives");
 
-        let too_long = "x".repeat(2_000);
-        let err = set(TEST_NAME, &too_long).unwrap_err();
-        let message = format!("{err:#}");
-        assert!(message.contains(TEST_NAME), "{message}");
-        assert!(!message.contains("xxxxxxxx"), "an error must never contain the secret");
-        assert_eq!(get(TEST_NAME).as_deref(), Some("kéy-ñ-✓-日本"), "a refused save leaves the old value alone");
+        // Only Windows caps a credential's size; the Keychain takes it.
+        #[cfg(windows)]
+        {
+            let too_long = "x".repeat(2_000);
+            let err = set(TEST_NAME, &too_long).unwrap_err();
+            let message = format!("{err:#}");
+            assert!(message.contains(TEST_NAME), "{message}");
+            assert!(!message.contains("xxxxxxxx"), "an error must never contain the secret");
+            assert_eq!(get(TEST_NAME).as_deref(), Some("kéy-ñ-✓-日本"), "a refused save leaves the old value alone");
+        }
 
         set(TEST_NAME, "   ").unwrap();
         assert_eq!(get(TEST_NAME), None, "whitespace only deletes");

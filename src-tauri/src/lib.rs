@@ -10,6 +10,8 @@ pub mod hotkey;
 pub mod insert;
 pub mod integrations;
 pub mod jobs;
+#[cfg(target_os = "macos")]
+pub mod mac;
 pub mod media;
 pub mod meeting;
 pub mod models;
@@ -199,6 +201,14 @@ fn startup_failed(e: &anyhow::Error) -> ! {
         let (body, title) = (HSTRING::from(text.as_str()), HSTRING::from("Navi couldn't start"));
         unsafe { MessageBoxW(None, PCWSTR(body.as_ptr()), PCWSTR(title.as_ptr()), MB_OK | MB_ICONERROR | MB_SETFOREGROUND) };
     }
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            "display alert \"Navi couldn't start\" message {} as critical buttons {{\"OK\"}}",
+            applescript_string(&text)
+        );
+        let _ = std::process::Command::new("/usr/bin/osascript").args(["-e", &script]).status();
+    }
     #[cfg(not(windows))]
     eprintln!("{text}");
     std::process::exit(1);
@@ -368,10 +378,15 @@ fn build_windows(handle: &AppHandle, app: &Arc<App>, hidden: bool) -> anyhow::Re
         .title("Navi")
         .inner_size(1120.0, 760.0)
         .min_inner_size(920.0, 620.0)
-        .decorations(false)
         .center()
-        .visible(!hidden)
-        .build()?;
+        .visible(!hidden);
+    // Windows draws its own title bar buttons in the page; a Mac keeps its traffic lights over the
+    // page, with no title (the page hides its own buttons when body has the "mac" class).
+    #[cfg(target_os = "macos")]
+    let main = main.title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true);
+    #[cfg(not(target_os = "macos"))]
+    let main = main.decorations(false);
+    let main = main.build()?;
     #[cfg(windows)]
     if let Ok(hwnd) = main.hwnd() {
         app_icon::give_window_big_icon(hwnd.0 as isize);
@@ -603,6 +618,12 @@ pub fn close_main_window(app: &Arc<App>) {
     }
 }
 
+/// `text` as an AppleScript string literal.
+#[cfg(target_os = "macos")]
+fn applescript_string(text: &str) -> String {
+    format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
 /// True when Navi's main window is the one in front (whatever inside it has focus).
 pub fn main_window_in_front(app: &App) -> bool {
     #[cfg(windows)]
@@ -613,7 +634,12 @@ pub fn main_window_in_front(app: &App) -> bool {
             // Tauri's HWND comes from its own copy of the windows crate; only the raw value carries over.
             .is_some_and(|h| h.0 as isize == context::foreground_hwnd())
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        context::foreground_pid() == Some(std::process::id() as i32)
+            && app.handle.get_webview_window("main").is_some_and(|w| w.is_focused().unwrap_or(false))
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = app;
         true

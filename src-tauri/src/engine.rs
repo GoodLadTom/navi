@@ -288,7 +288,7 @@ impl Inner {
     fn report_ready(&self) {
         let device = self.status.lock().device.clone();
         let message = match (&self.gpu, device.as_str()) {
-            (Some(gpu), "cuda") => format!("Ready on the {}", gpu.name),
+            (Some(gpu), "cuda" | "metal") => format!("Ready on the {}", gpu.name),
             _ => "Ready on the CPU".to_string(),
         };
         self.set_status("ready", message, None);
@@ -296,7 +296,7 @@ impl Inner {
 
     fn device_for(&self, plan: LaunchPlan) -> &'static str {
         if plan.gpu && self.cuda_build && self.gpu.is_some() {
-            "cuda"
+            if cfg!(target_os = "macos") { "metal" } else { "cuda" }
         } else {
             "cpu"
         }
@@ -308,7 +308,7 @@ impl Inner {
             let plan = *self.plan.lock();
             let device = self.device_for(plan);
             let place = match (&self.gpu, device) {
-                (Some(gpu), "cuda") => format!("the {}", gpu.name),
+                (Some(gpu), "cuda" | "metal") => format!("the {}", gpu.name),
                 _ => "the CPU".to_string(),
             };
             self.set_status("starting", format!("Loading {model_name} on {place}"), Some(device));
@@ -360,7 +360,7 @@ impl Inner {
                         if lower.contains("couldn't bind") || lower.contains("bind to server socket") {
                             continue; // port taken in the meantime; a new one is picked
                         }
-                        if device == "cuda" && !model_failed_to_load(&lower) {
+                        if device != "cpu" && !model_failed_to_load(&lower) {
                             log::warn!("the graphics card could not run the speech engine; trying the CPU");
                             plan.gpu = false;
                             continue;
@@ -749,8 +749,12 @@ fn free_port() -> Result<u16> {
     Ok(listener.local_addr()?.port())
 }
 
-/// A CUDA build ships its CUDA backend (or the cuBLAS runtime) next to the executable.
+/// A CUDA build ships its CUDA backend (or the cuBLAS runtime) next to the executable. On a Mac
+/// every whisper.cpp build (Homebrew's, or one made by scripts/mac-setup.sh) has Metal built in.
 fn has_cuda_backend(exe: &Path) -> bool {
+    if cfg!(target_os = "macos") {
+        return true;
+    }
     let Some(dir) = exe.parent() else { return false };
     ["ggml-cuda.dll", "cublas64_12.dll", "cublas64_11.dll", "cublas64_13.dll"]
         .iter()
@@ -800,7 +804,17 @@ fn physical_cores() -> Option<usize> {
     (cores > 0).then_some(cores)
 }
 
-#[cfg(not(windows))]
+/// The performance cores on Apple silicon (the efficiency cores slow whisper.cpp down), else every
+/// physical core.
+#[cfg(target_os = "macos")]
+fn physical_cores() -> Option<usize> {
+    ["hw.perflevel0.physicalcpu", "hw.physicalcpu"]
+        .iter()
+        .find_map(|name| models::sysctl_string(name).and_then(|v| v.parse::<usize>().ok()))
+        .filter(|&n| n > 0)
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn physical_cores() -> Option<usize> {
     None
 }
@@ -855,7 +869,44 @@ mod job {
     }
 }
 
-#[cfg(not(windows))]
+/// macOS has no job objects, so a speech engine left behind when Navi crashed (the release build
+/// aborts on panic) is found by the process id noted at launch and stopped when the next Navi
+/// starts its first engine.
+#[cfg(target_os = "macos")]
+mod job {
+    use std::sync::Once;
+
+    pub struct JobHandle;
+
+    fn pid_file() -> std::path::PathBuf {
+        std::env::temp_dir().join("com.goodlad.navi.whisper-server.pid")
+    }
+
+    fn stop_leftover() {
+        let Ok(text) = std::fs::read_to_string(pid_file()) else { return };
+        let Ok(pid) = text.trim().parse::<i32>() else { return };
+        let Ok(out) = std::process::Command::new("/bin/ps").args(["-p", &pid.to_string(), "-o", "comm="]).output() else { return };
+        if String::from_utf8_lossy(&out.stdout).trim().ends_with("whisper-server") {
+            log::info!("stopping a speech engine left running by an earlier Navi (pid {pid})");
+            let _ = std::process::Command::new("/bin/kill").arg(pid.to_string()).status();
+        }
+    }
+
+    impl JobHandle {
+        pub fn kill_on_close() -> anyhow::Result<Self> {
+            static ONCE: Once = Once::new();
+            ONCE.call_once(stop_leftover);
+            Ok(JobHandle)
+        }
+
+        pub fn assign(&self, child: &std::process::Child) -> anyhow::Result<()> {
+            std::fs::write(pid_file(), child.id().to_string())?;
+            Ok(())
+        }
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 mod job {
     pub struct JobHandle;
 
