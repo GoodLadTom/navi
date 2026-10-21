@@ -1914,12 +1914,24 @@ pub fn show_prompt(app: &App, state: PromptState) {
         }
         return;
     }
-    if hidden {
-        let _ = w.hide();
+    // A Mac: floated above every app and Space and brought forward without taking the focus.
+    #[cfg(target_os = "macos")]
+    {
+        let result = if hidden { crate::overlay::mac::order_out(&w) } else { crate::overlay::mac::show_in_corner(&w, size.0 as f64, size.1 as f64) };
+        if let Err(e) = result {
+            log::warn!("could not show the card: {e:#}");
+        }
         return;
     }
-    let _ = w.set_size(tauri::LogicalSize::new(size.0, size.1));
-    let _ = w.show();
+    #[allow(unreachable_code)]
+    {
+        if hidden {
+            let _ = w.hide();
+            return;
+        }
+        let _ = w.set_size(tauri::LogicalSize::new(size.0, size.1));
+        let _ = w.show();
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

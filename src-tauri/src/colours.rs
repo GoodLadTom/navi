@@ -64,6 +64,10 @@ pub fn switch(app: &Arc<App>, id: &str) -> &'static Colour {
 
 /// Redraws the tray icon in the colour from Settings.
 pub fn set_tray(app: &App) {
+    // The Mac's menu bar icon is one colour whatever the setting (see `menu_bar_icon`).
+    if cfg!(target_os = "macos") {
+        return;
+    }
     let Some(tray) = app.handle.tray_by_id("navi") else { return };
     let result = tray_icon(&app.settings().general.colour).and_then(|icon| tray.set_icon(Some(icon)));
     if let Err(e) = result {
@@ -81,6 +85,21 @@ pub fn tray_icon(id: &str) -> tauri::Result<Image<'static>> {
     let mut rgba = lilac.rgba().to_vec();
     recolour(&mut rgba, colour.tile, colour.mark);
     Ok(Image::new_owned(rgba, lilac.width(), lilac.height()))
+}
+
+/// The Mac menu bar's icon: the firefly alone as a template image (black, with tray.png's mark
+/// as its alpha and the tile left out), which macOS draws light or dark to suit the menu bar.
+/// Apple asks for menu bar icons in one colour, so it never follows the colour setting.
+pub fn menu_bar_icon() -> tauri::Result<Image<'static>> {
+    let source = Image::from_bytes(include_bytes!("../icons/tray.png"))?;
+    let mut rgba = source.rgba().to_vec();
+    let span: i32 = SOURCE_TILE.iter().map(|&c| 255 - c as i32).sum();
+    for px in rgba.as_chunks_mut::<4>().0 {
+        let towards: i32 = (0..3).map(|i| px[i] as i32 - SOURCE_TILE[i] as i32).sum();
+        let t = (towards as f32 / span as f32).clamp(0.0, 1.0);
+        *px = [0, 0, 0, (px[3] as f32 * t).round() as u8];
+    }
+    Ok(Image::new_owned(rgba, source.width(), source.height()))
 }
 
 /// tray.png's tile colour (scripts/make_icons.py TILE). Its mark is white.
@@ -158,6 +177,15 @@ mod tests {
                 assert!(css.contains(&format!(":root[data-colour=\"{}\"][data-theme=\"dark\"] {{", c.id)), "tokens.css has no dark {}", c.id);
             }
         }
+    }
+
+    #[test]
+    fn the_menu_bar_icon_is_black_with_the_firefly_as_alpha() {
+        let icon = menu_bar_icon().unwrap();
+        let px = icon.rgba();
+        assert!(px.chunks(4).all(|p| p[0] == 0 && p[1] == 0 && p[2] == 0), "black only");
+        assert!(px.chunks(4).any(|p| p[3] > 200), "the mark shows");
+        assert!(px.chunks(4).filter(|p| p[3] == 0).count() > px.len() / 8, "the tile is gone");
     }
 
     #[test]

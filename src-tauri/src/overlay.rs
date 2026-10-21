@@ -150,9 +150,21 @@ pub(crate) mod mac {
         })
     }
 
-    /// Shows `window` where it is, without focus (the corner card).
-    pub(crate) fn show_without_focus(window: &WebviewWindow) -> Result<()> {
-        on_main(window, |ns, _| {
+    /// Gap between the corner card and the screen's edges, in points.
+    const CORNER_GAP: f64 = 16.0;
+
+    /// Shows `window` at `width` x `height` points in the bottom-right corner of the screen with
+    /// the keyboard focus, above everything but never taking the focus (the call notes card). It
+    /// takes clicks, unlike the bubble.
+    pub(crate) fn show_in_corner(window: &WebviewWindow, width: f64, height: f64) -> Result<()> {
+        on_main(window, move |ns, mtm| {
+            ns.setIgnoresMouseEvents(false);
+            if let Some(screen) = NSScreen::mainScreen(mtm) {
+                let area = screen.visibleFrame();
+                let x = area.origin.x + area.size.width - width - CORNER_GAP;
+                let y = area.origin.y + CORNER_GAP;
+                ns.setFrame_display(objc2_foundation::NSRect::new(objc2_foundation::NSPoint::new(x, y), objc2_foundation::NSSize::new(width, height)), true);
+            }
             ns.setLevel(STATUS_LEVEL);
             ns.orderFrontRegardless();
         })
