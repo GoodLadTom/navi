@@ -78,3 +78,8 @@ objc2-screen-capture-kit = "0.3"
 objc2-vision = "0.3"
 objc2-core-media = "0.3"
 objc2-core-video = "0.3"
+
+# cpal 0.16.0 with its macOS Core Audio size arguments made writable: the published 0.16.0 crashes
+# an optimised Mac build when it lists audio devices. See vendor/cpal/NAVI-PATCH.md.
+[patch.crates-io]
+cpal = { path = "vendor/cpal" }
