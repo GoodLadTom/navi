@@ -6,9 +6,11 @@
 //!   privacy light under HKCU\...\CapabilityAccessManager\ConsentStore\microphone (an app is using
 //!   the mic while its LastUsedTimeStop is 0); Navi reads it every few seconds. Entries left on
 //!   from before Windows last started, or for programs that have gone (`entry_in_use`), don't count.
+//!   On a Mac (14.2 or later) Core Audio's process objects say the same (`mac::audio::mic_users`).
 //! * One task runs each meeting. Every 20 seconds it transcribes what both tracks recorded, ending
 //!   each piece at a quiet moment so no word is split. Loopback sends nothing while the computer is
-//!   silent, so those gaps are filled with silence and every line keeps its true time. Lines from
+//!   silent, so those gaps are filled with silence and every line keeps its true time (a Mac records
+//!   the other side with a Core Audio process tap, which sends zeros instead). Lines from
 //!   your microphone that repeat what the other side just said (speakers heard by the mic) are
 //!   dropped. When a device goes or the Windows default changes (headphones in or out), that side
 //!   moves to the new device and carries on; the card says when a side can't be recorded or heard.
@@ -326,11 +328,22 @@ fn pick_mic(host: &cpal::Host, name: Option<&str>) -> Option<cpal::Device> {
 /// flag the stream raises when it fails (the device was unplugged or switched off), and a gate:
 /// the stream's audio only reaches the track while it is open.
 struct Live {
-    _stream: cpal::Stream,
+    _stream: Recorder,
     name: String,
     rate: u32,
     failed: Arc<AtomicBool>,
     gate: Arc<AtomicBool>,
+}
+
+/// What keeps a device recording. On a Mac the computer's sound comes from a process tap, not a
+/// cpal stream (cpal 0.16 can't record an output device there).
+#[cfg(not(target_os = "macos"))]
+type Recorder = cpal::Stream;
+
+#[cfg(target_os = "macos")]
+enum Recorder {
+    Stream(#[allow(dead_code)] cpal::Stream),
+    Tap(#[allow(dead_code)] crate::mac::audio::Tap),
 }
 
 /// One side of the call and the device recording it now, if any.
@@ -404,6 +417,10 @@ impl Side {
 /// Opens `device` as an input stream (an output device records in loopback) for `track`. It runs
 /// with its gate shut: nothing reaches the track until the caller opens it.
 fn open(device: &cpal::Device, loopback: bool, track: &Arc<Track>) -> std::result::Result<Live, String> {
+    #[cfg(target_os = "macos")]
+    if loopback {
+        return open_tap(device, track);
+    }
     let supported = if loopback { device.default_output_config() } else { device.default_input_config() }.map_err(|e| e.to_string())?;
     let format = supported.sample_format();
     let config: cpal::StreamConfig = supported.config();
@@ -420,7 +437,28 @@ fn open(device: &cpal::Device, loopback: bool, track: &Arc<Track>) -> std::resul
     }
     .map_err(|e| e.to_string())?;
     stream.play().map_err(|e| e.to_string())?;
+    #[cfg(target_os = "macos")]
+    let stream = Recorder::Stream(stream);
     Ok(Live { _stream: stream, name: device.name().unwrap_or_default(), rate: config.sample_rate.0, failed, gate })
+}
+
+/// The Mac's loopback: a process tap of everything the computer plays but Navi, named after the
+/// speakers it plays through so the side moves on (a new tap) when they change. Gated like `open`.
+#[cfg(target_os = "macos")]
+fn open_tap(device: &cpal::Device, track: &Arc<Track>) -> std::result::Result<Live, String> {
+    let failed = Arc::new(AtomicBool::new(false));
+    let gate = Arc::new(AtomicBool::new(false));
+    let (feed_track, feed_gate) = (track.clone(), gate.clone());
+    let tap = crate::mac::audio::Tap::start(
+        move |mono: &[f32]| {
+            if feed_gate.load(Ordering::SeqCst) {
+                feed_track.push(mono);
+            }
+        },
+        failed.clone(),
+    )?;
+    let rate = tap.rate;
+    Ok(Live { _stream: Recorder::Tap(tap), name: device.name().unwrap_or_default(), rate, failed, gate })
 }
 
 /// `feed`: the track, the failed flag and the gate.
@@ -517,7 +555,11 @@ impl Session {
         } else if self.system_audio && them_silent {
             (
                 "Can't hear the other side",
-                "Nothing has come through your speakers for a while. If the call plays on a headset, make it the default device in Windows sound settings and Navi follows it.",
+                if cfg!(target_os = "macos") {
+                    "Nothing has come through your speakers for a while. If the call plays on a headset, make it the output in System Settings > Sound and Navi follows it."
+                } else {
+                    "Nothing has come through your speakers for a while. If the call plays on a headset, make it the default device in Windows sound settings and Navi follows it."
+                },
             )
         } else {
             ("", "")
@@ -1872,12 +1914,24 @@ pub fn show_prompt(app: &App, state: PromptState) {
         }
         return;
     }
-    if hidden {
-        let _ = w.hide();
+    // A Mac: floated above every app and Space and brought forward without taking the focus.
+    #[cfg(target_os = "macos")]
+    {
+        let result = if hidden { crate::overlay::mac::order_out(&w) } else { crate::overlay::mac::show_in_corner(&w, size.0 as f64, size.1 as f64) };
+        if let Err(e) = result {
+            log::warn!("could not show the card: {e:#}");
+        }
         return;
     }
-    let _ = w.set_size(tauri::LogicalSize::new(size.0, size.1));
-    let _ = w.show();
+    #[allow(unreachable_code)]
+    {
+        if hidden {
+            let _ = w.hide();
+            return;
+        }
+        let _ = w.set_size(tauri::LogicalSize::new(size.0, size.1));
+        let _ = w.show();
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2023,13 +2077,18 @@ pub fn spawn_watch(app: Arc<App>) {
     }
 }
 
-/// Microphone registry entries, and whether each is using the microphone now.
+/// Microphone registry entries, and whether each is using the microphone now. On a Mac, the apps
+/// Core Audio knows by Navi's name for them ("zoom.exe"), which `call_app_name` reads the same way.
 fn mic_users() -> HashMap<String, bool> {
     #[cfg(windows)]
     {
         win::mic_users()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        crate::mac::audio::mic_users()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     HashMap::new()
 }
 

@@ -10,6 +10,8 @@ pub mod hotkey;
 pub mod insert;
 pub mod integrations;
 pub mod jobs;
+#[cfg(target_os = "macos")]
+pub mod mac;
 pub mod media;
 pub mod meeting;
 pub mod models;
@@ -179,11 +181,26 @@ pub fn run() {
     };
 
     app.run(|handle, event| {
+        // A Mac: clicking Navi in the Dock (or opening it again from Finder) shows the window.
+        #[cfg(target_os = "macos")]
+        if let RunEvent::Reopen { .. } = event {
+            if let Some(state) = handle.try_state::<Arc<App>>() {
+                state.show_main();
+            }
+            return;
+        }
         if let RunEvent::ExitRequested { api, code, .. } = event {
             // Closing the last window must not quit: Navi lives in the tray.
             let quitting = handle.try_state::<Arc<App>>().map(|s| s.quitting.load(Ordering::SeqCst)).unwrap_or(true);
             if !quitting && code.is_none() {
                 api.prevent_exit();
+                // A Mac: Navi's windows only ever hide, so this is a real Quit (Command + Q, the
+                // Dock's Quit, logging out): save work and stop the speech engines, then go.
+                #[cfg(target_os = "macos")]
+                if let Some(state) = handle.try_state::<Arc<App>>() {
+                    let app = state.inner().clone();
+                    tauri::async_runtime::spawn(async move { quit(app).await });
+                }
             }
         }
     });
@@ -201,6 +218,14 @@ fn startup_failed(e: &anyhow::Error) -> ! {
         use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND};
         let (body, title) = (HSTRING::from(text.as_str()), HSTRING::from("Navi couldn't start"));
         unsafe { MessageBoxW(None, PCWSTR(body.as_ptr()), PCWSTR(title.as_ptr()), MB_OK | MB_ICONERROR | MB_SETFOREGROUND) };
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            "display alert \"Navi couldn't start\" message {} as critical buttons {{\"OK\"}}",
+            applescript_string(&text)
+        );
+        let _ = std::process::Command::new("/usr/bin/osascript").args(["-e", &script]).status();
     }
     #[cfg(not(windows))]
     eprintln!("{text}");
@@ -292,7 +317,15 @@ fn setup(handle: &AppHandle, started_hidden: bool) -> anyhow::Result<()> {
     }
 
     // Stay in the tray only when Windows launched Navi at sign-in and the user chose that.
-    build_windows(handle, &app, started_hidden && settings.onboarded && settings.general.start_minimised)?;
+    // Setup runs on the main thread, where a Mac lets Navi read the keyboard layout.
+    hotkey::refresh_layout();
+    let hidden = started_hidden && settings.onboarded && settings.general.start_minimised;
+    build_windows(handle, &app, hidden)?;
+    // A Mac: started at login into the menu bar, Navi stays out of the Dock until its window opens.
+    #[cfg(target_os = "macos")]
+    if hidden {
+        let _ = handle.set_dock_visibility(false);
+    }
     build_tray(handle, &app)?;
 
     // Hotkeys.
@@ -371,10 +404,15 @@ fn build_windows(handle: &AppHandle, app: &Arc<App>, hidden: bool) -> anyhow::Re
         .title("Navi")
         .inner_size(1120.0, 760.0)
         .min_inner_size(920.0, 620.0)
-        .decorations(false)
         .center()
-        .visible(!hidden)
-        .build()?;
+        .visible(!hidden);
+    // Windows draws its own title bar buttons in the page; a Mac keeps its traffic lights over the
+    // page, with no title (the page hides its own buttons when body has the "mac" class).
+    #[cfg(target_os = "macos")]
+    let main = main.title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true);
+    #[cfg(not(target_os = "macos"))]
+    let main = main.decorations(false);
+    let main = main.build()?;
     #[cfg(windows)]
     if let Ok(hwnd) = main.hwnd() {
         app_icon::give_window_big_icon(hwnd.0 as isize);
@@ -442,6 +480,9 @@ fn build_windows(handle: &AppHandle, app: &Arc<App>, hidden: bool) -> anyhow::Re
     if let Ok(hwnd) = prompt.hwnd() {
         meeting::guard_card(hwnd.0 as isize);
     }
+    // On a Mac it floats over every app and Space like the bubble, but takes clicks.
+    #[cfg(target_os = "macos")]
+    overlay::mac::float(&prompt, false)?;
     Ok(())
 }
 
@@ -504,6 +545,10 @@ fn build_tray(handle: &AppHandle, app: &Arc<App>) -> anyhow::Result<()> {
     *app.tray_toggles.lock() = vec![hey_navi.clone(), watch_item.clone()];
 
     // The logo on its tile, in the colour from Settings > General > Colour.
+    // On a Mac, the menu bar's one-colour template icon instead.
+    #[cfg(target_os = "macos")]
+    let icon = colours::menu_bar_icon()?;
+    #[cfg(not(target_os = "macos"))]
     let icon = colours::tray_icon(&app.settings().general.colour)?;
     let app_for_menu = app.clone();
     {
@@ -513,9 +558,11 @@ fn build_tray(handle: &AppHandle, app: &Arc<App>) -> anyhow::Result<()> {
     }
     TrayIconBuilder::with_id("navi")
         .icon(icon)
+        .icon_as_template(cfg!(target_os = "macos"))
         .tooltip("Navi")
         .menu(&menu)
-        .show_menu_on_left_click(false)
+        // A Mac's menu bar items open their menu on a click; Windows' tray opens Navi.
+        .show_menu_on_left_click(cfg!(target_os = "macos"))
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
                 if let Some(state) = tray.app_handle().try_state::<Arc<App>>() {
@@ -582,6 +629,9 @@ pub fn close_main_window(app: &Arc<App>) {
     if let Some(w) = app.handle.get_webview_window("main") {
         let _ = w.hide();
     }
+    // A Mac: Navi leaves the Dock with its window, as menu bar apps do.
+    #[cfg(target_os = "macos")]
+    let _ = app.handle.set_dock_visibility(false);
     // A hidden window can't be recording a shortcut or showing keys.
     leave_shortcut_picker(app);
     // Nor testing the microphone: left running, it kept the mic open and blocked voice commands.
@@ -592,7 +642,7 @@ pub fn close_main_window(app: &Arc<App>) {
     if !settings.general.tray_tip_shown {
         let label = hotkey::display_chord_label(&settings.hotkeys.talk);
         app.show_pill_window(0);
-        let gen = app.pill(PillState::Notice { message: format!("Navi is in the tray. Hold {label} to talk.") });
+        let gen = app.pill(PillState::Notice { message: if cfg!(target_os = "macos") { format!("Navi is in the menu bar. Hold {label} to talk.") } else { format!("Navi is in the tray. Hold {label} to talk.") } });
         app.hide_pill_later(gen, 4500);
         let mut next = settings;
         next.general.tray_tip_shown = true;
@@ -606,6 +656,12 @@ pub fn close_main_window(app: &Arc<App>) {
     }
 }
 
+/// `text` as an AppleScript string literal.
+#[cfg(target_os = "macos")]
+fn applescript_string(text: &str) -> String {
+    format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
 /// True when Navi's main window is the one in front (whatever inside it has focus).
 pub fn main_window_in_front(app: &App) -> bool {
     #[cfg(windows)]
@@ -616,7 +672,12 @@ pub fn main_window_in_front(app: &App) -> bool {
             // Tauri's HWND comes from its own copy of the windows crate; only the raw value carries over.
             .is_some_and(|h| h.0 as isize == context::foreground_hwnd())
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        context::foreground_pid() == Some(std::process::id() as i32)
+            && app.handle.get_webview_window("main").is_some_and(|w| w.is_focused().unwrap_or(false))
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = app;
         true
@@ -808,6 +869,10 @@ pub async fn start_engine_and_wait(app: Arc<App>) {
     match engine::Engine::start(&settings.engine, &app.paths, cb.clone()).await {
         Ok(e) => {
             let status = e.status();
+            // Voice commands on: their quick engine (macOS) is started now, ready for "Navi".
+            if app.settings.read().voice_commands.enabled {
+                e.warm_quick();
+            }
             *app.engine.write().await = Some(Arc::new(e));
             if !status.state.is_empty() {
                 cb(status);

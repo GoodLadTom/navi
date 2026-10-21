@@ -61,6 +61,14 @@ pub async fn check(app: &Arc<App>, manual: bool) -> UpdateStatus {
     if status(app).state == "downloading" {
         return status(app);
     }
+    // A Mac copy is built from source on the Mac itself and has no signed download to update to:
+    // it updates with git pull and scripts/mac-setup.sh.
+    if cfg!(target_os = "macos") {
+        let message = "This copy of Navi was built on this Mac. To update it, run git pull in the Navi folder, then scripts/mac-setup.sh.".to_string();
+        let next = UpdateStatus { state: if manual { "error" } else { "idle" }.into(), current, message, ..Default::default() };
+        set(app, next.clone());
+        return next;
+    }
     set(app, UpdateStatus { state: "checking".into(), current: current.clone(), ..Default::default() });
     let found = async { app.handle.updater()?.check().await }.await;
     let next = match found {
@@ -145,6 +153,10 @@ fn busy(app: &App) -> Option<&'static str> {
 
 /// The first check soon after start, then one every six hours, when Settings allows.
 pub fn spawn_auto_check(app: Arc<App>) {
+    // Self-built Mac copies don't check (see `check`).
+    if cfg!(target_os = "macos") {
+        return;
+    }
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(FIRST_CHECK).await;
         loop {

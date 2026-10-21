@@ -50,6 +50,10 @@ body:has(.onb) .titlebar { background: none; }
 .winbtn { width: 46px; height: 34px; border: 0; background: transparent; display: grid; place-items: center; color: var(--ink-quiet); border-radius: 0 0 8px 8px; transition: background .15s, color .15s; }
 .winbtn:hover { background: var(--hover); color: var(--ink); }
 .winbtn.close:hover { background: var(--blue-ink); color: var(--paper); }
+/* A Mac keeps its own traffic-light buttons over the top left of the window, so the drawn ones go
+   and the sidebar starts below them. */
+.mac .winbtn { display: none; }
+.mac .side { padding-top: 40px; }
 
 /* ------------------------------------------------------------------ sidebar */
 /* It scrolls only as a last resort: in the smallest window with an update offered. Shorter windows

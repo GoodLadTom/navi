@@ -139,7 +139,11 @@ fn watching_notice(settings: &Settings) -> String {
         let keys = crate::hotkey::display_chord_label(&settings.hotkeys.talk);
         format!("Watching your screen. To stop, hold {keys} and say \u{201c}Navi, stop watching\u{201d}.")
     } else {
-        "Watching your screen. Stop it from the tray or the Notes page.".to_string()
+        if cfg!(target_os = "macos") {
+            "Watching your screen. Stop it from the menu bar or the Notes page.".to_string()
+        } else {
+            "Watching your screen. Stop it from the tray or the Notes page.".to_string()
+        }
     }
 }
 
@@ -635,8 +639,8 @@ mod tests {
         assert_eq!(watching_notice(&settings), shortcut);
         // Stop watching switched off: no spoken way is left, so the buttons are named.
         settings.voice_commands.set_phrases("watch_off", &[]);
-        assert_eq!(watching_notice(&settings), "Watching your screen. Stop it from the tray or the Notes page.");
+        assert!(watching_notice(&settings).starts_with("Watching your screen. Stop it from the "));
         settings.voice_commands.enabled = true;
-        assert_eq!(watching_notice(&settings), "Watching your screen. Stop it from the tray or the Notes page.");
+        assert!(watching_notice(&settings).starts_with("Watching your screen. Stop it from the "));
     }
 }

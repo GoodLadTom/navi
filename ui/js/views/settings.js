@@ -1,5 +1,6 @@
+import { isMac, os } from '../platform.js';
 import { invoke, listen, pickFile, openPath, isTauri } from '../bridge.js';
-import { h, ico, btn, chip, toggle, select, seg, setRow, field, keycaps, toast, confirmDialog, errText, debounce } from '../ui.js';
+import { h, ico, btn, chip, toggle, select, seg, setRow, field, keycaps, toast, confirmDialog, errText, debounce, appName } from '../ui.js';
 import { prettyModel } from '../app.js';
 import { shortcutPicker } from '../shortcut.js';
 import { soundPicker, playCue } from '../soundpicker.js';
@@ -104,17 +105,17 @@ export async function render(root, { store, arg }) {
   cleanups.push(store.on(() => { if (colourId(S().general.colour) !== colourDrawn) drawColour(); }));
   const sayColour = vcPhrases(S().voiceCommands, 'colour')[0] ? `${sayFor(S().voiceCommands, 'colour')} gold` : null;
   section('general', 'General', null,
-    setRow('Appearance', 'Light, dark, or the same as Windows.', seg([{ value: 'light', label: 'Light' }, { value: 'dark', label: 'Dark' }, { value: 'system', label: 'Match Windows' }], S().general.theme || 'light', (v) => save((n) => { n.general.theme = v; }))),
-    setRow('Colour', ['Navi’s colour in this window, the bubble, the firefly and the tray icon.', sayColour ? [' Or say ', h('span', { style: { whiteSpace: 'nowrap' } }, `“${sayColour}”`), '.'] : null], colourPick),
+    setRow('Appearance', os('Light, dark, or the same as Windows.', 'Light, dark, or the same as macOS.'), seg([{ value: 'light', label: 'Light' }, { value: 'dark', label: 'Dark' }, { value: 'system', label: os('Match Windows', 'Match macOS') }], S().general.theme || 'light', (v) => save((n) => { n.general.theme = v; }))),
+    setRow('Colour', [os('Navi’s colour in this window, the bubble, the firefly and the tray icon.', 'Navi’s colour in this window, the bubble, the firefly and the card in the corner.'), sayColour ? [' Or say ', h('span', { style: { whiteSpace: 'nowrap' } }, `“${sayColour}”`), '.'] : null], colourPick),
     setRow('Your name', 'For the greeting on the home page, and so your AI spells your name right.', nameInput),
-    setRow('Start Navi when Windows starts', 'It sits in the tray, ready for your shortcut.', toggle(S().general.launchAtLogin, (v) => save((n) => { n.general.launchAtLogin = v; }))),
-    setRow('Open in the tray', 'When Windows starts Navi, it stays in the tray without opening this window. Opening Navi yourself always shows it.', toggle(S().general.startMinimised, (v) => save((n) => { n.general.startMinimised = v; }))),
+    setRow(os('Start Navi when Windows starts', 'Start Navi when you log in'), os('It sits in the tray, ready for your shortcut.', 'It sits in the menu bar, ready for your shortcut.'), toggle(S().general.launchAtLogin, (v) => save((n) => { n.general.launchAtLogin = v; }))),
+    setRow(os('Open in the tray', 'Open in the menu bar'), os('When Windows starts Navi, it stays in the tray without opening this window. Opening Navi yourself always shows it.', 'When you log in, Navi stays in the menu bar without opening this window. Opening Navi yourself always shows it.'), toggle(S().general.startMinimised, (v) => save((n) => { n.general.startMinimised = v; }))),
     setRow('Show the bubble', 'The small pill at the bottom of the screen while you talk.', toggle(S().general.showPill, (v) => save((n) => { n.general.showPill = v; }))),
     setRow('Show the firefly', 'The little firefly that flies in at the top right while you talk. Turn it off if you would rather not see it.', toggle(S().general.showFirefly !== false, (v) => save((n) => { n.general.showFirefly = v; }))),
     setRow('How text goes in', 'Paste is instant. Type works in the rare app that blocks pasting.', seg([{ value: 'paste', label: 'Paste' }, { value: 'type', label: 'Type' }], S().general.pasteMethod, (v) => save((n) => { n.general.pasteMethod = v; }))),
-    setRow('Copy what I say to the clipboard', 'Off: whatever you had copied is put back, so a link you copied is still there to paste after you talk. On: what you said stays on the clipboard, ready for Ctrl + V.', toggle(!S().general.restoreClipboard, (v) => save((n) => { n.general.restoreClipboard = !v; }))),
-    setRow('The close button', 'Keep Navi in the tray, listening for your shortcut, or quit it completely.', seg([{ value: 'tray', label: 'Keep in tray' }, { value: 'quit', label: 'Quit Navi' }], S().general.closeToTray === false ? 'quit' : 'tray', (v) => save((n) => { n.general.closeToTray = v === 'tray'; }))),
-    setRow('Quit Navi', 'Stops listening until you open Navi again. The tray icon’s menu has this too.', btn('Quit', { size: 'sm', icon: 'close', onClick: () => invoke('quit_app') })),
+    setRow('Copy what I say to the clipboard', 'Off: whatever you had copied is put back, so a link you copied is still there to paste after you talk. On: what you said stays on the clipboard, ' + os('ready for Ctrl + V.', 'ready for ⌘V.'), toggle(!S().general.restoreClipboard, (v) => save((n) => { n.general.restoreClipboard = !v; }))),
+    setRow('The close button', os('Keep Navi in the tray, listening for your shortcut, or quit it completely.', 'Keep Navi in the menu bar, listening for your shortcut, or quit it completely.'), seg([{ value: 'tray', label: os('Keep in tray', 'Keep in menu bar') }, { value: 'quit', label: 'Quit Navi' }], S().general.closeToTray === false ? 'quit' : 'tray', (v) => save((n) => { n.general.closeToTray = v === 'tray'; }))),
+    setRow('Quit Navi', os('Stops listening until you open Navi again. The tray icon’s menu has this too.', 'Stops listening until you open Navi again. Navi’s menu bar menu has this too.'), btn('Quit', { size: 'sm', icon: 'close', onClick: () => invoke('quit_app') })),
   );
 
   // ---------------------------------------------------------------- shortcuts
@@ -168,7 +169,7 @@ export async function render(root, { store, arg }) {
     const rows = [{ id: 'auto', name: 'Auto', note: 'Picks from the app' }, ...allModes.map((m) => ({ id: m.id, name: m.name })), { id: 'next', name: 'Next mode', note: 'Steps through them all' }];
     modeKeysBlock.replaceChildren(
       h('div', { class: 'row between', style: { marginBottom: '6px' } },
-        h('div', {}, h('div', { class: 'h3' }, 'Mode keys'), h('p', { class: 'small quiet', style: { marginTop: '3px', maxWidth: '520px' } }, 'Press one anywhere to switch mode. The bubble shows which mode you are on. While Navi runs, a key you pick here stops doing its usual job (F1 opens Help, F5 refreshes).')),
+        h('div', {}, h('div', { class: 'h3' }, 'Mode keys'), h('p', { class: 'small quiet', style: { marginTop: '3px', maxWidth: '520px' } }, os('Press one anywhere to switch mode. The bubble shows which mode you are on. While Navi runs, a key you pick here stops doing its usual job (F1 opens Help, F5 refreshes).', 'Press one anywhere to switch mode. The bubble shows which mode you are on. While Navi runs, a key you pick here stops doing its usual job. On most Mac keyboards the top row changes brightness and volume unless you hold fn, so hold fn with an F key, or pick F13 to F19 if your keyboard has them.'))),
         btn('Use F1 to F5', { size: 'sm', variant: 'ghost', icon: 'keyboard', onClick: useFKeys })),
       h('div', { class: 'mode-keys' }, rows.map((r) => {
         const entry = keyEntry(r.id);
@@ -183,10 +184,10 @@ export async function render(root, { store, arg }) {
   }
   drawModeKeys();
   cleanups.push(() => { if (capturingMode) invoke('cancel_shortcut_capture').catch(() => {}); });
-  section('shortcuts', 'Shortcuts', 'Hold to talk, let go to finish. Works in almost every app: one running as administrator gets your words on the clipboard to paste instead.',
+  section('shortcuts', 'Shortcuts', os('Hold to talk, let go to finish. Works in almost every app: one running as administrator gets your words on the clipboard to paste instead.', 'Hold to talk, let go to finish. Works in almost every app: in a password field macOS hides typing, so your words go on the clipboard to paste instead.'),
     h('div', { class: 'set-row', style: { display: 'block' } }, h('div', { class: 'h3', style: { marginBottom: '12px' } }, 'Talk'), picker.el),
-    setRow('Hands-free', 'Double-tap the talk keys to keep listening without holding. Press Enter, or tap the keys again, to finish.', toggle(S().hotkeys.doubleTapHandsFree, (v) => save((n) => { n.hotkeys.doubleTapHandsFree = v; }))),
-    setRow('Ramble', 'While holding the talk keys, tap this to switch to notes mode. A different sound plays and Navi keeps listening until you press Enter (or tap the talk keys again), then saves it to Notes.', select(['Space', 'Enter', 'Tab', 'N', 'R'], S().hotkeys.rambleKey, (v) => save((n) => { n.hotkeys.rambleKey = v; }))),
+    setRow('Hands-free', `Double-tap the talk keys to keep listening without holding. Press ${os('Enter', 'Return')}, or tap the keys again, to finish.`, toggle(S().hotkeys.doubleTapHandsFree, (v) => save((n) => { n.hotkeys.doubleTapHandsFree = v; }))),
+    setRow('Ramble', `While holding the talk keys, tap this to switch to notes mode. A different sound plays and Navi keeps listening until you press ${os('Enter', 'Return')} (or tap the talk keys again), then saves it to Notes.`, select(['Space', { value: 'Enter', label: os('Enter', 'Return') }, 'Tab', 'N', 'R'], S().hotkeys.rambleKey, (v) => save((n) => { n.hotkeys.rambleKey = v; }))),
     setRow('Cancel', 'Throws the take away while it is recording.', keycaps([S().hotkeys.cancelKey])),
     modeKeysBlock,
     setRow('Voice edits', 'Start with “Navi”: “Navi, scratch that”, “Navi, make that shorter”, “Navi, change Tuesday to Wednesday”. Select text first and say “Navi, turn this into bullet points”, or “Navi, what’s wrong with this?” for a blunt list of its problems. “Scratch that” works without an AI, and so does “change Tuesday to Wednesday” when Navi finds the word. Shorter, bullet points and “what’s wrong” need an AI (set one up under AI).' + (scratchThatOn(S()) ? '' : ' “Scratch that” is off: give it a phrase under Voice commands to use it.'), chip('Always on', 'accent', true)),
@@ -285,7 +286,7 @@ export async function render(root, { store, arg }) {
     vcExample.textContent = example(vc, ['watch_on', 'notes_on', 'watch_off', 'notes_off', 'scratch_that']);
     jobsSpans.forEach((s) => { s.textContent = jobsWake(vc); });
     vcHost.replaceChildren(
-      vcGroup('Start dictating', `Say it at the start of a sentence, then what you want typed: “${wakeLabel(vc)}, email Sam about Friday.” Navi stops after six seconds of quiet, when you say your finish phrase, or when you press Enter.`,
+      vcGroup('Start dictating', `Say it at the start of a sentence, then what you want typed: “${wakeLabel(vc)}, email Sam about Friday.” Navi stops after six seconds of quiet, when you say your finish phrase, or when you press ${os('Enter', 'Return')}.`,
         vcRow(vc, 'wake', 'Wake word', 'Any word or phrase. Keep at least one.')),
       vcGroup('Straight after the wake word', `Say the wake word first, in the same breath or after a pause: “${example(vc, ['notes_on', 'watch_on', 'notes_off', 'watch_off', 'scratch_that'])}.” These work from the shortcut too.`,
         vcRow(vc, 'scratch_that', 'Scratch that', 'Removes the last thing Navi typed.'),
@@ -311,7 +312,7 @@ export async function render(root, { store, arg }) {
   // The tray's "Listen for" tick changes the settings from outside this page: follow it.
   cleanups.push(store.on(() => { if (JSON.stringify(VC()) !== vcDrawn) drawVoice(); }));
   section('commands', 'Voice commands', ['Talk to Navi without touching the keyboard. Say the wake word and keep talking, and Navi types what you say. Say the wake word and a command, such as “', vcExample, '”, and it happens straight away. Change any phrase to words that suit you.'],
-    setRow('Listen for voice commands', ['The microphone stays on so Navi can hear you, and Windows shows its microphone icon. What it hears is checked on this computer and never kept. During call notes Navi only listens for the commands that stop the notes or watch your screen; “', jobsWk(), ', …” on a call still gives your AI a job.'], vcToggle),
+    setRow('Listen for voice commands', [os('The microphone stays on so Navi can hear you, and Windows shows its microphone icon.', 'The microphone stays on so Navi can hear you, and macOS shows its orange microphone dot.') + ' What it hears is checked on this computer and never kept. During call notes Navi only listens for the commands that stop the notes or watch your screen; “', jobsWk(), ', …” on a call still gives your AI a job.'], vcToggle),
     vcHost,
     setRow('Reset to the starting phrases', 'Puts every phrase back to how Navi ships. Your on/off choice stays.', btn('Reset', { size: 'sm', variant: 'ghost', onClick: resetVoice })),
     // Watch my screen, below a divider: its row title is the sub-heading.
@@ -333,7 +334,7 @@ export async function render(root, { store, arg }) {
     h('div', { style: { margin: '6px 0 16px' } }, sounds.el),
     setRow('Sounds', 'Turn every cue off.', toggle(S().sounds.enabled, (v) => save((n) => { n.sounds.enabled = v; }))),
     setRow('Volume', null, vol),
-    setRow('While you talk', 'What happens to music and videos playing on this computer while Navi listens. Pause stops them and plays them again when you finish. Mute silences other apps and brings them back at the same volume. Nothing changes while Navi takes call notes.', seg([{ value: 'keep', label: 'Keep playing' }, { value: 'pause', label: 'Pause' }, { value: 'mute', label: 'Mute' }, { value: 'both', label: 'Both' }], S().sounds.whileTalking || 'pause', (v) => save((n) => { n.sounds.whileTalking = v; }))),
+    setRow('While you talk', os('What happens to music and videos playing on this computer while Navi listens. Pause stops them and plays them again when you finish. Mute silences other apps and brings them back at the same volume. Nothing changes while Navi takes call notes.', 'What happens to music and videos playing on this Mac while Navi listens. Mute silences other apps and brings them back at the same volume. macOS doesn’t let Navi pause other apps, so Pause mutes them too. Nothing changes while Navi takes call notes.'), seg([{ value: 'keep', label: 'Keep playing' }, { value: 'pause', label: 'Pause' }, { value: 'mute', label: 'Mute' }, { value: 'both', label: 'Both' }], S().sounds.whileTalking || 'pause', (v) => save((n) => { n.sounds.whileTalking = v; }))),
     setRow('Your own sounds', 'Use any WAV file for a cue. Only its first 3 seconds play. Built-in sounds are used for the rest.', btn('Choose a file…', { size: 'sm', icon: 'folder', onClick: async () => {
       const path = await pickFile({ filters: [{ name: 'WAV audio', extensions: ['wav'] }] });
       if (!path) return;
@@ -364,7 +365,7 @@ export async function render(root, { store, arg }) {
   // Pressing the talk shortcut ends a microphone test so the take can have the mic.
   cleanups.push(await listen('mic-test', (on) => { if (!on && testing) { testing = false; testBtn.lastChild.textContent = 'Test'; meter.firstChild.style.width = '0%'; } }));
   section('mic', 'Microphone', null,
-    setRow('Microphone', 'Navi uses the Windows default unless you pick one.', select([{ value: '', label: 'Windows default' }, ...devices.map((d) => ({ value: d.name, label: d.name + (d.isDefault ? ' (default)' : '') }))], S().mic.device || '', (v) => save((n) => { n.mic.device = v || null; }))),
+    setRow('Microphone', os('Navi uses the Windows default unless you pick one.', 'Navi uses the system default unless you pick one.'), select([{ value: '', label: os('Windows default', 'System default') }, ...devices.map((d) => ({ value: d.name, label: d.name + (d.isDefault ? ' (default)' : '') }))], S().mic.device || '', (v) => save((n) => { n.mic.device = v || null; }))),
     setRow('Check the level', 'Say something: the bar should move most of the way across.', h('div', { class: 'row' }, meter, testBtn)),
     setRow('Ignore the start cue', 'Skips the first moment of the start sound, so laptop speakers never end up in your text.', toggle(S().mic.trimCue, (v) => save((n) => { n.mic.trimCue = v; }))),
   );
@@ -379,7 +380,7 @@ export async function render(root, { store, arg }) {
       h('span', { class: 'big-dot' }, ico(e.state === 'ready' ? 'bolt' : 'info', 20)),
       h('div', { style: { flex: 1 } },
         h('div', { class: 'h3' }, e.state === 'ready' ? `${prettyModel(e.model)} is ready` : e.state === 'starting' ? 'Starting the speech engine…' : 'The speech engine needs attention'),
-        h('div', { class: 'small quiet' }, e.state === 'ready' ? `Running on ${e.device === 'cuda' ? (e.gpu || 'your graphics card') : 'the processor'}. Everything is transcribed on this computer.` : (e.message || ''))),
+        h('div', { class: 'small quiet' }, e.state === 'ready' ? `Running on ${e.device === 'cuda' || e.device === 'metal' ? (e.gpu || 'your graphics card') : 'the processor'}. Everything is transcribed on this computer.` : (e.message || ''))),
       btn('Restart', { size: 'sm', icon: 'rerun', onClick: async () => { try { store.set({ engine: await invoke('restart_engine') }); } catch (err) { toast(errText(err), { error: true }); } } })));
   };
   // Trim silences needs a small model of its own. Turned on without it, Navi fetches it and
@@ -436,7 +437,7 @@ export async function render(root, { store, arg }) {
     const vc = VC();
     const inTake = [vcPhrases(vc, 'cancel')[0], vcPhrases(vc, 'finish')[0]].filter(Boolean).map((p) => `“${p}”`);
     const listening = inTake.length ? `the wake word and ${inTake.join(' or ')} during a take get slower or stop working` : 'the wake word gets slower or stops working';
-    return `Much faster with an NVIDIA card. Turned off, Navi uses the processor instead: a take with Large v3 Turbo takes about 10 seconds (Base is quicker), and ${listening}.`;
+    return `${os('Much faster with an NVIDIA card.', 'Much faster on Apple silicon.')} Turned off, Navi uses the processor instead: a take with Large v3 Turbo takes about 10 seconds (Base is quicker), and ${listening}.`;
   };
   section('engine', 'Speech engine', 'Navi runs Whisper on this computer. Nothing you say is uploaded to transcribe it.',
     engineHost,
@@ -454,7 +455,7 @@ export async function render(root, { store, arg }) {
     const p = S().ai.provider;
     if (p === 'off' || p === 'ollama') { keyState.textContent = ''; return; }
     const has = await invoke('has_secret', { name: p }).catch(() => false);
-    keyState.textContent = has ? 'Saved in Windows Credential Manager' : p === 'custom' ? 'No key saved. Only needed if your server asks for one.' : 'No key saved';
+    keyState.textContent = has ? os('Saved in Windows Credential Manager', 'Saved in your Keychain') : p === 'custom' ? 'No key saved. Only needed if your server asks for one.' : 'No key saved';
   };
   // Ollama (llm.rs ollama_status): whether it is running, and the models it has pulled.
   let ollama = null;
@@ -665,11 +666,11 @@ export async function render(root, { store, arg }) {
         const path = using && !String(S().ai.baseUrl || '').includes('://') ? S().ai.baseUrl || '' : '';
         // Where each tool usually is: Claude Code's own installer puts it in .local\bin (where
         // cli_ai.rs looks first), and Codex comes through npm.
-        const pathIn = h('input', { class: 'input', value: path, placeholder: t.id === 'codex' ? 'C:\\Users\\you\\AppData\\Roaming\\npm\\codex.cmd' : 'C:\\Users\\you\\.local\\bin\\claude.exe', spellcheck: 'false' });
+        const pathIn = h('input', { class: 'input', value: path, placeholder: isMac ? (t.id === 'codex' ? '/opt/homebrew/bin/codex' : '~/.local/bin/claude') : t.id === 'codex' ? 'C:\\Users\\you\\AppData\\Roaming\\npm\\codex.cmd' : 'C:\\Users\\you\\.local\\bin\\claude.exe', spellcheck: 'false' });
         pathIn.addEventListener('change', () => setToolPath(t, pathIn.value.trim()));
         pathRow = h('div', { class: 'ai-tool-path' },
           h('span', { class: 'small quiet' }, t.found ? 'Path to the tool' : 'Or type where it is'), pathIn,
-          h('span', { class: 'small faint' }, 'Only if Find it can’t. A program, a .js file or an npm .cmd file.', using && t.found && t.path ? ` Navi is using ${t.path}.` : ''));
+          h('span', { class: 'small faint' }, os('Only if Find it can’t. A program, a .js file or an npm .cmd file.', 'Only if Find it can’t. The program, or its .js file.'), using && t.found && t.path ? ` Navi is using ${t.path}.` : ''));
       }
       const finding = toolNotes[t.id]?.busy && !toolNotes[t.id]?.signIn;
       const action = using ? chip('In use', 'accent', true)
@@ -752,7 +753,7 @@ export async function render(root, { store, arg }) {
   const elTestOut = h('span', { class: 'small faint' });
   async function loadVoices() {
     const has = await invoke('has_secret', { name: 'elevenlabs' }).catch(() => false);
-    elKeyState.textContent = has ? 'Saved in Windows Credential Manager' : 'Find yours at elevenlabs.io, under Developers > API keys.';
+    elKeyState.textContent = has ? os('Saved in Windows Credential Manager', 'Saved in your Keychain') : 'Find yours at elevenlabs.io, under Developers > API keys.';
     if (!has) { voiceHost.replaceChildren(h('span', { class: 'small faint' }, 'Save a key to see your voices')); modelHost.replaceChildren(); return; }
     voiceHost.replaceChildren(h('span', { class: 'small faint' }, 'Loading your voices…'));
     try {
@@ -808,16 +809,16 @@ export async function render(root, { store, arg }) {
   const excl = h('div', { class: 'row', style: { flexWrap: 'wrap', gap: '6px', maxWidth: '360px', justifyContent: 'flex-end' } });
   const drawExcl = () => {
     excl.innerHTML = '';
-    S().context.excludedApps.forEach((a) => { const c = chip(a.replace(/\.exe$/i, ''), 'line'); c.append(h('button', { html: '&times;', title: 'Remove', onClick: () => save((n) => { n.context.excludedApps = n.context.excludedApps.filter((x) => x !== a); }).then(drawExcl) })); excl.append(c); });
-    const add = h('input', { class: 'input', style: { width: '150px', height: '28px', borderRadius: '999px', fontSize: '12px' }, placeholder: 'Add app.exe' });
-    add.addEventListener('keydown', (e) => { if (e.key === 'Enter' && add.value.trim()) { let v = add.value.trim(); if (!/\.exe$/i.test(v)) v += '.exe'; save((n) => { n.context.excludedApps = [...n.context.excludedApps, v]; }).then(drawExcl); } });
+    S().context.excludedApps.forEach((a) => { const c = chip(appName(a), 'line'); c.append(h('button', { html: '&times;', title: 'Remove', onClick: () => save((n) => { n.context.excludedApps = n.context.excludedApps.filter((x) => x !== a); }).then(drawExcl) })); excl.append(c); });
+    const add = h('input', { class: 'input', style: { width: '150px', height: '28px', borderRadius: '999px', fontSize: '12px' }, placeholder: os('Add app.exe', 'Add an app') });
+    add.addEventListener('keydown', (e) => { if (e.key === 'Enter' && add.value.trim()) { let v = add.value.trim(); if (!isMac && !/\.exe$/i.test(v)) v += '.exe'; if (isMac) v = v.toLowerCase(); save((n) => { n.context.excludedApps = [...n.context.excludedApps, v]; }).then(drawExcl); } });
     excl.append(add);
   };
   drawExcl();
   section('privacy', 'Context and privacy', 'Navi reads a little of what is on screen to get names and tone right. The reading happens on this computer. When an AI mode runs, your words go to your AI with the app name, the window title, up to 1,000 characters of the text before your cursor, your name, your style notes and any dictionary words you used. In Prompt mode the paths of files in your project go too.',
     setRow('Read the window title', 'Lets Navi use the title of the window you are in and, in a browser, the site in the address bar (its name only, to pick a mode). Off, Navi still sees which app you are in, to pick a mode, and tells your AI its name.', toggle(S().context.readApp, (v) => save((n) => { n.context.readApp = v; }))),
     setRow('Read the text near my cursor', 'The paragraph you are writing, so names come out right and replies match the thread. Password boxes are never read.', toggle(S().context.readField, (v) => save((n) => { n.context.readField = v; }))),
-    setRow('Read the screen', 'Windows’ own on-device text recognition of the window you are in, so the speech engine spells names on screen right. It never goes to your AI. Off by default.', toggle(S().context.ocr, (v) => save((n) => { n.context.ocr = v; }))),
+    setRow('Read the screen', os('Windows’', 'macOS’s') + ' own on-device text recognition of the window you are in, so the speech engine spells names on screen right. It never goes to your AI. Off by default.', toggle(S().context.ocr, (v) => save((n) => { n.context.ocr = v; }))),
     setRow('Never read these apps', 'Navi only uses their name: never their window title or text, no screenshots and no learning from your corrections.', excl),
     setRow('Local only', 'Nothing goes to the internet except downloads you start and the Check for updates button. AI then only works with Ollama or a server on this computer; without one, Navi tidies your words on this computer.', toggle(S().privacy.localOnly, (v) => save((n) => { n.privacy.localOnly = v; }))),
     setRow('Keep recordings for', 'Text is kept until you delete it. Audio can expire.', select([{ value: '7', label: '7 days' }, { value: '30', label: '30 days' }, { value: '90', label: '90 days' }, { value: '0', label: 'Forever' }], String(S().privacy.keepAudioDays), (v) => save((n) => { n.privacy.keepAudioDays = Number(v); }))),
@@ -845,7 +846,7 @@ export async function render(root, { store, arg }) {
   // ---------------------------------------------------------------- integrations
   const r = S().ramble;
   // A folder path can be long: it wraps anywhere rather than running out of the row.
-  const folderLabel = h('span', { class: 'small faint', style: { overflowWrap: 'anywhere' } }, r.notesDir || 'Documents\\Navi Notes');
+  const folderLabel = h('span', { class: 'small faint', style: { overflowWrap: 'anywhere' } }, r.notesDir || os('Documents\\Navi Notes', 'Documents/Navi Notes'));
   const intRows = h('div', {});
   const tokenRow = (name, label, idKey, idLabel) => {
     const tok = h('input', { class: 'input', type: 'password', style: { width: '220px' }, placeholder: `${label} token` });
@@ -907,7 +908,8 @@ export async function render(root, { store, arg }) {
   listen('update', drawUpdate).then((off) => cleanups.push(off)).catch(() => {});
   section('about', 'About Navi', null,
     setRow('Version', h('span', {}, `Navi ${info.version || '0.1.0'}. `, upNote), upBtn),
-    setRow('Check for updates automatically', 'Navi looks on GitHub for a new version soon after it starts and every few hours, and tells you when one is ready. It doesn’t look while Local only is on.', toggle(S().general.checkUpdates !== false, (v) => save((n) => { n.general.checkUpdates = v; }))),
+    // A copy built on a Mac updates by pulling the source and re-running scripts/mac-setup.sh (update.rs), so it never looks.
+    isMac ? null : setRow('Check for updates automatically', 'Navi looks on GitHub for a new version soon after it starts and every few hours, and tells you when one is ready. It doesn’t look while Local only is on.', toggle(S().general.checkUpdates !== false, (v) => save((n) => { n.general.checkUpdates = v; }))),
     setRow('Your data', 'Settings, history, recordings, screenshots and speech models live in this folder. Markdown notes go to your notes folder.', btn('Open folder', { size: 'sm', icon: 'external', onClick: () => invoke('open_data_folder') })),
     setRow('Set-up', 'Walk through the first-run steps again.', btn('Run set-up again', { size: 'sm', onClick: async () => { await save((n) => { n.onboarded = false; }); location.reload(); } })),
     h('p', { class: 'small faint', style: { paddingTop: '14px', borderTop: '1px solid var(--line-soft)' } },

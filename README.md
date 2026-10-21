@@ -5,18 +5,22 @@ spelt the British way. Navi runs speech recognition on your own computer, so wha
 never uploaded to be transcribed.
 
 Free and open source under the GNU General Public License, version 3 (see [Licence](#licence)).
-The source is on GitHub in a private repository for now, so only people with access can read it. Navi runs on Windows. A Mac version is planned
-([docs/MAC-PORT.md](docs/MAC-PORT.md)) but not built yet.
+The source is on GitHub in a private repository for now, so only people with access can read it.
+Navi runs on Windows and macOS. Windows has an installer; on a Mac you build it yourself from the
+source with one script (see [Build on a Mac](#build-on-a-mac)).
 
 ## What it does
 
 - **Talk anywhere.** Hold Ctrl + Win (or one key of your choice, such as Right Ctrl or Caps Lock)
-  in any app, speak and let go. Double-tap for hands-free, then press Enter or the shortcut to
-  finish; Esc cancels. Windows won't let Navi type into an app running as administrator, so there
-  the text is left on your clipboard instead.
+  in any app, speak and let go. On a Mac the default is Right Option, and Fn, Right Command or
+  Control + Option work too. Double-tap for hands-free, then press Enter (Return on a Mac) or the
+  shortcut to finish; Esc cancels. Windows won't let Navi type into an app running as
+  administrator, so there the text is left on your clipboard instead. A Mac does the same in
+  password fields and while Terminal's Secure Keyboard Entry is on: macOS hides typing there, so
+  your words go on the clipboard to paste.
 - **Voice commands.** Turn them on and talk to Navi without touching the keyboard. Say "Navi"
   (or "Hey Navi") and keep talking, and Navi types what you say; it finishes after six seconds of
-  quiet, when you say "that's all", or when you press Enter. Say the wake word and a command and it
+  quiet, when you say "that's all", or when you press Enter (Return). Say the wake word and a command and it
   happens straight away: "Navi, watch my screen", "Navi, take notes", "Navi, scratch that",
   "Navi, turn gold". Say
   "don't worry" on its own during a take to throw it away. Every phrase can be changed in Settings >
@@ -24,11 +28,13 @@ The source is on GitHub in a private repository for now, so only people with acc
   shortcut held too. The listening happens on your computer, no AI is involved, and nothing it
   hears is kept.
 - **Modes at your fingertips.** Switch between Raw, Clean, Message, Email, Prompt and your own
-  modes from the Modes page, the tray, or a key per mode (F1 to F5, say). The bubble shows which
-  mode you are on. Settings refuses a mode key that would clash with your talk shortcut or
-  another mode's key, including when you press Use F1 to F5.
+  modes from the Modes page, the tray (the menu bar on a Mac), or a key per mode (F1 to F5, say).
+  The bubble shows which mode you are on. Settings refuses a mode key that would clash with your
+  talk shortcut or another mode's key, including when you press Use F1 to F5. On most Mac
+  keyboards the top row changes brightness and volume, so hold fn with the F key, or pick F13 to
+  F19 if you have them.
 - **Ramble mode.** Tap Space while holding the shortcut. Talk for as long as you like and press
-  Enter when you are done. Your AI turns it into notes with a title, summary, key points,
+  Enter (Return on a Mac) when you are done. Your AI turns it into notes with a title, summary, key points,
   decisions and tasks (with no AI, Navi makes rough notes on your computer). If the AI fails, Navi
   saves rough notes and says why, in the bubble and at the top of the notes; press Write again on
   the Notes page to have them written up. They're kept on the Notes page and as Markdown, and the
@@ -37,14 +43,14 @@ The source is on GitHub in a private repository for now, so only people with acc
   call app starts using your microphone, Navi offers to take notes. It writes down both sides,
   marked You and Them, while you type your own notes. Your AI then turns it all into a summary,
   key points, decisions and actions, and the actions can go to ClickUp or Notion. The audio is
-  never kept.
+  never kept. On a Mac this needs macOS 14.2 or later.
 - **Jobs on calls.** Say "Navi, draft the follow-up email" on a call (with a pause after the name)
   and your AI writes it while you talk. It only writes: nothing is sent or
   booked. Turn on call screenshots and Navi also looks at the screen every 15 seconds and keeps a
   screenshot when it has changed, so the notes can say what was shown; click one to see it full
   size. Screenshots of Navi itself, and black ones from apps that block capture, are skipped.
 - **Watch my screen.** Say "Navi, watch" (with the shortcut held, or with listening switched on),
-  work, then say "Navi, stop watching". The tray and the Notes page can start and stop it too.
+  work, then say "Navi, stop watching". The tray (the menu bar on a Mac) and the Notes page can start and stop it too.
   Navi looks at the screen every 10 seconds, keeps a screenshot when it has changed and stops
   after an hour. Your AI then keeps up to 20 that matter and writes up what you did (with no AI,
   every screenshot stays, listed by time). If the AI failed or wasn't on, press Write again on the
@@ -75,8 +81,8 @@ The source is on GitHub in a private repository for now, so only people with acc
 - **Six colours.** Lilac, Gold, Teal, Sky, Rose or Graphite, each in light and dark. Pick one in
   Settings > General, or say "Navi, turn gold" with the shortcut held or listening switched on
   ("change to teal", "switch to rose" and "make it sky" work too). The window, the bubble, the
-  firefly, the card in the corner and the tray icon change together. Navi's own icon on the
-  taskbar stays lilac.
+  firefly and the card in the corner change together, and so does the tray icon on Windows.
+  Navi's own icon on the taskbar (or in the Dock) stays lilac.
 - **Knows where you are typing.** Navi reads the app and the text near your cursor on your
   computer, which helps it pick the right mode and spell names correctly. In a browser it also
   looks at the address bar and keeps only the site's name, such as chatgpt.com, to pick the mode;
@@ -107,7 +113,8 @@ Nothing changes while Navi takes call notes.
 
 Navi starts a [whisper.cpp](https://github.com/ggml-org/whisper.cpp) server in the background and
 keeps the model loaded. With an NVIDIA graphics card it runs Whisper Large v3 Turbo (about 1.6 GB)
-on CUDA; otherwise it runs Whisper Base (English only, about 150 MB) on the processor. You can
+on CUDA, and on a Mac with Apple silicon it runs the same model on the Mac's GPU through Metal;
+otherwise it runs Whisper Base (English only, about 150 MB) on the processor. You can
 pick another model in Settings. English is the default language; the Large v3 Turbo models can
 also detect 99 languages, while Base and Small understand English only.
 
@@ -117,18 +124,23 @@ all" during a take get slower or stop working. Changing the model or the graphic
 restarts the engine, which takes 2 to 3 seconds on the graphics card and about 10 on the
 processor. A take made meanwhile waits for it, and the bubble says so.
 
-Set-up detects what you have and downloads what is missing: the engine from whisper.cpp's GitHub
-releases and the speech model from
+Set-up detects what you have and downloads what is missing: on Windows the engine from
+whisper.cpp's GitHub releases (on a Mac, `scripts/mac-setup.sh` builds it), and the speech model
+from
 [huggingface.co/ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp). Navi then
 fetches a small silence-trimming model (Silero VAD, under 1 MB) from
 [huggingface.co/ggml-org/whisper-vad](https://huggingface.co/ggml-org/whisper-vad) by itself,
 unless Local only is on: at start, or as soon as you turn Trim silences on, so it works straight
 away. Each model is checked against its known size and SHA-256. A
-`whisper-server.exe` already on your PATH is used rather than downloading another.
+`whisper-server.exe` already on your PATH is used rather than downloading another. On a Mac, Navi
+uses the `whisper-server` the setup script built in `~/.local/tools/whisper.cpp`, or one in
+`~/.local/bin`, `/opt/homebrew/bin` or `/usr/local/bin`, such as Homebrew's
+(`brew install whisper-cpp`).
 
 Settings, history, recordings, screenshots, the engine and the models live in
-`%APPDATA%\com.goodlad.navi`. Notes are saved to `Documents\Navi Notes` unless you choose another
-folder.
+`%APPDATA%\com.goodlad.navi` on Windows and in `~/Library/Application Support/com.goodlad.navi`
+on a Mac. Notes are saved to `Documents\Navi Notes` (`Documents/Navi Notes` on a Mac) unless you
+choose another folder.
 
 ## AI (optional)
 
@@ -156,7 +168,7 @@ takes go straight to the tidy without trying it again; the Test button always tr
 Jobs nobody waits on (call notes, screen watches, jobs on calls and "what's wrong with this?") can
 use a stronger model than dictation; through Claude Code that is Sonnet unless you pick another.
 When the AI is skipped, the bubble says why in a few words ("Claude rejected the API key"). Keys
-are stored in Windows Credential Manager.
+are stored in Windows Credential Manager, or in your login Keychain on a Mac.
 
 Local only blocks AI that runs off this computer (Claude Code and Codex included), ElevenLabs,
 ClickUp and Notion (their Test buttons too), installing or refreshing packs from a link, the
@@ -171,9 +183,8 @@ page or from History. It reads up to 5,000 characters at a time.
 
 ## Building from source
 
-Navi builds on Windows only. A Mac version is planned but not built yet (see
-[docs/MAC-PORT.md](docs/MAC-PORT.md)). While the repository is private, cloning it needs access to
-GoodLadTom/navi. You need:
+While the repository is private, cloning it needs access to GoodLadTom/navi. On a Mac, see
+[Build on a Mac](#build-on-a-mac). On Windows you need:
 
 - Rust 1.90 or newer, with the MSVC toolchain (`rustup default stable-msvc`)
 - Node.js 18 or newer
@@ -197,6 +208,64 @@ The interface is plain HTML, CSS and JavaScript in `ui/` (no build step). Open
 The installer is not code-signed, so Windows SmartScreen may say "Windows protected your PC".
 Choose **More info** then **Run anyway**.
 
+## Build on a Mac
+
+Navi for Mac is built on the Mac that runs it. An app you build yourself isn't quarantined, so
+macOS opens it without complaint and you don't need an Apple developer account. It needs macOS
+14.2 or later. Apple silicon (M1 or later) is best: the speech engine runs on its GPU. An Intel
+Mac works, but slowly, on the processor.
+
+1. Install Apple's command-line tools, which include git: `xcode-select --install`.
+2. The repository is private for now, so sign in to GitHub first. With the GitHub CLI
+   (`brew install gh`):
+
+   ```
+   gh auth login
+   gh repo clone GoodLadTom/navi
+   cd navi
+   ```
+
+3. Run the setup script:
+
+   ```
+   scripts/mac-setup.sh
+   ```
+
+   It checks for Homebrew, CMake, Rust 1.90 or newer and Node.js 18 or newer, and offers to
+   install what is missing. It builds the speech engine (whisper.cpp's `whisper-server`, with
+   Metal) into `~/.local/tools/whisper.cpp`; add `--brew` to use Homebrew's whisper-cpp instead.
+   It makes a code-signing certificate called "Navi Local" in your login keychain, so macOS
+   remembers Navi's permissions from one build to the next; macOS may ask for your login password
+   to trust it, and the first build may ask to use it (choose **Always Allow**). Then it builds
+   Navi and offers to copy it to Applications. `scripts/mac-setup.sh --check` only reports what is
+   there and what is missing, and `-y` answers yes to every question. Nothing in it uses `sudo`.
+
+4. Open Navi from Applications, or from `src-tauri/target/release/bundle/macos/Navi.app`.
+
+Set-up asks for four permissions, each in System Settings > Privacy & Security:
+
+- **Accessibility**, to hear your shortcut from any app, type or paste your words, and read the
+  text near your cursor.
+- **Microphone**, to hear you.
+- **Screen Recording**, for Watch my screen and call screenshots.
+- **System Audio Recording**, to hear the other side of a call for call notes.
+
+To update, run `git pull` in the `navi` folder, then `scripts/mac-setup.sh` again. It skips
+everything already in place and builds the new version. Settings > About can't update a copy you
+built yourself.
+
+A few things work differently on a Mac:
+
+- In a password field, or with Terminal's Secure Keyboard Entry on, macOS hides ordinary keys from
+  every app. Space, Esc, Return and F-key mode keys don't reach Navi there, and your words go on
+  the clipboard. A shortcut made only of modifier keys, such as Right Option, still works.
+- While voice commands listen, macOS shows its orange microphone dot, and a recording indicator
+  appears in the menu bar while Navi records a call or the screen.
+- Reading the text near your cursor is patchier in Chrome and in Electron apps such as Slack than
+  it is on Windows.
+- While you talk, Pause mutes other apps instead of pausing them, because macOS no longer lets
+  apps pause each other's music and videos. They come back at the same volume when you finish.
+
 ## Updates
 
 Navi looks for a new version on this repository's GitHub releases 20 seconds after it starts and
@@ -209,6 +278,9 @@ screen is being watched, or notes are being written up.
 
 No release has been published yet and the repository is private, so for now the automatic check
 finds nothing and **Check for updates** says "No updates have been published yet."
+
+A copy built on a Mac never checks: update it with `git pull` and `scripts/mac-setup.sh` (see
+[Build on a Mac](#build-on-a-mac)).
 
 To publish an update:
 

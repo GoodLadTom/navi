@@ -64,7 +64,11 @@ pub fn capture(settings: &ContextSettings) -> AppContext {
     {
         win::capture(settings)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        mac::capture(settings)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = settings;
         AppContext { category: "other".into(), ..Default::default() }
@@ -76,8 +80,18 @@ pub fn foreground_hwnd() -> isize {
     {
         win::foreground_hwnd()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        mac::foreground_hwnd()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     0
+}
+
+/// The process id of the app in front (macOS), for "is Navi in front?".
+#[cfg(target_os = "macos")]
+pub fn foreground_pid() -> Option<i32> {
+    mac::foreground_pid()
 }
 
 pub fn read_focused_text(hwnd: isize, settings: &ContextSettings) -> Option<String> {
@@ -85,7 +99,11 @@ pub fn read_focused_text(hwnd: isize, settings: &ContextSettings) -> Option<Stri
     {
         win::read_focused_text(hwnd, settings)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        mac::read_focused_text(hwnd, settings)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = (hwnd, settings);
         None
@@ -94,13 +112,18 @@ pub fn read_focused_text(hwnd: isize, settings: &ContextSettings) -> Option<Stri
 
 /// On-device OCR of the window with Windows.Media.Ocr (lines joined with "\n"). Only when `hwnd` is
 /// the foreground window, because it reads the window's pixels from the screen. None if Windows has
-/// no OCR language installed or recognition fails. Blocks for up to 5 s.
+/// no OCR language installed or recognition fails. Blocks for up to 5 s. On a Mac: ScreenCaptureKit
+/// and Vision, which need the Screen Recording permission.
 pub fn ocr_window(hwnd: isize) -> Option<String> {
     #[cfg(windows)]
     {
         win::ocr_window(hwnd)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        mac::ocr_window(hwnd)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = hwnd;
         None
@@ -108,13 +131,17 @@ pub fn ocr_window(hwnd: isize) -> Option<String> {
 }
 
 /// On-device OCR of a picture (top-down BGRA, opaque), for screenshots (screen.rs). Blocks for up to
-/// 5 s; None when Windows has no OCR language or reads nothing.
+/// 5 s; None when Windows has no OCR language or reads nothing. On a Mac: Vision.
 pub fn ocr_bgra(width: u32, height: u32, pixels: Vec<u8>) -> Option<String> {
     #[cfg(windows)]
     {
         win::ocr_bgra(width, height, pixels)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        mac::ocr_bgra(width, height, pixels)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = (width, height, pixels);
         None
@@ -127,7 +154,11 @@ pub fn foreground_app() -> (String, String, String) {
     {
         win::foreground_app()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        mac::foreground_app()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     (String::new(), String::new(), String::new())
 }
 
@@ -137,7 +168,9 @@ pub fn user_first_name() -> String {
     let from_windows = win::display_name()
         .and_then(|n| first_name_from_display(&n))
         .or_else(|| win::local_full_name().and_then(|n| first_name_from_display(&n)));
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    let from_windows = mac::display_name().and_then(|n| first_name_from_display(&n));
+    #[cfg(not(any(windows, target_os = "macos")))]
     let from_windows: Option<String> = None;
     from_windows
         .or_else(|| std::env::var("USERNAME").ok().and_then(|u| first_name_from_username(&u)))
@@ -149,6 +182,8 @@ pub fn user_first_name() -> String {
 pub fn warm_up() {
     #[cfg(windows)]
     win::warm_up();
+    #[cfg(target_os = "macos")]
+    mac::warm_up();
 }
 
 /// Category of whatever is in front right now (so `insert` can treat terminals differently).
@@ -157,7 +192,11 @@ pub(crate) fn foreground_category() -> &'static str {
     {
         win::foreground_category()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        mac::foreground_category()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     "other"
 }
 
@@ -167,7 +206,11 @@ pub(crate) fn foreground_process_name() -> String {
     {
         win::foreground_process_name()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        mac::foreground_process_name()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     String::new()
 }
 
@@ -203,25 +246,52 @@ const DOCUMENTS: &[&str] = &[
     "typora", "logseq", "evernote",
 ];
 
+// Apple's own apps and Mac-only ones, named as `mac::front` names them. Kept apart so the
+// Windows lists stay exactly as they were.
+#[cfg(target_os = "macos")]
+const MAC_TERMINALS: &[&str] = &["terminal", "iterm2", "ghostty"];
+#[cfg(target_os = "macos")]
+const MAC_EDITORS: &[&str] = &["xcode"];
+#[cfg(target_os = "macos")]
+const MAC_CHATS: &[&str] = &["messages"];
+#[cfg(target_os = "macos")]
+const MAC_EMAIL: &[&str] = &["mail", "spark", "superhuman"];
+#[cfg(target_os = "macos")]
+const MAC_BROWSERS: &[&str] = &["safari", "orion", "dia"];
+#[cfg(target_os = "macos")]
+const MAC_DOCUMENTS: &[&str] = &["notes", "textedit", "pages", "keynote", "numbers"];
+#[cfg(not(target_os = "macos"))]
+const MAC_TERMINALS: &[&str] = &[];
+#[cfg(not(target_os = "macos"))]
+const MAC_EDITORS: &[&str] = &[];
+#[cfg(not(target_os = "macos"))]
+const MAC_CHATS: &[&str] = &[];
+#[cfg(not(target_os = "macos"))]
+const MAC_EMAIL: &[&str] = &[];
+#[cfg(not(target_os = "macos"))]
+const MAC_BROWSERS: &[&str] = &[];
+#[cfg(not(target_os = "macos"))]
+const MAC_DOCUMENTS: &[&str] = &[];
+
 /// "terminal" | "editor" | "chat" | "email" | "browser" | "document" | "other".
 pub fn categorise(process_name: &str, window_title: &str) -> &'static str {
     let stem = process_stem(process_name);
     let s = stem.as_str();
-    if TERMINALS.contains(&s) {
+    if TERMINALS.contains(&s) || MAC_TERMINALS.contains(&s) {
         "terminal"
-    } else if EDITORS.contains(&s) {
+    } else if EDITORS.contains(&s) || MAC_EDITORS.contains(&s) {
         "editor"
-    } else if CHATS.contains(&s) {
+    } else if CHATS.contains(&s) || MAC_CHATS.contains(&s) {
         "chat"
-    } else if EMAIL.contains(&s) {
+    } else if EMAIL.contains(&s) || MAC_EMAIL.contains(&s) {
         "email"
-    } else if BROWSERS.contains(&s) {
+    } else if BROWSERS.contains(&s) || MAC_BROWSERS.contains(&s) {
         if title_mentions(window_title, "Gmail") || title_mentions(window_title, "Outlook") {
             "email"
         } else {
             "browser"
         }
-    } else if DOCUMENTS.contains(&s) {
+    } else if DOCUMENTS.contains(&s) || MAC_DOCUMENTS.contains(&s) {
         "document"
     } else {
         "other"
@@ -231,7 +301,8 @@ pub fn categorise(process_name: &str, window_title: &str) -> &'static str {
 /// A web browser (chrome, msedge, firefox, brave and the rest of BROWSERS), whose address bar
 /// `capture` reads.
 pub fn is_browser(process_name: &str) -> bool {
-    BROWSERS.contains(&process_stem(process_name).as_str())
+    let stem = process_stem(process_name);
+    BROWSERS.contains(&stem.as_str()) || MAC_BROWSERS.contains(&stem.as_str())
 }
 
 /// The host of what a browser's address bar shows, lower case and without "www.":
@@ -1344,6 +1415,447 @@ mod win {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// macOS: NSWorkspace for the app in front, the Accessibility API for titles and fields
+// ---------------------------------------------------------------------------------------------
+
+/// The window identity on a Mac: there is no global window handle, so `hwnd` packs the app's pid
+/// (high 32 bits) and the CGWindowID of its frontmost normal window (low 32 bits). Two different
+/// windows of one app, or the same window id in another app, never compare equal.
+#[cfg(target_os = "macos")]
+pub(crate) mod mac {
+    use super::*;
+    use crate::mac::ax::{self, Element};
+    use crate::mac::front;
+    use objc2_core_foundation::{CFArray, CFDictionary, CFNumber, CFRange, CFRetained, CFString, CFType, CFURL};
+    use objc2_core_graphics::{kCGNullWindowID, CGWindowListCopyWindowInfo, CGWindowListOption};
+    use parking_lot::Mutex;
+    use std::collections::HashMap;
+    use std::sync::mpsc;
+    use std::time::Instant;
+
+    pub(crate) fn pack(pid: i32, window: u32) -> isize {
+        (((pid as u32 as u64) << 32) | window as u64) as isize
+    }
+
+    pub(crate) fn unpack(hwnd: isize) -> (i32, u32) {
+        let v = hwnd as u64;
+        ((v >> 32) as u32 as i32, v as u32)
+    }
+
+    /// The CGWindowID of `pid`'s frontmost normal (layer 0) window on screen. Window numbers and
+    /// owners are readable without the Screen Recording permission (titles are not).
+    pub(crate) fn front_window_of(pid: i32) -> Option<u32> {
+        let opts = CGWindowListOption::OptionOnScreenOnly | CGWindowListOption::ExcludeDesktopElements;
+        let list = CGWindowListCopyWindowInfo(opts, kCGNullWindowID)?;
+        let list: CFRetained<CFArray<CFDictionary<CFString, CFType>>> = unsafe { CFRetained::cast_unchecked(list) };
+        let owner_key = CFString::from_static_str("kCGWindowOwnerPID");
+        let layer_key = CFString::from_static_str("kCGWindowLayer");
+        let number_key = CFString::from_static_str("kCGWindowNumber");
+        let num = |d: &CFDictionary<CFString, CFType>, k: &CFString| -> Option<i64> {
+            d.get(k).and_then(|v| v.downcast_ref::<CFNumber>().and_then(|n| n.as_i64()))
+        };
+        for dict in list.iter() {
+            if num(&dict, &owner_key) == Some(pid as i64) && num(&dict, &layer_key) == Some(0) {
+                if let Some(id) = num(&dict, &number_key) {
+                    return Some(id as u32);
+                }
+            }
+        }
+        None
+    }
+
+    pub(super) fn foreground_hwnd() -> isize {
+        let Some(pid) = front::front_pid() else { return 0 };
+        // The focused window as the app sees it (needs Accessibility), else the frontmost one.
+        let window = ax::trusted()
+            .then(|| Element::application(pid).element("AXFocusedWindow").and_then(|w| w.window_id()))
+            .flatten()
+            .or_else(|| front_window_of(pid))
+            .unwrap_or(0);
+        pack(pid, window)
+    }
+
+    pub(crate) fn foreground_pid() -> Option<i32> {
+        front::front_pid()
+    }
+
+    fn app_label(app: &front::FrontApp) -> String {
+        if let Some(label) = front::mac_label(&app.process_name) {
+            return label.to_string();
+        }
+        if !app.name.trim().is_empty() {
+            return app.name.trim().to_string();
+        }
+        known_app_label(&app.process_name).map(str::to_string).unwrap_or_else(|| label_from_stem(&app.process_name))
+    }
+
+    fn window_title(pid: i32) -> String {
+        if !ax::trusted() {
+            return String::new();
+        }
+        Element::application(pid)
+            .element("AXFocusedWindow")
+            .and_then(|w| w.string("AXTitle"))
+            .unwrap_or_default()
+    }
+
+    pub(super) fn foreground_category() -> &'static str {
+        let Some(app) = front::front_app() else { return "other" };
+        categorise(&app.process_name, &window_title(app.pid))
+    }
+
+    pub(super) fn foreground_process_name() -> String {
+        front::front_app().map(|a| a.process_name).unwrap_or_default()
+    }
+
+    pub(super) fn foreground_app() -> (String, String, String) {
+        let Some(app) = front::front_app() else { return (String::new(), String::new(), String::new()) };
+        (app_label(&app), window_title(app.pid), app.process_name)
+    }
+
+    /// Runs `job` on a thread of its own and waits until `deadline`. A slow app (each AX call
+    /// gives up after 0.25 s) only costs that thread, never the take.
+    fn within<T: Send + 'static>(deadline: Instant, job: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+        let (tx, rx) = mpsc::channel();
+        let _ = std::thread::Builder::new().name("navi-ax".into()).spawn(move || {
+            let _ = tx.send(job());
+        });
+        rx.recv_timeout(deadline.saturating_duration_since(Instant::now())).ok()
+    }
+
+    /// The text in `el` before index `end` (UTF-16 units), at most `max` characters.
+    fn text_before(el: &Element, end: i64, max: usize) -> Option<String> {
+        if end <= 0 {
+            return None;
+        }
+        // Ask for a little more than needed: a range counts UTF-16 units, `max` counts chars.
+        let start = (end - (max as i64) * 2).max(0);
+        let text = el
+            .string_for_range(CFRange { location: start as isize, length: (end - start) as isize })
+            .or_else(|| {
+                let value = el.string("AXValue")?;
+                let units: Vec<u16> = value.encode_utf16().collect();
+                let end = (end as usize).min(units.len());
+                Some(String::from_utf16_lossy(&units[..end]))
+            })?;
+        non_empty(tail_chars(&normalise_text(&text), max))
+    }
+
+    /// The focused field of app `pid`: the text before the caret and the selection.
+    fn read_field(pid: i32) -> (Option<String>, Option<String>) {
+        let Some(el) = ax::focused_element() else { return (None, None) };
+        if el.pid() != Some(pid) || el.is_secure() {
+            return (None, None);
+        }
+        let selection = el
+            .string("AXSelectedText")
+            .map(|s| normalise_text(&s))
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| head_chars(&s, SELECTION_CHARS).to_string());
+        let before = match el.range("AXSelectedTextRange") {
+            Some(range) => text_before(&el, range.location as i64, FIELD_CHARS),
+            // No caret to go by: assume the user is typing at the end, as Windows does.
+            None => el.string("AXValue").and_then(|v| non_empty(tail_chars(&normalise_text(&v), FIELD_CHARS))),
+        };
+        (before, selection)
+    }
+
+    fn read_full(pid: i32) -> Option<String> {
+        let el = ax::focused_element()?;
+        if el.pid() != Some(pid) || el.is_secure() {
+            return None;
+        }
+        el.set_timeout(1.0);
+        let count = el.number("AXNumberOfCharacters").unwrap_or(-1);
+        if count >= 0 && count as usize > FULL_TEXT_CHARS {
+            // Too long: keep the stretch around the caret, where the user has just been editing.
+            if let Some(range) = el.range("AXSelectedTextRange") {
+                let before = (FULL_TEXT_CHARS * 3 / 4) as i64;
+                let start = (range.location as i64 - before).max(0);
+                let len = (FULL_TEXT_CHARS as i64).min(count - start);
+                if let Some(text) = el.string_for_range(CFRange { location: start as isize, length: len as isize }) {
+                    return non_empty(&normalise_text(&text));
+                }
+            }
+        }
+        let text = normalise_text(&el.string("AXValue")?);
+        if text.chars().count() <= FULL_TEXT_CHARS {
+            non_empty(&text)
+        } else {
+            non_empty(tail_chars(&text, FULL_TEXT_CHARS))
+        }
+    }
+
+    // ----- a browser's address -----
+
+    /// Elements already found that hold a window's address (a web area with AXURL, or the address
+    /// field), so later takes in that window make a single call.
+    static ADDRESS_ELEMENTS: Mutex<Option<HashMap<isize, Element>>> = parking_lot::const_mutex(None);
+    /// Windows searched with nothing found, and when, so they aren't searched on every take.
+    static NO_ADDRESS: Mutex<Option<HashMap<isize, Instant>>> = parking_lot::const_mutex(None);
+    const NO_ADDRESS_RETRY: Duration = Duration::from_secs(60);
+
+    fn address_of(el: &Element) -> Option<String> {
+        if let Some(value) = el.attr("AXURL") {
+            if let Some(url) = value.downcast_ref::<CFURL>() {
+                return Some(url.string().to_string());
+            }
+            if let Some(s) = value.downcast_ref::<CFString>() {
+                return Some(s.to_string());
+            }
+        }
+        if el.role() == "AXTextField" || el.role() == "AXComboBox" {
+            return el.string("AXValue");
+        }
+        None
+    }
+
+    fn looks_like_address_field(el: &Element) -> bool {
+        let role = el.role();
+        if role != "AXTextField" && role != "AXComboBox" {
+            return false;
+        }
+        let id = el.string("AXIdentifier").unwrap_or_default().to_lowercase();
+        let desc = el.string("AXDescription").unwrap_or_default().to_lowercase();
+        id.contains("address") || id.contains("url") || desc.contains("address") || desc.contains("url") || desc.contains("search or enter")
+    }
+
+    /// Breadth-first through the window for the address field or the page's web area, giving up
+    /// after a few hundred elements.
+    fn find_address_element(window: &Element) -> Option<Element> {
+        let mut queue = std::collections::VecDeque::from([window.clone()]);
+        let mut web_area: Option<Element> = None;
+        let mut seen = 0;
+        while let Some(el) = queue.pop_front() {
+            seen += 1;
+            if seen > 600 {
+                break;
+            }
+            if looks_like_address_field(&el) && el.string("AXValue").is_some() {
+                return Some(el);
+            }
+            if web_area.is_none() && el.role() == "AXWebArea" && el.attr("AXURL").is_some() {
+                web_area = Some(el.clone());
+                continue; // nothing of the browser's own is inside the page
+            }
+            queue.extend(el.children());
+        }
+        web_area
+    }
+
+    fn read_host(pid: i32, hwnd: isize) -> Option<String> {
+        let kept = ADDRESS_ELEMENTS.lock().as_ref().and_then(|m| m.get(&hwnd).cloned());
+        if let Some(el) = kept {
+            match address_of(&el) {
+                Some(text) => return host_from_address(&text),
+                None => {
+                    if let Some(m) = ADDRESS_ELEMENTS.lock().as_mut() {
+                        m.remove(&hwnd);
+                    }
+                }
+            }
+        }
+        if NO_ADDRESS.lock().as_ref().and_then(|m| m.get(&hwnd).copied()).is_some_and(|at| at.elapsed() < NO_ADDRESS_RETRY) {
+            return None;
+        }
+        ax::wake_web_accessibility(pid);
+        let window = Element::application(pid).element("AXFocusedWindow")?;
+        match find_address_element(&window) {
+            Some(el) => {
+                let host = address_of(&el).and_then(|a| host_from_address(&a));
+                let mut map = ADDRESS_ELEMENTS.lock();
+                let map = map.get_or_insert_with(HashMap::new);
+                if map.len() >= 32 {
+                    map.clear();
+                }
+                map.insert(hwnd, el);
+                host
+            }
+            None => {
+                NO_ADDRESS.lock().get_or_insert_with(HashMap::new).insert(hwnd, Instant::now());
+                None
+            }
+        }
+    }
+
+    pub(super) fn capture(settings: &ContextSettings) -> AppContext {
+        let started = Instant::now();
+        let Some(app) = front::front_app() else {
+            return AppContext { category: "other".into(), ..Default::default() };
+        };
+        let own = app.pid == std::process::id() as i32;
+        let excluded = is_excluded(&app.process_name, &settings.excluded_apps);
+        let hwnd = foreground_hwnd();
+        // Never read means never read: an excluded app's title isn't even used for its category.
+        let title = if excluded { String::new() } else { window_title(app.pid) };
+        let mut ctx = AppContext {
+            hwnd,
+            category: categorise(&app.process_name, &title).to_string(),
+            app_label: app_label(&app),
+            window_title: kept_title(title, settings.read_app, excluded),
+            process_name: app.process_name.clone(),
+            exe_path: app.path.clone(),
+            field_text: None,
+            selection: None,
+            host: String::new(),
+        };
+        if own || !ax::trusted() {
+            return ctx;
+        }
+        let pid = app.pid;
+        let readable = !app.process_name.is_empty() && !excluded;
+        // A browser's address is asked for first, so it is read while the field is.
+        let address = if settings.read_app && readable && is_browser(&app.process_name) {
+            let (tx, rx) = mpsc::channel();
+            let _ = std::thread::Builder::new().name("navi-ax-address".into()).spawn(move || {
+                let _ = tx.send(read_host(pid, hwnd));
+            });
+            Some(rx)
+        } else {
+            None
+        };
+        if may_read_field(&app.process_name, settings) {
+            if let Some((before, selection)) = within(started + CAPTURE_UIA_BUDGET, move || read_field(pid)) {
+                if front::front_pid() == Some(pid) {
+                    ctx.field_text = before;
+                    ctx.selection = selection;
+                }
+            }
+        }
+        if let Some(rx) = address {
+            let wait = (started + CAPTURE_ADDRESS_BUDGET).saturating_duration_since(Instant::now());
+            if let Ok(Some(host)) = rx.recv_timeout(wait) {
+                ctx.host = host;
+            }
+        }
+        ctx
+    }
+
+    pub(super) fn read_focused_text(hwnd: isize, settings: &ContextSettings) -> Option<String> {
+        if hwnd == 0 || foreground_hwnd() != hwnd || !ax::trusted() {
+            return None;
+        }
+        let (pid, _) = unpack(hwnd);
+        let app = front::front_app()?;
+        if app.pid != pid || !may_read_field(&app.process_name, settings) {
+            return None;
+        }
+        within(Instant::now() + READ_UIA_BUDGET, move || read_full(pid)).flatten()
+    }
+
+    pub(super) fn warm_up() {
+        let _ = front::front_app();
+    }
+
+    pub(super) fn display_name() -> Option<String> {
+        let name = objc2_foundation::NSFullUserName().to_string();
+        (!name.trim().is_empty()).then_some(name)
+    }
+
+    // ----- OCR (Vision) -----
+
+    /// The longest side handed to Vision, as Windows' OCR limit: text on a bigger window is still
+    /// readable at this size, and recognition stays well inside OCR_TIMEOUT.
+    const OCR_MAX_SIDE: u32 = 2_600;
+
+    /// Window `hwnd`, if it is still in front, read with ScreenCaptureKit and Vision.
+    pub(super) fn ocr_window(hwnd: isize) -> Option<String> {
+        if hwnd == 0 {
+            return None;
+        }
+        let (tx, rx) = mpsc::channel();
+        // A thread of its own, so a slow capture or recognition can be abandoned.
+        std::thread::Builder::new()
+            .name("navi-ocr".into())
+            .spawn(move || {
+                let text = objc2::rc::autoreleasepool(|_| {
+                    if foreground_hwnd() != hwnd {
+                        return None;
+                    }
+                    let shot = crate::mac::capture::window(unpack(hwnd).1, OCR_MAX_SIDE)?;
+                    recognise_pixels(shot.width, shot.height, &shot.bgra)
+                });
+                let _ = tx.send(text);
+            })
+            .ok()?;
+        rx.recv_timeout(OCR_TIMEOUT).ok().flatten()
+    }
+
+    /// OCR of a screenshot on a thread of its own, waiting up to 5 s.
+    pub(super) fn ocr_bgra(width: u32, height: u32, pixels: Vec<u8>) -> Option<String> {
+        if width < 16 || height < 16 || pixels.len() < (width as usize) * (height as usize) * 4 {
+            return None;
+        }
+        let (tx, rx) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("navi-ocr".into())
+            .spawn(move || {
+                let text = objc2::rc::autoreleasepool(|_| recognise_pixels(width, height, &pixels));
+                let _ = tx.send(text);
+            })
+            .ok()?;
+        rx.recv_timeout(OCR_TIMEOUT).ok().flatten()
+    }
+
+    fn recognise_pixels(width: u32, height: u32, pixels: &[u8]) -> Option<String> {
+        use objc2::AllocAnyThread;
+        use objc2_foundation::{NSArray, NSDictionary, NSString};
+        use objc2_vision::{VNImageRequestHandler, VNRecognizeTextRequest, VNRequest, VNRequestTextRecognitionLevel};
+        let image = crate::mac::capture::bgra_to_image(width, height, pixels)?;
+        let request = VNRecognizeTextRequest::new();
+        request.setRecognitionLevel(VNRequestTextRecognitionLevel::Accurate);
+        request.setUsesLanguageCorrection(true);
+        // British English first where this Mac's Vision has it, then American. A language Vision
+        // doesn't know would fail the whole request, so only known ones are asked for.
+        let known: Vec<String> = unsafe { request.supportedRecognitionLanguagesAndReturnError() }
+            .map(|list| list.iter().map(|l| l.to_string()).collect())
+            .unwrap_or_default();
+        let wanted: Vec<_> = ["en-GB", "en-US"].iter().filter(|l| known.iter().any(|k| k == *l)).map(|l| NSString::from_str(l)).collect();
+        if !wanted.is_empty() {
+            request.setRecognitionLanguages(&NSArray::from_retained_slice(&wanted));
+        }
+        let handler = unsafe { VNImageRequestHandler::initWithCGImage_options(VNImageRequestHandler::alloc(), &image, &NSDictionary::new()) };
+        let as_request: &VNRequest = &request;
+        if let Err(e) = handler.performRequests_error(&NSArray::from_slice(&[as_request])) {
+            log::debug!("text recognition failed: {}", e.localizedDescription());
+            return None;
+        }
+        // (text, left, bottom, top), in Vision's 0 to 1 coordinates with the origin bottom left.
+        let mut lines: Vec<(String, f64, f64, f64)> = Vec::new();
+        for observation in request.results()?.iter() {
+            let Some(best) = observation.topCandidates(1).iter().next() else { continue };
+            let text = best.string().to_string();
+            if text.trim().is_empty() {
+                continue;
+            }
+            let b = unsafe { observation.boundingBox() };
+            lines.push((text, b.origin.x, b.origin.y, b.origin.y + b.size.height));
+        }
+        non_empty(head_chars(&reading_order(lines).join("\n"), OCR_MAX_CHARS))
+    }
+
+    /// Lines top to bottom, and left to right within a row (a line whose middle is level with the
+    /// row's first line belongs to that row), as Windows' OCR gives them.
+    pub(crate) fn reading_order(mut lines: Vec<(String, f64, f64, f64)>) -> Vec<String> {
+        lines.sort_by(|a, b| b.3.total_cmp(&a.3));
+        let mut rows: Vec<Vec<(String, f64, f64, f64)>> = Vec::new();
+        for line in lines {
+            let middle = (line.2 + line.3) / 2.0;
+            match rows.last_mut() {
+                Some(row) if middle >= row[0].2 && middle <= row[0].3 => row.push(line),
+                _ => rows.push(vec![line]),
+            }
+        }
+        rows.into_iter()
+            .flat_map(|mut row| {
+                row.sort_by(|a, b| a.1.total_cmp(&b.1));
+                row.into_iter().map(|l| l.0)
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1564,4 +2076,73 @@ mod tests {
             assert!(!name.contains(' '));
         }
     }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn vision_lines_come_in_reading_order() {
+        // (text, left, bottom, top), origin bottom left as Vision gives them, in a jumbled order.
+        let line = |t: &str, x: f64, y: f64| (t.to_string(), x, y, y + 0.05);
+        let lines = vec![line("bottom", 0.1, 0.1), line("right", 0.6, 0.805), line("top", 0.1, 0.9), line("left", 0.1, 0.8)];
+        assert_eq!(mac::reading_order(lines), vec!["top", "left", "right", "bottom"]);
+        assert!(mac::reading_order(Vec::new()).is_empty());
+    }
+
+    /// Reads the window in front with ScreenCaptureKit and Vision (needs Screen Recording for
+    /// whatever runs the test). Run by hand:
+    /// cargo test --lib context::tests::live_ocr_window -- --ignored --nocapture
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore]
+    fn live_ocr_window() {
+        let hwnd = foreground_hwnd();
+        println!("front: {:?}, window {:?}", foreground_app(), mac::unpack(hwnd));
+        let t = std::time::Instant::now();
+        let text = ocr_window(hwnd).expect("OCR of the window in front");
+        println!("OCR {} chars in {} ms: {:?}", text.len(), t.elapsed().as_millis(), text.chars().take(160).collect::<String>());
+    }
+
+    /// Opens a window in Terminal, Safari and Chrome in turn and checks what `capture` makes of
+    /// each: the app, its category and, in a browser, the site from the address bar. Closes what
+    /// it opened. Needs Accessibility for whatever runs it. Run by hand:
+    /// cargo test --lib context::tests::live_mac_apps -- --ignored --nocapture
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore]
+    fn live_mac_apps() {
+        use std::process::Command;
+        let script = |s: &str| {
+            Command::new("/usr/bin/osascript").args(["-e", s]).output().expect("osascript");
+        };
+        let settings = ContextSettings { read_field: true, read_app: true, ..Default::default() };
+        let look = |what: &str| {
+            std::thread::sleep(std::time::Duration::from_millis(2500));
+            let ctx = capture(&settings);
+            println!("{what}: process {:?}, label {:?}, category {:?}, host {:?}, hwnd {:#x}", ctx.process_name, ctx.app_label, ctx.category, ctx.host, ctx.hwnd);
+            ctx
+        };
+        script(r#"tell application "Terminal" to activate
+tell application "Terminal" to do script """#);
+        let t = look("Terminal");
+        script(r#"tell application "Terminal" to close front window"#);
+        assert_eq!((t.process_name.as_str(), t.category.as_str()), ("terminal", "terminal"));
+        assert_ne!(t.hwnd & 0xFFFF_FFFF, 0, "a real window id, never 0");
+
+        script(r#"tell application "Safari" to make new document with properties {URL:"https://example.com/some/page"}
+tell application "Safari" to activate"#);
+        let safari = look("Safari");
+        script(r#"tell application "Safari" to close front window"#);
+        assert_eq!(safari.category, "browser");
+        assert_eq!(safari.host, "example.com");
+
+        if std::path::Path::new("/Applications/Google Chrome.app").exists() {
+            script(r#"tell application "Google Chrome" to make new window
+tell application "Google Chrome" to set URL of active tab of front window to "https://example.org/x"
+tell application "Google Chrome" to activate"#);
+            let chrome = look("Chrome");
+            script(r#"tell application "Google Chrome" to close front window"#);
+            assert_eq!((chrome.process_name.as_str(), chrome.category.as_str()), ("chrome.exe", "browser"));
+            assert_eq!(chrome.host, "example.org");
+        }
+    }
+
 }

@@ -1,4 +1,5 @@
 // Main window: shell, routing, live status, and the shared store the views read from.
+import { os } from './platform.js';
 import { invoke, listen, win, isTauri } from './bridge.js';
 import { h, ico, btn, keycaps, keyLabel, keyLabelCache, toast, errText } from './ui.js';
 import { icon } from './icons.js';
@@ -108,7 +109,7 @@ function renderStatus() {
   const sub = document.getElementById('statusSub');
   const model = prettyModel(e.model);
   text.textContent = e.state === 'ready' ? 'Ready' : e.state === 'starting' ? 'Starting' : 'Needs attention';
-  sub.textContent = e.state === 'ready' ? `${model} · ${e.device === 'cuda' ? 'GPU' : 'CPU'}` : e.message || 'Speech engine not ready';
+  sub.textContent = e.state === 'ready' ? `${model} · ${e.device === 'cuda' || e.device === 'metal' ? 'GPU' : 'CPU'}` : e.message || 'Speech engine not ready';
 }
 
 export function prettyModel(id) {
@@ -179,7 +180,7 @@ export async function refreshSuggestions() {
 // The close button says what it will do, as set in Settings > General.
 function renderCloseTitle() {
   const toTray = store.settings?.general?.closeToTray !== false;
-  document.getElementById('winClose').title = toTray ? 'Close (Navi keeps listening in the tray)' : 'Quit Navi';
+  document.getElementById('winClose').title = toTray ? os('Close (Navi keeps listening in the tray)', 'Close (Navi keeps listening in the menu bar)') : 'Quit Navi';
 }
 
 function wireWindow() {

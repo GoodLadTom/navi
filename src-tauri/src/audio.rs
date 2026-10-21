@@ -54,7 +54,10 @@ const START_TIMEOUT: Duration = Duration::from_secs(5);
 const STOP_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub(crate) const NO_MICROPHONE: &str = "No microphone found";
+#[cfg(not(target_os = "macos"))]
 const PRIVACY_BLOCKED: &str = "Microphone access is off in Windows Settings > Privacy & security > Microphone";
+#[cfg(target_os = "macos")]
+const PRIVACY_BLOCKED: &str = "Microphone access is off in System Settings > Privacy & Security > Microphone";
 
 pub struct Recording {
     /// 16 kHz mono, -1..1.
@@ -477,7 +480,7 @@ pub(crate) fn describe_open_error(err: &dyn std::fmt::Display, unplugged: bool, 
         anyhow!("The microphone '{label}' is not connected")
     } else if lower.contains("0x8889000a") {
         anyhow!("The microphone '{label}' is being used exclusively by another app")
-    } else if lower.contains("0x88890010") {
+    } else if !cfg!(target_os = "macos") && lower.contains("0x88890010") {
         anyhow!("The Windows Audio service is not running")
     } else if lower.contains("not supported") {
         anyhow!("The microphone '{label}' does not offer an audio format Navi can use")

@@ -213,7 +213,7 @@ SETS = [
     ("kalimba", "Kalimba", "A gentle thumb piano.", i_kalimba, 246.9, 2200, -10),
     ("bubble", "Bubble", "A low, round bloop.", i_bubble, 220.0, 1400, -9),
     ("breeze", "Breeze", "A breath of air. No notes at all.", i_breeze, 300.0, 1600, -15),  # retired, see RETIRED
-    ("bowl", "Bowl", "A small singing bowl.", i_bowl, 196.0, 1900, -12),
+    ("bowl", "Bowl", "A small singing bowl.", i_bowl, 196.0, 1900, -12),  # retired, see RETIRED
     ("dusk", "Dusk", "Two warm notes together, like a soft pad.", i_dusk, 196.0, 1500, -11),
     ("thock", "Thock", "A deep, quiet keyboard thock.", i_thock, 220.0, 2600, -9),
     ("pebble", "Pebble", "A small stone on wood. Very short.", i_pebble, 260.0, 2400, -10),

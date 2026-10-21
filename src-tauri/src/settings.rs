@@ -27,7 +27,18 @@ fn parse(text: &str) -> serde_json::Result<Settings> {
     let mut settings: Settings = serde_json::from_value(value)?;
     // An action added since the file was saved starts with its own phrases.
     settings.voice_commands.complete();
+    mac_shortcut_fix(&mut settings);
     Ok(settings)
+}
+
+/// A Mac reports Caps Lock only as it switches on or off, never as held, so a talk shortcut with
+/// it (picked before Navi said so, or carried over from Windows) could never start a take: it
+/// becomes Right Option, the Mac default.
+fn mac_shortcut_fix(settings: &mut Settings) {
+    if cfg!(target_os = "macos") && settings.hotkeys.talk.iter().any(|k| crate::hotkey::parse_key(k) == crate::hotkey::parse_key("CapsLock")) {
+        log::info!("settings: Caps Lock can't be held on a Mac; the talk shortcut is now Right Option");
+        settings.hotkeys.talk = vec!["RAlt".into()];
+    }
 }
 
 /// Moves settings saved by older versions to today's shape: `heyNavi` {enabled, phrase} became

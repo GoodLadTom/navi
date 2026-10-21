@@ -587,7 +587,8 @@ pub struct ModeKey {
 impl Default for HotkeySettings {
     fn default() -> Self {
         Self {
-            talk: vec!["Ctrl".into(), "Win".into()],
+            // A Mac: Right Option, which needs no change in System Settings (Fn does).
+            talk: if cfg!(target_os = "macos") { vec!["RAlt".into()] } else { vec!["Ctrl".into(), "Win".into()] },
             ramble_key: "Space".into(),
             double_tap_hands_free: true,
             cancel_key: "Escape".into(),

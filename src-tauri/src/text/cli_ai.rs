@@ -35,6 +35,7 @@ const DEADLINE: Duration = Duration::from_secs(60);
 const DEADLINE_MAX: Duration = Duration::from_secs(360);
 /// Longer system prompts go through a file (the Windows command line stops at 32,767 characters).
 const ARG_LIMIT: usize = 8_000;
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Extra rules for a tool that also reads its user's own instructions file. Kept general: the rules
@@ -75,6 +76,10 @@ impl Launcher {
         if let Some(script) = &self.script {
             cmd.arg(script);
         }
+        // A Mac app opened from Finder gets a bare PATH; the tools want node, git and their own
+        // folders on it.
+        #[cfg(target_os = "macos")]
+        cmd.env("PATH", mac::search_path());
         cmd
     }
 
@@ -105,7 +110,11 @@ pub fn detect() -> Vec<CliTool> {
             found: codex.is_some(),
             path: codex.map(|l| l.shown()),
             models: codex_models(),
-            install_hint: "To install it, run npm install -g @openai/codex in a terminal.".into(),
+            install_hint: if cfg!(target_os = "macos") {
+                "To install it, run brew install codex (or npm install -g @openai/codex) in Terminal.".into()
+            } else {
+                "To install it, run npm install -g @openai/codex in a terminal.".into()
+            },
         },
     ]
 }
@@ -258,6 +267,10 @@ pub fn find_claude(path_override: Option<&str>) -> Option<Launcher> {
     if let Some(l) = path_override.and_then(launcher_for_path) {
         return Some(l);
     }
+    #[cfg(target_os = "macos")]
+    return mac::find("claude");
+    #[cfg(not(target_os = "macos"))]
+    let _ = ();
     let home = dirs::home_dir();
     let candidates = [home.as_ref().map(|h| h.join(".local").join("bin").join("claude.exe")), home.as_ref().map(|h| h.join(".claude").join("local").join("claude.exe"))];
     candidates
@@ -275,6 +288,10 @@ pub fn find_codex(path_override: Option<&str>) -> Option<Launcher> {
     if let Some(l) = path_override.and_then(launcher_for_path) {
         return Some(l);
     }
+    #[cfg(target_os = "macos")]
+    return mac::find("codex");
+    #[cfg(not(target_os = "macos"))]
+    let _ = ();
     let npm_js = dirs::data_dir().map(|d| d.join("npm")).and_then(|npm| {
         let js = npm.join("node_modules").join("@openai").join("codex").join("bin").join("codex.js");
         js.is_file().then(|| node_launcher(js, &npm)).flatten()
@@ -634,6 +651,10 @@ fn launcher_for_path(path: &str) -> Option<Launcher> {
         return None;
     }
     let ext = p.extension().and_then(|e| e.to_str()).unwrap_or_default().to_ascii_lowercase();
+    #[cfg(target_os = "macos")]
+    if !matches!(ext.as_str(), "cmd" | "bat") {
+        return mac::launcher_for(&p);
+    }
     match ext.as_str() {
         "js" | "cjs" | "mjs" => node_launcher(p.clone(), p.parent()?),
         "cmd" | "bat" => launcher_from_shim(&p),
@@ -746,6 +767,80 @@ pub fn codex_models() -> Vec<String> {
     models.into_iter().map(|(_, _, slug)| slug).collect()
 }
 
+/// Where the tools live on a Mac: Claude Code's own installer (~/.local/bin), Homebrew, npm's
+/// global folder (Homebrew's or a custom prefix), nvm, Volta, Bun and pnpm, then the PATH. An npm
+/// install is a link to a Node script, which is run with a node found here too, because an app
+/// opened from Finder has no node on its PATH for the script's #! line to find.
+#[cfg(target_os = "macos")]
+mod mac {
+    use super::*;
+
+    fn dirs_to_search() -> Vec<PathBuf> {
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        if let Some(home) = dirs::home_dir() {
+            dirs.push(home.join(".local").join("bin"));
+            dirs.push(home.join(".claude").join("local"));
+            dirs.push(home.join(".npm-global").join("bin"));
+            dirs.push(home.join(".volta").join("bin"));
+            dirs.push(home.join(".bun").join("bin"));
+            dirs.push(home.join("Library").join("pnpm"));
+            dirs.push(home.join(".yarn").join("bin"));
+            // nvm: the newest Node first.
+            if let Ok(read) = std::fs::read_dir(home.join(".nvm").join("versions").join("node")) {
+                let mut versions: Vec<PathBuf> = read.flatten().map(|e| e.path().join("bin")).collect();
+                versions.sort();
+                versions.reverse();
+                dirs.extend(versions);
+            }
+        }
+        dirs.push(PathBuf::from("/opt/homebrew/bin"));
+        dirs.push(PathBuf::from("/usr/local/bin"));
+        if let Some(path) = std::env::var_os("PATH") {
+            dirs.extend(std::env::split_paths(&path));
+        }
+        dirs.push(PathBuf::from("/usr/bin"));
+        dirs.push(PathBuf::from("/bin"));
+        let mut seen = std::collections::HashSet::new();
+        dirs.retain(|d| seen.insert(d.clone()));
+        dirs
+    }
+
+    /// The PATH the tools are started with.
+    pub(super) fn search_path() -> std::ffi::OsString {
+        std::env::join_paths(dirs_to_search()).unwrap_or_default()
+    }
+
+    pub(super) fn find(name: &str) -> Option<Launcher> {
+        dirs_to_search().into_iter().map(|d| d.join(name)).filter(|p| p.is_file()).find_map(|p| launcher_for(&p))
+    }
+
+    /// A program, or a Node script (by its extension or its #! line) run with node.
+    pub(super) fn launcher_for(path: &Path) -> Option<Launcher> {
+        let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let ext = real.extension().and_then(|e| e.to_str()).unwrap_or_default().to_ascii_lowercase();
+        let node_script = matches!(ext.as_str(), "js" | "cjs" | "mjs") || starts_with_node_shebang(&real);
+        if !node_script {
+            return Some(Launcher { program: real, script: None });
+        }
+        // The node beside the link (nvm, Volta), else the first one on the search path.
+        let node = path
+            .parent()
+            .map(|d| d.join("node"))
+            .filter(|p| p.is_file())
+            .or_else(|| dirs_to_search().into_iter().map(|d| d.join("node")).find(|p| p.is_file()))?;
+        Some(Launcher { program: node, script: Some(real) })
+    }
+
+    fn starts_with_node_shebang(path: &Path) -> bool {
+        use std::io::Read;
+        let mut head = [0u8; 64];
+        let Ok(mut file) = std::fs::File::open(path) else { return false };
+        let n = file.read(&mut head).unwrap_or(0);
+        let head = String::from_utf8_lossy(&head[..n]);
+        head.starts_with("#!") && head.lines().next().is_some_and(|l| l.contains("node"))
+    }
+}
+
 /// `exe` on Navi's PATH, else on the PATH as the system has it now (fresh_path).
 fn on_path(exe: &str) -> Option<PathBuf> {
     std::env::var_os("PATH")
@@ -786,6 +881,8 @@ mod tests {
         assert!(!explain("Codex", "x").contains('\u{2014}'));
     }
 
+    // npm's Windows .cmd shims.
+    #[cfg(windows)]
     #[test]
     fn shims_lead_to_their_scripts() {
         let dir = Path::new("C:\\Users\\you\\AppData\\Roaming\\npm");
@@ -838,6 +935,23 @@ mod tests {
         assert_eq!(looped, None);
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_finds_programs_and_node_scripts() {
+        let dir = std::env::temp_dir().join(format!("navi-cli-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let program = dir.join("claude");
+        std::fs::write(&program, b"\xCF\xFA\xED\xFE binary").unwrap();
+        assert_eq!(mac::launcher_for(&program).map(|l| l.script), Some(None));
+        let script = dir.join("codex");
+        std::fs::write(&script, b"#!/usr/bin/env node\nconsole.log(1)\n").unwrap();
+        std::fs::write(dir.join("node"), b"").unwrap();
+        let l = mac::launcher_for(&script).expect("a node script");
+        assert_eq!(l.program, dir.join("node"), "the node beside the link runs it");
+        assert!(l.script.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn only_the_two_tools_count() {
         assert!(is_cli("claude-code") && is_cli("codex"));
@@ -858,7 +972,9 @@ mod tests {
         let (empty, with_program, with_script) = (scratch("empty"), scratch("program"), scratch("script"));
         std::fs::write(with_program.join(n.program), "").unwrap();
         let found = search_dirs(&[empty.clone(), with_program.clone()], &n).expect("the program");
-        assert_eq!(found.launcher, Launcher { program: with_program.join(n.program), script: None });
+        // Resolved, as a Mac reports its temporary folder through /private.
+        assert_eq!(std::fs::canonicalize(&found.launcher.program).unwrap(), std::fs::canonicalize(with_program.join(n.program)).unwrap());
+        assert_eq!(found.launcher.script, None);
         assert_eq!(found.path, Some(with_program.join(n.program)), "kept in Settings, as it isn't where Navi looks");
         // A Node version folder (nvm-windows) holding the package, with its own node beside it.
         if cfg!(windows) {

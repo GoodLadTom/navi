@@ -1,4 +1,5 @@
 // First run: welcome, name and sound, microphone, shortcut, speech engine, a first take.
+import { os } from '../platform.js';
 import { invoke, listen } from '../bridge.js';
 import { h, ico, btn, chip, select, chordLabel, errText } from '../ui.js';
 import { shortcutPicker } from '../shortcut.js';
@@ -64,7 +65,7 @@ export function run({ store }) {
       // Listing microphones can take a moment; if Continue was pressed meanwhile, don't draw over the next step.
       if (steps[step] !== mic) return;
       const meter = h('div', { class: 'meter', style: { marginTop: '18px' } }, h('i'));
-      const pick = select([{ value: '', label: 'Windows default' }, ...devices.map((d) => ({ value: d.name, label: d.name + (d.isDefault ? ' (default)' : '') }))], s().mic.device || '', async (v) => {
+      const pick = select([{ value: '', label: os('Windows default', 'System default') }, ...devices.map((d) => ({ value: d.name, label: d.name + (d.isDefault ? ' (default)' : '') }))], s().mic.device || '', async (v) => {
         await store.saveSettings((n) => { n.mic.device = v || null; });
         await invoke('mic_test_stop').catch(() => {});
         // Only reopen the mic if this step is still showing (a quick Continue must not leave it on).
@@ -94,7 +95,7 @@ export function run({ store }) {
       frame(h('div', {},
         h('div', { class: 'eyebrow' }, 'Your shortcut'),
         h('h1', {}, 'Hold to talk. Let go to finish.'),
-        h('p', { class: 'lead' }, 'Pick the key you’ll hold while you speak. One key is easiest. It works in almost every app: one running as administrator gets your words on the clipboard to paste instead.'),
+        h('p', { class: 'lead' }, os('Pick the key you’ll hold while you speak. One key is easiest. It works in almost every app: one running as administrator gets your words on the clipboard to paste instead.', 'Pick the key you’ll hold while you speak. One key is easiest. If you pick Fn, set System Settings > Keyboard > “Press 🌐 key to” to “Do Nothing”, so the emoji picker doesn’t open too.')),
         h('div', { style: { marginTop: '22px' } }, picker.el)));
     }
 
@@ -126,7 +127,7 @@ export function run({ store }) {
       }
       const prog = h('div', { class: 'progress', style: { marginTop: '14px' } }, h('i'));
       const label = h('p', { class: 'small faint', style: { marginTop: '8px' } }, '');
-      const gpuNote = setup.gpu ? `Your ${setup.gpu} will make it fast.` : 'No NVIDIA graphics card found, so Navi will use a lighter, English-only model on the processor. Settings > Speech engine has models for other languages.';
+      const gpuNote = setup.gpu ? `Your ${setup.gpu} will make it fast.` : os('No NVIDIA graphics card found, so Navi will use a lighter, English-only model on the processor. Settings > Speech engine has models for other languages.', 'This Mac has no Apple silicon graphics, so Navi will use a lighter, English-only model on the processor. Settings > Speech engine has models for other languages.');
       const modelId = setup.gpu ? 'large-v3-turbo' : 'base.en';
       body.append(h('div', { class: 'card flat', style: { marginTop: '18px', background: 'var(--well)', border: 0 } },
         h('div', { class: 'h3' }, setup.gpu ? 'Whisper Large v3 Turbo · 1.6 GB' : 'Whisper Base (English) · 148 MB'),
@@ -209,7 +210,7 @@ export function run({ store }) {
         h('p', { class: 'lead' }, 'A few things worth knowing:'),
         h('div', { class: 'stack', style: { marginTop: '14px', gap: '10px' } },
           hk.doubleTapHandsFree !== false ? tip('Double-tap', 'your shortcut for hands-free.') : null,
-          tip(`Hold ${chordLabel(hk.talk)}, tap ${chordLabel([hk.rambleKey || 'Space'])}`, 'to ramble. Press Enter when you’re done and Navi turns it into notes.'),
+          tip(`Hold ${chordLabel(hk.talk)}, tap ${chordLabel([hk.rambleKey || 'Space'])}`, `to ramble. Press ${os('Enter', 'Return')} when you’re done and Navi turns it into notes.`),
           tip('“Navi, scratch that”', 'undoes the last thing you said.'),
           vc?.enabled
             ? tip(`“${wake}, ${said('watch_on') || 'watch my screen'}”`, 'and other voice commands. Change the words in Settings > Voice commands.')

@@ -1,5 +1,56 @@
 # Navi for Mac: the plan
 
+## Status (21 October 2026)
+
+Work happens on the `mac` branch, on an Apple M4 running macOS 26.6. `git log --oneline main..mac`
+lists what has been done. In short:
+
+- **Done:** phase 1 (builds and runs, Keychain, the platform flag and Mac words throughout the
+  interface), phase 2 (the event tap, paste and typing, the bubble, the menu bar item, the Dock),
+  most of phase 3 (front app, window title and identity, text before the cursor, modes by bundle
+  ID, Claude Code and Codex found in Mac install folders), phase 5's audio side (calls noticed
+  through Core Audio process objects, the other side through a process tap) and the call notes
+  card as a panel, phase 6 (ScreenCaptureKit and Vision) and part of phase 7 (mute while you
+  talk, and a quick second engine so voice commands answer fast on the GPU).
+- **Phase 8 started:** `scripts/mac-setup.sh` checks the tools, builds `whisper-server` with Metal
+  (or uses Homebrew's), makes the "Navi Local" certificate and builds Navi.app; the README has a
+  "Build on a Mac" section.
+- **Verified on the Mac (21 October):** `cargo test --lib` (616 pass, Windows-only tests gated);
+  `scripts/mac-setup.sh` end to end, building a Navi.app signed with "Navi Local" into
+  /Applications; Accessibility kept across a rebuild with that certificate; and these live tests
+  (`--ignored`): the engine on Metal and its restart after a crash, the microphone, apps using the
+  microphone, the process tap, screenshots, Vision OCR, mute and restore, Claude Code (every mode,
+  "what's wrong with this?", watch write-ups, jobs on calls), pasting and typing into TextEdit and
+  reading the field back and "scratch that" (`insert::tests::live_mac_paste_and_type`), and the
+  app, category and site in Terminal, Safari and Chrome (`context::tests::live_mac_apps`).
+- **Found and fixed while verifying:** cpal 0.16.0 crashes an optimised Mac build when it lists
+  audio devices, so `src-tauri/vendor/cpal` carries a patched copy (see its NAVI-PATCH.md); the
+  system-wide focused element gave nothing, so the field is read through the front app; and
+  NSWorkspace's front app lags off the main thread, so the Process Manager's is used.
+- **Still to check on the Mac:** real Zoom, Google Meet (in Chrome) and Teams calls with speakers
+  and with headphones; Watch my screen and mute while you talk in the app; the first run on a
+  fresh macOS user account; the wake word against the test list; SpeechAnalyzer and Foundation
+  Models (not started).
+- **Still to check on the PC:** see "Bringing the mac branch to the PC" below.
+
+## Bringing the mac branch to the PC
+
+Merged into `main` on the PC on 21 October 2026. Both sides had built the same two things that
+morning, so the merge keeps one of each: Bubble as the default sound set (Bowl retired, Bubble
+listed first), and the PC's per-card Find it button in Settings > AI, which searches more widely
+and checks the tool is signed in (`cli_ai::search`, `signed_in`, `open_sign_in`), in place of the
+Mac branch's Find installed tools button. The Mac branch's own finder (`cli_ai::mac`: where the
+tools live on a Mac, Node scripts run with node, the PATH they start with) stays, and Find it
+uses it first. Test Find it and Sign in on the Mac after pulling `main`.
+
+Nothing Windows does was meant to change: Mac code sits beside the Windows code behind
+`cfg(target_os = "macos")`, and the interface picks its words with `ui/js/platform.js`. The
+other shared changes Windows builds are `Engine::transcribe_quick` (on Windows it is
+`transcribe`), and cpal coming from `src-tauri/vendor/cpal`, whose Windows code is unchanged
+0.16.0. From now on, merge `mac` into `main` on the PC after each piece of Mac work, run the
+Windows tests there (`cd src-tauri && cargo test --lib`) and try a take, a voice command and
+Settings > AI > Find it in `npm run dev` before pushing.
+
 Read this first if you are the developer (or the Claude Code session) building the Mac version.
 It was written on 15 October 2026, on the Windows PC where Navi was built, from a review of every
 Windows-only part of the code, and brought up to date on 20 October with the order of work. Nothing

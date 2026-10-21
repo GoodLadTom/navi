@@ -212,6 +212,9 @@ impl App {
     }
 
     pub fn show_main(&self) {
+        // A Mac: back in the Dock while the window is open (see lib.rs close_main_window).
+        #[cfg(target_os = "macos")]
+        let _ = self.handle.set_dock_visibility(true);
         if let Some(w) = self.handle.get_webview_window("main") {
             let _ = w.show();
             let _ = w.unminimize();

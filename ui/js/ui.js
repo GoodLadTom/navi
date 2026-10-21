@@ -1,5 +1,6 @@
 // Small DOM helpers and shared components. No framework: h() builds elements, components are
 // functions that return elements.
+import { isMac } from './platform.js';
 import { icon } from './icons.js';
 
 export function h(tag, props = {}, ...children) {
@@ -104,8 +105,15 @@ const KEY_LABELS = {
 // Navi). Filled by app.js and the shortcut picker; consulted first.
 export const keyLabelCache = {};
 
+// The same keys as a Mac keyboard names them (mirrors hotkey::mac_key_label).
+const MAC_KEY_LABELS = {
+  Win: 'Command', LWin: 'Left Command', RWin: 'Right Command', Ctrl: 'Control', LCtrl: 'Left Control', RCtrl: 'Right Control',
+  Alt: 'Option', LAlt: 'Left Option', RAlt: 'Right Option', Enter: 'Return', Backspace: 'Delete', Delete: 'Forward Delete', Fn: 'Fn',
+};
+
 export function keyLabel(k) {
   if (keyLabelCache[k]) return keyLabelCache[k];
+  if (isMac && MAC_KEY_LABELS[k]) return MAC_KEY_LABELS[k];
   if (KEY_LABELS[k]) return KEY_LABELS[k];
   const num = /^Numpad(\d)$/.exec(k);
   return num ? `Num ${num[1]}` : k;
@@ -209,6 +217,26 @@ export function countUp(el, to, { ms = 900, format = fmtNum } = {}) {
     if (t < 1) requestAnimationFrame(step);
   };
   requestAnimationFrame(step);
+}
+
+// The names Navi keys apps on (src-tauri/src/mac/front.rs), as a Mac user knows the apps.
+const MAC_APP_NAMES = {
+  'code.exe': 'VS Code', 'code - insiders.exe': 'VS Code Insiders', 'cursor.exe': 'Cursor', 'windsurf.exe': 'Windsurf', 'zed.exe': 'Zed',
+  'bb.exe': 'BB', 'claude.exe': 'Claude', 'codex.exe': 'Codex', 'chatgpt.exe': 'ChatGPT', 'warp.exe': 'Warp', 'terminal': 'Terminal',
+  iterm2: 'iTerm2', ghostty: 'Ghostty', 'slack.exe': 'Slack', 'ms-teams.exe': 'Teams', 'teams.exe': 'Teams', 'discord.exe': 'Discord',
+  'whatsapp.exe': 'WhatsApp', 'telegram.exe': 'Telegram', 'signal.exe': 'Signal', messages: 'Messages', 'outlook.exe': 'Outlook',
+  'thunderbird.exe': 'Thunderbird', mail: 'Mail', spark: 'Spark', superhuman: 'Superhuman', 'chrome.exe': 'Chrome', safari: 'Safari',
+  'firefox.exe': 'Firefox', 'msedge.exe': 'Edge', 'arc.exe': 'Arc', 'brave.exe': 'Brave', 'winword.exe': 'Word', 'excel.exe': 'Excel',
+  'powerpnt.exe': 'PowerPoint', 'notion.exe': 'Notion', 'obsidian.exe': 'Obsidian', notes: 'Notes', textedit: 'TextEdit', pages: 'Pages',
+  'zoom.exe': 'Zoom', xcode: 'Xcode',
+};
+
+// An app's name for a chip. Windows: the process without ".exe". A Mac: the app's own name.
+export function appName(name) {
+  const plain = (name || '').replace(/\.exe$/i, '');
+  if (!isMac) return plain;
+  const key = (name || '').toLowerCase();
+  return MAC_APP_NAMES[key] || MAC_APP_NAMES[`${key}.exe`] || plain.charAt(0).toUpperCase() + plain.slice(1);
 }
 
 export function appInitial(name) {

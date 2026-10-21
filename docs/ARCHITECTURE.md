@@ -127,7 +127,10 @@ Teams or Zoom call followed no app.
 A meeting records two tracks, the microphone and the speakers in WASAPI loopback (an
 input stream on the output device), and transcribes both every 20 seconds, cutting at a quiet
 moment. Loopback sends nothing while the computer is silent, so the gap is filled with silence to
-keep each line's time. Lines are marked You or Them, and microphone lines that echo the other side
+keep each line's time. On a Mac (14.2 or later, `mac::audio`) the watcher reads Core Audio's
+process objects instead of the registry, with each app under its Windows name ("zoom.exe"), and
+the other side comes from a process tap of every app but Navi in a private aggregate device; the
+tap sends zeros through silence, so nothing needs filling. Lines are marked You or Them, and microphone lines that echo the other side
 are dropped. On stop (or 20 seconds after the call app lets go of the microphone, or after 20
 minutes with nothing said when there is no call app to follow) the AI writes the notes around what
 you typed; with no AI the note keeps the transcript and your own notes. They are saved in the

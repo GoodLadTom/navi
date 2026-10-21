@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Navi: merged into the app's Info.plist by Tauri on macOS builds. GNU GPL v3 (see LICENSE). -->
+<plist version="1.0">
+<dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Navi listens while you hold your shortcut and turns what you say into text on this Mac.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Navi hears the other side of your calls so your call notes include both sides. The audio is never kept.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Navi saves your notes in Documents, in the Navi Notes folder.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Navi can save exported notes in Downloads.</string>
+	<key>LSUIElement</key>
+	<false/>
+</dict>
+</plist>

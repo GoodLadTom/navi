@@ -77,6 +77,9 @@ const VK_RMENU: u8 = 0xA5;
 pub const MASK_VK: u8 = 0xE8;
 const VK_ESCAPE: u8 = 0x1B;
 const VK_CAPITAL: u8 = 0x14;
+/// The Mac's Fn (globe) key. Windows has no virtual key for it, so an unassigned code stands in;
+/// nothing on Windows ever sends it.
+const VK_FN: u8 = 0x07;
 
 /// A key event as the hook saw it, for the live shortcut tester.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -183,6 +186,7 @@ impl Key {
 
 /// Canonical names, as stored in settings.
 const NAMED_KEYS: &[(&str, u8)] = &[
+    ("Fn", VK_FN),
     ("Backspace", 0x08),
     ("Tab", 0x09),
     ("Enter", 0x0D),
@@ -319,6 +323,18 @@ const ALIASES: &[(&str, &str)] = &[
     ("playpause", "MediaPlayPause"),
     ("mediaplay", "MediaPlayPause"),
     ("mute", "VolumeMute"),
+    ("globe", "Fn"),
+    ("function", "Fn"),
+    ("leftoption", "LAlt"),
+    ("rightoption", "RAlt"),
+    ("loption", "LAlt"),
+    ("roption", "RAlt"),
+    ("leftcommand", "LWin"),
+    ("rightcommand", "RWin"),
+    ("lcommand", "LWin"),
+    ("rcommand", "RWin"),
+    ("lcmd", "LWin"),
+    ("rcmd", "RWin"),
 ];
 
 /// Single characters that name a key.
@@ -470,7 +486,7 @@ pub fn check_chord_with(names: &[String], ramble_key: &str, label: &dyn Fn(&str)
     };
     let mut check = ChordCheck { label: chord_text.clone(), labels, ..ChordCheck::default() };
     if let Some(what) = everyday_shortcut(&keys) {
-        check.error = Some(format!("{chord_text} is {what}, so Navi would take it over. Pick something else."));
+        check.error = Some(for_this_mac(format!("{chord_text} is {what}, so Navi would take it over. Pick something else.")));
         return check;
     }
     // Two keys that type, with no Ctrl, Alt or Win: typing them quickly together ("jk") would
@@ -478,7 +494,7 @@ pub fn check_chord_with(names: &[String], ramble_key: &str, label: &dyn Fn(&str)
     let typing_keys = keys.iter().filter(|k| matches!(k, Key::Vk(vk) if types_text(*vk))).count();
     let command_key = keys.iter().any(|k| matches!(k.modifier(), Some(Modifier::Ctrl | Modifier::Alt | Modifier::Win)));
     if typing_keys >= 2 && !command_key {
-        check.error = Some(format!("{chord_text} would start Navi whenever you type those keys together. Add Ctrl or Alt, or pick something else."));
+        check.error = Some(for_this_mac(format!("{chord_text} would start Navi whenever you type those keys together. Add Ctrl or Alt, or pick something else.")));
         return check;
     }
     if let [key] = keys.as_slice() {
@@ -486,7 +502,7 @@ pub fn check_chord_with(names: &[String], ramble_key: &str, label: &dyn Fn(&str)
             Key::Mod(m) => {
                 check.error = Some(format!(
                     "{} on its own is part of too many shortcuts. Pick one side, such as Right Ctrl, or add another key.",
-                    m.name()
+                    label(m.name())
                 ))
             }
             Key::Vk(VK_ESCAPE) => check.error = Some("Esc cancels a take, so it can't start one too. Pick another key.".into()),
@@ -498,6 +514,12 @@ pub fn check_chord_with(names: &[String], ramble_key: &str, label: &dyn Fn(&str)
             }
             Key::Vk(vk) if types_text(vk) => {
                 check.warning = Some(format!("You won't be able to type {} while Navi is running.", label(&vk_name(vk))))
+            }
+            Key::Vk(VK_LCONTROL) if cfg!(target_os = "macos") => {
+                check.warning = Some("Left Control is part of shortcuts like Control + Tab, and moves the cursor with letters in text fields, so Navi may start listening when you don't mean it to. Right Option is a safer pick.".into())
+            }
+            Key::Vk(VK_LMENU) if cfg!(target_os = "macos") => {
+                check.warning = Some("Left Option types accents and symbols with other keys, so Navi may start listening when you don't mean it to. Right Option is a safer pick.".into())
             }
             Key::Vk(VK_LCONTROL) => {
                 check.warning = Some("Left Ctrl is part of everyday shortcuts like Ctrl + C, so Navi may start listening when you don't mean it to. Right Ctrl is a safer pick.".into())
@@ -511,11 +533,16 @@ pub fn check_chord_with(names: &[String], ramble_key: &str, label: &dyn Fn(&str)
             Key::Vk(VK_LSHIFT | VK_RSHIFT) => {
                 check.warning = Some("Shift is used for capital letters, so Navi may start listening while you type. Right Ctrl or Caps Lock is a safer pick.".into())
             }
+            Key::Vk(VK_CAPITAL) if cfg!(target_os = "macos") => {
+                check.error = Some("A Mac only tells apps when Caps Lock switches on or off, so it can't be held to talk. Try Right Option or Fn.".into())
+            }
             // Navi swallows it, so it no longer toggles capitals; with Shift held it passes through.
             Key::Vk(VK_CAPITAL) => check.warning = Some("Caps Lock won't switch capitals on by itself any more. Shift + Caps Lock still does.".into()),
             Key::Vk(_) => {}
         }
     }
+    check.error = check.error.map(for_this_mac);
+    check.warning = check.warning.map(for_this_mac);
     if check.error.is_none() && check.warning.is_none() {
         if let Some(ramble) = parse_optional_key(ramble_key, "ramble") {
             if keys.iter().any(|k| keys_overlap(*k, ramble)) {
@@ -544,7 +571,18 @@ fn everyday_shortcut(keys: &[Key]) -> Option<&'static str> {
     let key = *key;
     let only = |set: &[Modifier]| mods.len() == set.len() && set.iter().all(|m| mods.contains(m));
     let letter_or_digit = matches!(key, 0x30..=0x39 | 0x41..=0x5A);
-    if only(&[Modifier::Ctrl]) {
+    // Control + Space switches the input source on a Mac.
+    if cfg!(target_os = "macos") && only(&[Modifier::Ctrl]) && key == 0x20 {
+        return Some("a Mac shortcut");
+    }
+    // A Mac's copy, paste and the rest are Command + a letter, and Control + a letter moves the
+    // cursor in text fields.
+    let copy_family = if cfg!(target_os = "macos") { Modifier::Win } else { Modifier::Ctrl };
+    if cfg!(target_os = "macos") && only(&[Modifier::Ctrl]) && (letter_or_digit || key == 0x09) {
+        return Some("an everyday shortcut in many apps");
+    }
+    // (Command + Space and the like go on to the Mac's own shortcuts below.)
+    if only(&[copy_family]) && (!cfg!(target_os = "macos") || letter_or_digit || key == 0x09) {
         return Some(match key {
             b'C' => "Copy in most apps",
             b'V' => "Paste in most apps",
@@ -598,11 +636,22 @@ fn layout_char(vk: u8) -> Option<char> {
         let c = char::from_u32(value & 0xFFFF)?;
         (c != '\0' && !c.is_control() && !c.is_whitespace()).then_some(c)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        mac::layout_char(vk)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = vk;
         None
     }
+}
+
+/// Reads the keyboard layout's symbols for `display_label` (macOS: call on the main thread, at
+/// start-up; the layout API may only be used there). A no-op elsewhere.
+pub fn refresh_layout() {
+    #[cfg(target_os = "macos")]
+    mac::refresh_layout();
 }
 
 /// For saving a talk chord: `check_chord` without the warnings. (`start` and `set_chord` only
@@ -650,8 +699,53 @@ pub fn chord_label(chord: &[String]) -> String {
         .join(" + ")
 }
 
-/// Friendly label for one key name ("PageUp" -> "Page Up", "RCtrl" -> "Right Ctrl").
+/// Friendly label for one key name ("PageUp" -> "Page Up", "RCtrl" -> "Right Ctrl"). On a Mac
+/// the keys take their Mac names ("RCtrl" -> "Right Control", "Win" -> "Command").
 pub fn key_label(name: &str) -> String {
+    let label = windows_key_label(name);
+    if cfg!(target_os = "macos") {
+        mac_key_label(&label)
+    } else {
+        label
+    }
+}
+
+/// A key label in the words a Mac keyboard uses.
+pub fn mac_key_label(label: &str) -> String {
+    match label {
+        "Ctrl" => "Control".into(),
+        "Alt" => "Option".into(),
+        "Win" => "Command".into(),
+        "Left Ctrl" => "Left Control".into(),
+        "Right Ctrl" => "Right Control".into(),
+        "Left Alt" => "Left Option".into(),
+        "Right Alt" => "Right Option".into(),
+        "Left Win" => "Left Command".into(),
+        "Right Win" => "Right Command".into(),
+        "Enter" => "Return".into(),
+        "Backspace" => "Delete".into(),
+        "Delete" => "Forward Delete".into(),
+        "Insert" => "Help".into(),
+        other => other.to_string(),
+    }
+}
+
+/// The sentence-level Windows words in a message, in Mac words (for the chord checks below).
+fn for_this_mac(text: String) -> String {
+    if !cfg!(target_os = "macos") {
+        return text;
+    }
+    text.replace("Right Ctrl or Caps Lock", "Right Option or Fn")
+        .replace("Right Ctrl", "Right Option")
+        .replace("Right Alt", "Right Option")
+        .replace("Left Ctrl", "Left Control")
+        .replace("Left Alt", "Left Option")
+        .replace("Add Ctrl or Alt", "Add Control, Option or Command")
+        .replace("The Windows key", "Command")
+        .replace("a Windows shortcut", "a Mac shortcut")
+}
+
+fn windows_key_label(name: &str) -> String {
     let Some(key) = parse_key(name) else {
         return name.trim().to_string();
     };
@@ -783,7 +877,7 @@ fn chord_needs_mask(chord: &[Key]) -> bool {
 pub fn check_mode_key(keys: &[String], talk: &[String], others: &[Vec<String>], label: &dyn Fn(&str) -> String) -> ChordCheck {
     let mut check = check_chord_with(keys, "", label);
     if mode_key_never_fires(keys) {
-        check.error = Some(format!("{} is used with other keys all the time, so it would switch modes while you work. Pick a key of its own, such as F1.", check.label));
+        check.error = Some(format!("{} is used with other keys all the time, so it would switch modes while you work. Pick a key of its own, such as {}.", check.label, if cfg!(target_os = "macos") { "F13" } else { "F1" }));
         check.warning = None;
         return check;
     }
@@ -793,7 +887,9 @@ pub fn check_mode_key(keys: &[String], talk: &[String], others: &[Vec<String>], 
     let (Ok(mine), Ok(talk_keys)) = (parse_chord(keys), parse_chord(talk)) else { return check };
     if mine.iter().any(|k| talk_keys.iter().any(|t| keys_overlap(*k, *t))) {
         // Never suggest a key of the talk shortcut itself (a talk shortcut of F1).
-        let spare = (0x70..=0x7Bu8).find(|vk| !talk_keys.iter().any(|t| t.matches(*vk))).map_or_else(|| "F1".to_string(), vk_name);
+        // A Mac's F1 to F12 are brightness and volume unless fn is held: suggest F13 to F19 there.
+        let spares = if cfg!(target_os = "macos") { 0x7Cu8..=0x82 } else { 0x70u8..=0x7B };
+        let spare = spares.clone().find(|vk| !talk_keys.iter().any(|t| t.matches(*vk))).map_or_else(|| vk_name(*spares.start()), vk_name);
         check.error = Some(format!("{} is part of your talk shortcut. Pick a key of its own, such as {spare}.", check.label));
     } else if others.iter().filter_map(|o| parse_chord(o).ok()).any(|o| o.len() == mine.len() && o.iter().all(|k| mine.contains(k))) {
         check.error = Some(format!("{} already switches to another mode.", check.label));
@@ -1235,7 +1331,7 @@ pub fn captured_chord_names(order: &[u8]) -> Vec<String> {
 /// finishing a take), not Ctrl, Shift, Alt or Win on their own, and not a volume or media key.
 /// Navi's own keystrokes never get this far (`NAVI_INPUT_TAG`).
 fn reaches_the_text(vk: u8, up: bool, swallowed: bool) -> bool {
-    !up && !swallowed && Modifier::of_vk(vk).is_none() && !matches!(vk, 0xAD..=0xB3)
+    !up && !swallowed && Modifier::of_vk(vk).is_none() && !matches!(vk, 0xAD..=0xB3) && vk != VK_FN
 }
 
 /// When the hook last saw such a key, readable from any thread without a lock, so the hook never
@@ -1275,7 +1371,9 @@ static TYPING: TypingClock = TypingClock::new();
 pub fn keys_pressed_since(t: Instant) -> bool {
     #[cfg(windows)]
     let running = win::running();
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    let running = mac::running();
+    #[cfg(not(any(windows, target_os = "macos")))]
     let running = false;
     !running || TYPING.since(t)
 }
@@ -1287,7 +1385,7 @@ pub fn keys_pressed_since(t: Instant) -> bool {
 pub struct HotkeyService {
     #[cfg(windows)]
     thread_id: u32,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -1303,10 +1401,15 @@ impl HotkeyService {
             let (thread_id, thread) = win::start(machine, tx)?;
             Ok(Self { thread_id, thread: Some(thread) })
         }
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
+        {
+            let thread = mac::start(machine, tx)?;
+            Ok(Self { thread: Some(thread) })
+        }
+        #[cfg(not(any(windows, target_os = "macos")))]
         {
             let _ = (machine, tx);
-            Err(anyhow!("Global shortcuts only work on Windows for now."))
+            Err(anyhow!("Global shortcuts only work on Windows and macOS for now."))
         }
     }
 
@@ -1351,24 +1454,24 @@ impl HotkeyService {
     /// (the older receiver then sees the sender dropped).
     pub fn capture_next_chord(&self) -> oneshot::Receiver<Vec<String>> {
         let (tx, rx) = oneshot::channel();
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         {
-            let mut guard = win::SHARED.lock();
+            let mut guard = plat::SHARED.lock();
             if let Some(shared) = guard.as_mut() {
                 shared.machine.start_capture();
                 shared.capture_tx = Some(tx);
             }
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         drop(tx);
         rx
     }
 
     /// Stops a capture started by `capture_next_chord` (its receiver sees the sender dropped).
     pub fn cancel_capture(&self) {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         {
-            let mut guard = win::SHARED.lock();
+            let mut guard = plat::SHARED.lock();
             if let Some(shared) = guard.as_mut() {
                 shared.machine.cancel_capture();
                 shared.capture_tx = None;
@@ -1378,25 +1481,25 @@ impl HotkeyService {
 
     /// True if every key of the talk chord is physically down right now (GetAsyncKeyState).
     pub fn chord_is_down(&self) -> bool {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         {
-            let guard = win::SHARED.lock();
-            guard.as_ref().is_some_and(|s| s.machine.chord_is_down(&win::probe))
+            let guard = plat::SHARED.lock();
+            guard.as_ref().is_some_and(|s| s.machine.chord_is_down(&plat::probe))
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         false
     }
 
     /// While set, every key the hook sees (except Navi's own keystrokes) is also sent on `tx`, for
     /// the live shortcut tester. None stops it.
     pub fn set_monitor(&self, tx: Option<UnboundedSender<KeySeen>>) {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         {
-            if let Some(shared) = win::SHARED.lock().as_mut() {
+            if let Some(shared) = plat::SHARED.lock().as_mut() {
                 shared.monitor = tx;
             }
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         drop(tx);
     }
 
@@ -1405,15 +1508,17 @@ impl HotkeyService {
     pub fn repair_now(&self) {
         #[cfg(windows)]
         win::request_repair(self.thread_id);
+        #[cfg(target_os = "macos")]
+        mac::request_repair();
     }
 
     /// How the listener is doing, for the log and the tester.
     pub fn health(&self) -> HookHealth {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         {
-            win::health()
+            plat::health()
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         HookHealth::default()
     }
 }
@@ -1432,9 +1537,9 @@ pub struct HookHealth {
 /// Other dictation apps that are running, by name ("Superwhisper"), since they may listen for
 /// the same keys: whichever hook Windows asks first can keep a key from the other.
 pub fn other_dictation_apps() -> Vec<String> {
-    #[cfg(windows)]
-    let running = win::running_exe_names();
-    #[cfg(not(windows))]
+    #[cfg(any(windows, target_os = "macos"))]
+    let running = plat::running_exe_names();
+    #[cfg(not(any(windows, target_os = "macos")))]
     let running: Vec<String> = Vec::new();
     let mut found: Vec<String> = Vec::new();
     for exe in running {
@@ -1478,15 +1583,28 @@ impl Drop for HotkeyService {
     }
 }
 
+#[cfg(target_os = "macos")]
+impl Drop for HotkeyService {
+    fn drop(&mut self) {
+        mac::stop(self.thread.take());
+    }
+}
+
+// The platform's listener, where the code is the same on both.
+#[cfg(windows)]
+use win as plat;
+#[cfg(target_os = "macos")]
+use mac as plat;
+
 fn with_machine(f: impl FnOnce(&mut HookMachine)) {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
-        let mut guard = win::SHARED.lock();
+        let mut guard = plat::SHARED.lock();
         if let Some(shared) = guard.as_mut() {
             f(&mut shared.machine);
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = f;
 }
 
@@ -1869,6 +1987,386 @@ mod win {
     }
 }
 
+/// The Mac counterpart of `win`: a Quartz event tap (CGEventTap) on its own thread with a run
+/// loop. Mac key codes are turned into the Windows virtual-key numbers `HookMachine` works in at
+/// the edge (`vk_of_keycode`), so the machine and its tests are shared. Modifiers arrive as
+/// flagsChanged events: the key code says which key, and the device flags say whether it went
+/// down or up. Needs the Accessibility permission; until it is granted the thread keeps trying,
+/// so the shortcut starts working the moment the user allows it, without a restart.
+#[cfg(target_os = "macos")]
+mod mac {
+    use super::*;
+    use objc2_core_foundation::{kCFRunLoopDefaultMode, CFMachPort, CFRetained, CFRunLoop};
+    use objc2_core_graphics::{
+        CGEvent, CGEventField, CGEventFlags, CGEventMask, CGEventSource, CGEventSourceStateID, CGEventTapLocation,
+        CGEventTapOptions, CGEventTapPlacement, CGEventTapProxy, CGEventType,
+    };
+    use parking_lot::Mutex;
+    use std::ffi::c_void;
+    use std::ptr::NonNull;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::time::Duration;
+
+    /// Longest the tap waits for the shared state before letting a key through untouched.
+    const LOCK_WAIT: Duration = Duration::from_millis(20);
+    /// How often the tap thread checks the tap is still on (macOS turns off a tap that is slow).
+    const CHECK_EVERY_S: f64 = 3.0;
+    /// While there's no permission, how often to try making the tap again.
+    const RETRY_EVERY: Duration = Duration::from_secs(2);
+
+    pub(super) struct Shared {
+        pub machine: HookMachine,
+        pub tx: UnboundedSender<HotkeyMsg>,
+        pub capture_tx: Option<oneshot::Sender<Vec<String>>>,
+        pub monitor: Option<UnboundedSender<KeySeen>>,
+    }
+
+    pub(super) static SHARED: Mutex<Option<Shared>> = parking_lot::const_mutex(None);
+    static RUNNING: AtomicBool = AtomicBool::new(false);
+    static STOP: AtomicBool = AtomicBool::new(false);
+    static REPAIR: AtomicBool = AtomicBool::new(false);
+    static STARTED: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    /// Milliseconds since STARTED when the tap last saw a key.
+    static LAST_EVENT: AtomicU64 = AtomicU64::new(0);
+    static REINSTALLS: AtomicU64 = AtomicU64::new(0);
+    static BUSY_MISSES: AtomicU64 = AtomicU64::new(0);
+    static SWALLOWED: [AtomicBool; 256] = [const { AtomicBool::new(false) }; 256];
+    /// The live tap, so the callback can turn it back on after macOS turned it off.
+    static TAP: Mutex<Option<TapPort>> = parking_lot::const_mutex(None);
+
+    struct TapPort(CFRetained<CFMachPort>);
+    // A mach port is a kernel object; enabling it from the tap thread's callback is safe.
+    unsafe impl Send for TapPort {}
+
+    fn now_ms() -> u64 {
+        STARTED.get_or_init(Instant::now).elapsed().as_millis() as u64
+    }
+
+    pub(super) fn health() -> HookHealth {
+        HookHealth {
+            quiet_secs: now_ms().saturating_sub(LAST_EVENT.load(Ordering::Relaxed)) / 1000,
+            reinstalls: REINSTALLS.load(Ordering::Relaxed),
+            busy_misses: BUSY_MISSES.load(Ordering::Relaxed),
+        }
+    }
+
+    pub(super) fn running() -> bool {
+        RUNNING.load(Ordering::SeqCst) && TAP.lock().is_some()
+    }
+
+    // ----- key codes -----
+
+    /// Mac key code (kVK_*) -> Windows virtual key, for every key Navi can use or must see.
+    const KEYCODES: &[(u16, u8)] = &[
+        (0x00, b'A'), (0x01, b'S'), (0x02, b'D'), (0x03, b'F'), (0x04, b'H'), (0x05, b'G'), (0x06, b'Z'), (0x07, b'X'),
+        (0x08, b'C'), (0x09, b'V'), (0x0A, 0xE2), (0x0B, b'B'), (0x0C, b'Q'), (0x0D, b'W'), (0x0E, b'E'), (0x0F, b'R'),
+        (0x10, b'Y'), (0x11, b'T'), (0x12, b'1'), (0x13, b'2'), (0x14, b'3'), (0x15, b'4'), (0x16, b'6'), (0x17, b'5'),
+        (0x18, 0xBB), (0x19, b'9'), (0x1A, b'7'), (0x1B, 0xBD), (0x1C, b'8'), (0x1D, b'0'), (0x1E, 0xDD), (0x1F, b'O'),
+        (0x20, b'U'), (0x21, 0xDB), (0x22, b'I'), (0x23, b'P'), (0x24, 0x0D), (0x25, b'L'), (0x26, b'J'), (0x27, 0xDE),
+        (0x28, b'K'), (0x29, 0xBA), (0x2A, 0xDC), (0x2B, 0xBC), (0x2C, 0xBF), (0x2D, b'N'), (0x2E, b'M'), (0x2F, 0xBE),
+        (0x30, 0x09), (0x31, 0x20), (0x32, 0xC0), (0x33, 0x08), (0x35, 0x1B),
+        (0x36, VK_RWIN), (0x37, VK_LWIN), (0x38, VK_LSHIFT), (0x39, VK_CAPITAL), (0x3A, VK_LMENU), (0x3B, VK_LCONTROL),
+        (0x3C, VK_RSHIFT), (0x3D, VK_RMENU), (0x3E, VK_RCONTROL), (0x3F, VK_FN),
+        (0x40, 0x80), (0x41, 0x6E), (0x43, 0x6A), (0x45, 0x6B), (0x47, 0x90), (0x48, 0xAF), (0x49, 0xAE), (0x4A, 0xAD),
+        (0x4B, 0x6F), (0x4C, 0x0D), (0x4E, 0x6D), (0x4F, 0x81), (0x50, 0x82),
+        (0x52, 0x60), (0x53, 0x61), (0x54, 0x62), (0x55, 0x63), (0x56, 0x64), (0x57, 0x65), (0x58, 0x66), (0x59, 0x67),
+        (0x5A, 0x83), (0x5B, 0x68), (0x5C, 0x69),
+        (0x60, 0x74), (0x61, 0x75), (0x62, 0x76), (0x63, 0x72), (0x64, 0x77), (0x65, 0x78), (0x67, 0x7A), (0x69, 0x7C),
+        (0x6A, 0x7F), (0x6B, 0x7D), (0x6D, 0x79), (0x6F, 0x7B), (0x71, 0x7E), (0x72, 0x2D), (0x73, 0x24), (0x74, 0x21),
+        (0x75, 0x2E), (0x76, 0x73), (0x77, 0x23), (0x78, 0x71), (0x79, 0x22), (0x7A, 0x70), (0x7B, 0x25), (0x7C, 0x27),
+        (0x7D, 0x28), (0x7E, 0x26),
+    ];
+
+    // ----- the keyboard layout's symbols -----
+
+    /// The character each symbol key types (unshifted) with the layout read at start-up.
+    static LAYOUT: Mutex<Option<std::collections::HashMap<u8, char>>> = parking_lot::const_mutex(None);
+
+    #[link(name = "Carbon", kind = "framework")]
+    extern "C" {
+        fn TISCopyCurrentKeyboardLayoutInputSource() -> *mut c_void;
+        fn TISGetInputSourceProperty(source: *mut c_void, key: *const c_void) -> *const c_void;
+        static kTISPropertyUnicodeKeyLayoutData: *const c_void;
+        fn LMGetKbdType() -> u8;
+        fn UCKeyTranslate(
+            layout: *const u8, code: u16, action: u16, modifiers: u32, keyboard: u32, options: u32,
+            dead: *mut u32, max: usize, len: *mut usize, chars: *mut u16,
+        ) -> i32;
+        fn CFDataGetBytePtr(data: *const c_void) -> *const u8;
+        fn CFRelease(object: *const c_void);
+    }
+
+    pub(super) fn refresh_layout() {
+        const DISPLAY: u16 = 3; // kUCKeyActionDisplay
+        const NO_DEAD_KEYS: u32 = 1; // kUCKeyTranslateNoDeadKeysMask
+        let mut map = std::collections::HashMap::new();
+        unsafe {
+            let source = TISCopyCurrentKeyboardLayoutInputSource();
+            if source.is_null() {
+                return;
+            }
+            let data = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData);
+            if !data.is_null() {
+                let layout = CFDataGetBytePtr(data);
+                let keyboard = LMGetKbdType() as u32;
+                for &(code, vk) in KEYCODES {
+                    if !matches!(vk, 0xBA..=0xC0 | 0xDB..=0xDF | 0xE1..=0xE4) {
+                        continue;
+                    }
+                    let (mut dead, mut len, mut chars) = (0u32, 0usize, [0u16; 4]);
+                    let ok = UCKeyTranslate(layout, code, DISPLAY, 0, keyboard, NO_DEAD_KEYS, &mut dead, chars.len(), &mut len, chars.as_mut_ptr());
+                    if ok == 0 && len == 1 {
+                        if let Some(c) = char::from_u32(chars[0] as u32).filter(|c| !c.is_control() && !c.is_whitespace()) {
+                            map.insert(vk, c);
+                        }
+                    }
+                }
+            }
+            CFRelease(source);
+        }
+        *LAYOUT.lock() = Some(map);
+    }
+
+    pub(super) fn layout_char(vk: u8) -> Option<char> {
+        LAYOUT.lock().as_ref().and_then(|m| m.get(&vk).copied())
+    }
+
+    pub(crate) fn vk_of_keycode(code: u16) -> Option<u8> {
+        KEYCODES.iter().find(|(c, _)| *c == code).map(|(_, vk)| *vk)
+    }
+
+    pub(crate) fn keycode_of_vk(vk: u8) -> Option<u16> {
+        KEYCODES.iter().find(|(_, v)| *v == vk).map(|(c, _)| *c)
+    }
+
+    /// Device-dependent flag bits (IOLLEvent.h) saying which side of a modifier is down.
+    fn modifier_down(vk: u8, flags: u64) -> Option<bool> {
+        let bit: u64 = match vk {
+            VK_LCONTROL => 0x0000_0001,
+            VK_LSHIFT => 0x0000_0002,
+            VK_RSHIFT => 0x0000_0004,
+            VK_LWIN => 0x0000_0008,
+            VK_RWIN => 0x0000_0010,
+            VK_LMENU => 0x0000_0020,
+            VK_RMENU => 0x0000_0040,
+            VK_RCONTROL => 0x0000_2000,
+            VK_FN => CGEventFlags::MaskSecondaryFn.0,
+            VK_CAPITAL => CGEventFlags::MaskAlphaShift.0,
+            _ => return None,
+        };
+        Some(flags & bit != 0)
+    }
+
+    /// Whether `vk` is physically down now (the Mac's GetAsyncKeyState).
+    pub(super) fn probe(vk: u8) -> bool {
+        let state = CGEventSourceStateID::HIDSystemState;
+        match vk {
+            VK_CONTROL => probe(VK_LCONTROL) || probe(VK_RCONTROL),
+            VK_SHIFT => probe(VK_LSHIFT) || probe(VK_RSHIFT),
+            VK_MENU => probe(VK_LMENU) || probe(VK_RMENU),
+            VK_FN => CGEventSource::flags_state(state).0 & CGEventFlags::MaskSecondaryFn.0 != 0,
+            _ => keycode_of_vk(vk).is_some_and(|code| CGEventSource::key_state(state, code)),
+        }
+    }
+
+    /// Names of the apps running ("Superwhisper"), for spotting other dictation apps.
+    pub(super) fn running_exe_names() -> Vec<String> {
+        let apps = objc2_app_kit::NSWorkspace::sharedWorkspace().runningApplications();
+        apps.iter().filter_map(|a| a.localizedName().map(|n| n.to_string())).collect()
+    }
+
+    // ----- the tap thread -----
+
+    pub(super) fn start(machine: HookMachine, tx: UnboundedSender<HotkeyMsg>) -> Result<std::thread::JoinHandle<()>> {
+        if RUNNING.swap(true, Ordering::SeqCst) {
+            return Err(anyhow!("Navi's shortcut listener is already running."));
+        }
+        STOP.store(false, Ordering::SeqCst);
+        *SHARED.lock() = Some(Shared { machine, tx, capture_tx: None, monitor: None });
+        // Ask once, so macOS shows its prompt (and lists Navi in System Settings) straight away.
+        if !crate::mac::ax::ask_for_trust() {
+            log::info!("the shortcut needs the Accessibility permission; waiting for it");
+        }
+        std::thread::Builder::new().name("navi-hotkey".into()).spawn(tap_thread).map_err(|e| {
+            *SHARED.lock() = None;
+            RUNNING.store(false, Ordering::SeqCst);
+            anyhow!("Navi couldn't start its shortcut listener: {e}")
+        })
+    }
+
+    pub(super) fn stop(thread: Option<std::thread::JoinHandle<()>>) {
+        STOP.store(true, Ordering::SeqCst);
+        if let Some(thread) = thread {
+            let started = Instant::now();
+            while !thread.is_finished() && started.elapsed() < Duration::from_secs(CHECK_EVERY_S as u64 + 1) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            if thread.is_finished() {
+                let _ = thread.join();
+            } else {
+                log::warn!("The shortcut listener thread did not stop in time");
+            }
+        }
+        *TAP.lock() = None;
+        *SHARED.lock() = None;
+        RUNNING.store(false, Ordering::SeqCst);
+    }
+
+    pub(super) fn request_repair() {
+        REPAIR.store(true, Ordering::SeqCst);
+    }
+
+    fn make_tap() -> Option<CFRetained<CFMachPort>> {
+        let mask: CGEventMask = (1 << CGEventType::KeyDown.0) | (1 << CGEventType::KeyUp.0) | (1 << CGEventType::FlagsChanged.0);
+        unsafe {
+            CGEvent::tap_create(
+                CGEventTapLocation::SessionEventTap,
+                CGEventTapPlacement::HeadInsertEventTap,
+                CGEventTapOptions::Default,
+                mask,
+                Some(callback),
+                std::ptr::null_mut(),
+            )
+        }
+    }
+
+    fn tap_thread() {
+        let _ = STARTED.get_or_init(Instant::now);
+        let mut logged = false;
+        let tap = loop {
+            if STOP.load(Ordering::SeqCst) {
+                return;
+            }
+            if let Some(tap) = make_tap() {
+                break tap;
+            }
+            if !logged {
+                log::warn!("macOS hasn't allowed Navi to hear its shortcut yet (Accessibility permission)");
+                logged = true;
+            }
+            std::thread::sleep(RETRY_EVERY);
+        };
+        let Some(source) = CFMachPort::new_run_loop_source(None, Some(&tap), 0) else {
+            log::warn!("could not attach the shortcut listener to its run loop");
+            return;
+        };
+        let Some(run_loop) = CFRunLoop::current() else { return };
+        run_loop.add_source(Some(&source), unsafe { kCFRunLoopDefaultMode });
+        CGEvent::tap_enable(&tap, true);
+        *TAP.lock() = Some(TapPort(tap.clone()));
+        LAST_EVENT.store(now_ms(), Ordering::Relaxed);
+        TYPING.note(Instant::now());
+        log::info!("shortcut listener running");
+
+        while !STOP.load(Ordering::SeqCst) {
+            CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, CHECK_EVERY_S, false);
+            let repair_now = REPAIR.swap(false, Ordering::SeqCst);
+            if repair_now {
+                if let Some(mut guard) = SHARED.try_lock_for(LOCK_WAIT) {
+                    if let Some(shared) = guard.as_mut() {
+                        if shared.machine.forget_held() {
+                            let _ = shared.tx.send((HotkeyEvent::TalkUp, Instant::now()));
+                        }
+                    }
+                }
+                for flag in SWALLOWED.iter() {
+                    flag.store(false, Ordering::Relaxed);
+                }
+                TYPING.note(Instant::now());
+            }
+            if repair_now || !CGEvent::tap_is_enabled(&tap) {
+                CGEvent::tap_enable(&tap, true);
+                REINSTALLS.fetch_add(1, Ordering::Relaxed);
+                log::info!("shortcut listener switched back on");
+            }
+        }
+        *TAP.lock() = None;
+    }
+
+    unsafe extern "C-unwind" fn callback(_proxy: CGEventTapProxy, kind: CGEventType, event: NonNull<CGEvent>, _info: *mut c_void) -> *mut CGEvent {
+        let pass = event.as_ptr();
+        if kind == CGEventType::TapDisabledByTimeout || kind == CGEventType::TapDisabledByUserInput {
+            if let Some(tap) = TAP.try_lock().and_then(|t| t.as_ref().map(|p| p.0.clone())) {
+                CGEvent::tap_enable(&tap, true);
+                REINSTALLS.fetch_add(1, Ordering::Relaxed);
+            }
+            return pass;
+        }
+        let event = unsafe { event.as_ref() };
+        if handle(kind, event) {
+            std::ptr::null_mut()
+        } else {
+            pass
+        }
+    }
+
+    /// True to swallow the event.
+    fn handle(kind: CGEventType, event: &CGEvent) -> bool {
+        let ev = Some(event);
+        // Navi's own keystrokes (pasting, selecting back) are never part of a shortcut.
+        if CGEvent::integer_value_field(ev, CGEventField::EventSourceUserData) == crate::insert::NAVI_INPUT_TAG as i64 {
+            return false;
+        }
+        LAST_EVENT.store(now_ms(), Ordering::Relaxed);
+        let code = CGEvent::integer_value_field(ev, CGEventField::KeyboardEventKeycode) as u16;
+        let Some(vk) = vk_of_keycode(code) else { return false };
+        let up = if kind == CGEventType::FlagsChanged {
+            match modifier_down(vk, CGEvent::flags(ev).0) {
+                Some(down) => !down,
+                None => return false,
+            }
+        } else if kind == CGEventType::KeyDown {
+            false
+        } else if kind == CGEventType::KeyUp {
+            true
+        } else {
+            return false;
+        };
+        // Caps Lock reaches a tap only as it toggles, never as a press and release.
+        if vk == VK_CAPITAL {
+            return false;
+        }
+        // Events from the keyboard come from the HID system; anything posted by software doesn't.
+        let injected = CGEvent::integer_value_field(ev, CGEventField::EventSourceStateID) != CGEventSourceStateID::HIDSystemState.0 as i64;
+        let at = Instant::now();
+
+        let swallow = {
+            let Some(mut guard) = SHARED.try_lock_for(LOCK_WAIT) else {
+                BUSY_MISSES.fetch_add(1, Ordering::Relaxed);
+                let swallow = up && SWALLOWED[vk as usize].load(Ordering::Relaxed);
+                if reaches_the_text(vk, up, swallow) {
+                    TYPING.note(at);
+                }
+                return swallow;
+            };
+            let Some(shared) = guard.as_mut() else { return false };
+            if let Some(monitor) = &shared.monitor {
+                let _ = monitor.send(KeySeen { vk, up, injected });
+            }
+            let mut d = shared.machine.on_event(vk, up, injected, &probe);
+            SWALLOWED[vk as usize].store(shared.machine.is_swallowed(vk), Ordering::Relaxed);
+            if d.talk_up_first {
+                let _ = shared.tx.send((HotkeyEvent::TalkUp, at));
+            }
+            if let Some(event) = d.event {
+                let _ = shared.tx.send((event, at));
+            }
+            if let Some(names) = d.captured.take() {
+                if let Some(tx) = shared.capture_tx.take() {
+                    let _ = tx.send(names);
+                }
+            }
+            // No mask key on a Mac: a lone Command or Option tap does nothing there.
+            d.swallow
+        };
+        if reaches_the_text(vk, up, swallow) {
+            TYPING.note(at);
+        }
+        // A modifier's flagsChanged is never held back: the app would see a stuck modifier.
+        swallow && (kind != CGEventType::FlagsChanged || vk == VK_FN)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2053,7 +2551,13 @@ mod tests {
 
     #[test]
     fn validation_keeps_normal_typing_safe() {
+        // A Mac can't hold Caps Lock, and Control + Space switches its input source.
+        let mac_only_bad: [&[&str]; 2] = [&["CapsLock"], &["Ctrl", "Space"]];
         for ok in [&["Ctrl", "Win"][..], &["F9"], &["RCtrl"], &["CapsLock"], &["Ctrl", "Space"], &["Alt", "A"], &["ScrollLock"], &["Backslash"], &["RAlt"]] {
+            if cfg!(target_os = "macos") && mac_only_bad.contains(&ok) {
+                assert!(validate_chord(&names(ok)).is_err(), "{ok:?}");
+                continue;
+            }
             assert!(validate_chord(&names(ok)).is_ok(), "{ok:?}");
         }
         for bad in [&["A"][..], &["Space"], &["7"], &["Enter"], &["Tab"], &["Escape"], &["Ctrl"], &["Shift"], &["Win"], &["Bogus"]] {
@@ -2064,6 +2568,8 @@ mod tests {
         assert!(validate_chord(&names(&["Shift"])).unwrap_err().starts_with("Shift on its own"));
     }
 
+    // Windows key names; a Mac shows its own (see mac_labels_use_mac_words).
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn one_key_shortcuts_get_plain_warnings() {
         let check = |keys: &[&str]| check_chord(&names(keys), "Space");
@@ -2160,11 +2666,15 @@ mod tests {
         }
         // A talk shortcut of F3 refuses F3, and the advice never names a talk key.
         let refused = check_mode_key(&fkeys[2], &names(&["F3"]), &others(2), &label).error.expect("F3 is the talk key");
-        assert!(refused.contains("talk shortcut") && refused.ends_with("such as F1."), "{refused}");
+        // A Mac suggests F13 and up (its F1 to F12 are brightness and volume).
+        let (first, second) = if cfg!(target_os = "macos") { ("F13", "F13") } else { ("F1", "F2") };
+        assert!(refused.contains("talk shortcut") && refused.ends_with(&format!("such as {first}.")), "{refused}");
         let talk_f1 = check_mode_key(&fkeys[0], &names(&["F1"]), &others(0), &label).error.expect("F1 is the talk key");
-        assert!(talk_f1.ends_with("such as F2."), "{talk_f1}");
+        assert!(talk_f1.ends_with(&format!("such as {second}.")), "{talk_f1}");
     }
 
+    // Windows key names; a Mac shows its own (see mac_labels_use_mac_words).
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn everyday_shortcuts_are_refused() {
         let check = |keys: &[&str]| check_chord(&names(keys), "Space");
@@ -2183,6 +2693,8 @@ mod tests {
         }
     }
 
+    // Windows key names; a Mac shows its own (see mac_labels_use_mac_words).
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn checks_carry_a_label_per_key() {
         let c = check_chord(&names(&["Ctrl", "Win"]), "Space");
@@ -2425,6 +2937,47 @@ mod tests {
         drop(service);
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_labels_use_mac_words() {
+        assert_eq!(chord_label(&names(&["Ctrl", "Win"])), "Control + Command");
+        assert_eq!(key_label("RAlt"), "Right Option");
+        assert_eq!(key_label("RWin"), "Right Command");
+        assert_eq!(key_label("Fn"), "Fn");
+        assert_eq!(key_label("Enter"), "Return");
+        assert_eq!(parse_key("Right Option"), Some(Key::Vk(VK_RMENU)));
+        assert_eq!(parse_key("globe"), Some(Key::Vk(VK_FN)));
+        let c = check_chord(&names(&["Win", "V"]), "Space");
+        assert_eq!(c.error.as_deref(), Some("Command + V is Paste in most apps, so Navi would take it over. Pick something else."));
+        assert_eq!(check_chord(&names(&["Ctrl", "A"]), "Space").error.as_deref(), Some("Control + A is an everyday shortcut in many apps, so Navi would take it over. Pick something else."));
+        assert!(check_chord(&names(&["Win", "Space"]), "Space").error.as_deref().is_some_and(|e| e.contains("a Mac shortcut")));
+        assert!(check_chord(&names(&["LCtrl"]), "Space").warning.as_deref().is_some_and(|w| w.contains("Right Option") && !w.contains("Ctrl")));
+        assert!(check_mode_key(&names(&["RAlt"]), &names(&["RAlt"]), &[], &|n: &str| key_label(n)).error.as_deref().is_some_and(|e| e.contains("F13")));
+        assert!(check_chord(&names(&["Fn"]), "Space").error.is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_layout_names_symbol_keys() {
+        // Test threads aren't the main thread, but reading the layout there works in practice.
+        refresh_layout();
+        assert!(display_label("Slash") == "/" || !display_label("Slash").is_empty());
+        assert_eq!(mac::layout_char(b'A'), None, "letters keep their own names");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_key_codes_round_trip() {
+        for code in [0x00u16, 0x31, 0x24, 0x35, 0x36, 0x37, 0x3A, 0x3D, 0x3B, 0x3E, 0x3F, 0x7A, 0x69] {
+            let vk = mac::vk_of_keycode(code).expect("mapped");
+            assert_eq!(mac::keycode_of_vk(vk), Some(code));
+        }
+        assert_eq!(mac::vk_of_keycode(0x3F), Some(VK_FN));
+        assert_eq!(mac::vk_of_keycode(0x36), Some(VK_RWIN));
+    }
+
+    // Windows key names; a Mac shows its own (see mac_labels_use_mac_words).
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn labels_are_friendly() {
         assert_eq!(chord_label(&names(&["Ctrl", "Win"])), "Ctrl + Win");
@@ -2660,6 +3213,8 @@ mod tests {
         assert_eq!(r.down(0x70).event, Some(HotkeyEvent::ModeKey(1)), "the others keep their numbers");
     }
 
+    // Windows key names; a Mac shows its own (see mac_labels_use_mac_words).
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn dead_mode_keys_are_dropped_with_one_notice() {
         use crate::types::ModeKey;
@@ -2690,6 +3245,10 @@ mod tests {
             assert!(check(bad).error.is_some(), "{bad:?}");
         }
         for ok in [&["Shift", "F9"][..], &["Ctrl", "Shift", "A"], &["Alt", "J", "K"], &["Ctrl", "Space"], &["F9", "F10"], &["J", "F9"]] {
+            // Control + Space switches a Mac's input source (see everyday_shortcut).
+            if cfg!(target_os = "macos") && ok == ["Ctrl", "Space"] {
+                continue;
+            }
             assert!(check(ok).error.is_none(), "{ok:?}: {:?}", check(ok).error);
         }
         // Mode keys get the same check.

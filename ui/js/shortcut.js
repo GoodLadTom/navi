@@ -2,16 +2,26 @@
 // Navi sees them, quick picks (one key or two), "Any key", plain warnings, and a note when another
 // dictation app is running. Pressing the shortcut here is a real take, as it is in any other app:
 // the bubble shows at the bottom of the screen and the picker says what Navi heard.
+import { isMac } from './platform.js';
 import { invoke, listen } from './bridge.js';
 import { h, ico, btn, keycaps, keyLabelCache, errText } from './ui.js';
 
-const PICKS = [
-  { keys: ['RCtrl'], note: 'One key, right hand' },
-  { keys: ['RAlt'], note: 'One key, by the space bar' },
-  { keys: ['CapsLock'], note: 'One key, left hand' },
-  { keys: ['Ctrl', 'Win'], note: 'Two keys, bottom left' },
-  { keys: ['Insert'], note: 'One key you rarely use' },
-];
+const PICKS = isMac
+  ? [
+    // Caps Lock and Insert aren't offered: a Mac reports Caps Lock only as it switches, and has no Insert.
+    { keys: ['Fn'], note: 'One key, bottom left' },
+    { keys: ['RAlt'], note: 'One key, by the space bar' },
+    { keys: ['RWin'], note: 'One key, right of the space bar' },
+    { keys: ['Ctrl', 'Alt'], note: 'Two keys, bottom left' },
+    { keys: ['F13'], note: 'One key you rarely use' },
+  ]
+  : [
+    { keys: ['RCtrl'], note: 'One key, right hand' },
+    { keys: ['RAlt'], note: 'One key, by the space bar' },
+    { keys: ['CapsLock'], note: 'One key, left hand' },
+    { keys: ['Ctrl', 'Win'], note: 'Two keys, bottom left' },
+    { keys: ['Insert'], note: 'One key you rarely use' },
+  ];
 
 const SIDES = { Ctrl: ['LCtrl', 'RCtrl'], Shift: ['LShift', 'RShift'], Alt: ['LAlt', 'RAlt'], Win: ['LWin', 'RWin'] };
 
@@ -152,7 +162,7 @@ export function shortcutPicker({ store, mode = 'auto' }) {
   // Pressing every key of the shortcut but Win, again and again, usually means a Win Lock.
   function watchForWinLock() {
     const keys = S().hotkeys.talk;
-    if (heardOnce || sawWin || !keys.some(isWin)) return;
+    if (isMac || heardOnce || sawWin || !keys.some(isWin)) return;
     const others = keys.filter((k) => !isWin(k));
     if (others.length && others.every((k) => [...held].some((n) => presses(k, n)))) {
       partials += 1;
