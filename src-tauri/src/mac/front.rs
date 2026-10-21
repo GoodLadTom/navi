@@ -18,7 +18,9 @@ pub struct FrontApp {
 }
 
 pub fn front_app() -> Option<FrontApp> {
-    let app = NSWorkspace::sharedWorkspace().frontmostApplication()?;
+    let app = front_pid()
+        .and_then(|pid| objc2_app_kit::NSRunningApplication::runningApplicationWithProcessIdentifier(pid))
+        .or_else(|| NSWorkspace::sharedWorkspace().frontmostApplication())?;
     let pid = app.processIdentifier();
     let bundle_id = app.bundleIdentifier().map(|s| s.to_string()).unwrap_or_default();
     let name = app.localizedName().map(|s| s.to_string()).unwrap_or_default();
@@ -30,9 +32,42 @@ pub fn front_app() -> Option<FrontApp> {
     Some(FrontApp { pid, process_name: process_name_for(&bundle_id, &exec, &name), bundle_id, name, path })
 }
 
-/// The pid of the app in front.
+/// The owner of the frontmost normal window on screen, from the window server.
+#[cfg(test)]
+fn first_window_owner() -> Option<i32> {
+    use objc2_core_foundation::{CFArray, CFDictionary, CFNumber, CFRetained, CFString, CFType};
+    use objc2_core_graphics::{kCGNullWindowID, CGWindowListCopyWindowInfo, CGWindowListOption};
+    let list = CGWindowListCopyWindowInfo(CGWindowListOption::OptionOnScreenOnly | CGWindowListOption::ExcludeDesktopElements, kCGNullWindowID)?;
+    let list: CFRetained<CFArray<CFDictionary<CFString, CFType>>> = unsafe { CFRetained::cast_unchecked(list) };
+    let num = |d: &CFDictionary<CFString, CFType>, k: &str| d.get(&CFString::from_str(k)).and_then(|v| v.downcast_ref::<CFNumber>().and_then(|n| n.as_i64()));
+    list.iter().find(|d| num(d, "kCGWindowLayer") == Some(0)).and_then(|d| num(&d, "kCGWindowOwnerPID")).map(|p| p as i32)
+}
+
+/// The front process as the Process Manager says (deprecated by Apple, but asks the system each
+/// time rather than waiting on notifications).
+pub fn process_manager_front() -> Option<i32> {
+    #[repr(C)]
+    struct Psn {
+        high: u32,
+        low: u32,
+    }
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn GetFrontProcess(psn: *mut Psn) -> i32;
+        fn GetProcessPID(psn: *const Psn, pid: *mut i32) -> i32;
+    }
+    let mut psn = Psn { high: 0, low: 0 };
+    let mut pid = 0;
+    unsafe { (GetFrontProcess(&mut psn) == 0 && GetProcessPID(&psn, &mut pid) == 0 && pid > 0).then_some(pid) }
+}
+
+/// The pid of the app in front, from the Process Manager (see `process_manager_front`), else
+/// NSWorkspace's. NSWorkspace's answer only moves on while a run loop handles its notifications,
+/// so off the main thread it can be out of date; Accessibility's focused app sometimes gives
+/// nothing; the window list follows windows, not focus. The Process Manager matched macOS's own
+/// record (`lsappinfo front`) every time (live_front_app_methods).
 pub fn front_pid() -> Option<i32> {
-    NSWorkspace::sharedWorkspace().frontmostApplication().map(|a| a.processIdentifier())
+    process_manager_front().or_else(|| NSWorkspace::sharedWorkspace().frontmostApplication().map(|a| a.processIdentifier()))
 }
 
 /// Bundle ids of Mac apps whose Windows version Navi already knows, with that Windows process
@@ -171,4 +206,22 @@ mod tests {
         assert_eq!(process_name_for("so.granola.app", "Granola", "Granola"), "granola");
         assert_eq!(process_name_for("", "", "Some App"), "some app");
     }
+
+    /// Compares the ways of finding the app in front right after switching apps.
+    #[test]
+    #[ignore]
+    fn live_front_app_methods() {
+        use std::process::Command;
+        for app in ["Safari", "Terminal", "TextEdit"] {
+            Command::new("/usr/bin/osascript").args(["-e", &format!("tell application \"{app}\" to activate")]).output().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            let truth = String::from_utf8_lossy(&Command::new("/usr/bin/lsappinfo").args(["info", "-only", "pid", &String::from_utf8_lossy(&Command::new("/usr/bin/lsappinfo").arg("front").output().unwrap().stdout).trim().to_string()]).output().unwrap().stdout).to_string();
+            let ax = crate::mac::ax::Element::system_wide().element("AXFocusedApplication").and_then(|a| a.pid());
+            let ws = NSWorkspace::sharedWorkspace().frontmostApplication().map(|a| a.processIdentifier());
+            let cg = first_window_owner();
+            let pm = process_manager_front();
+            println!("{app}: lsappinfo {} ax {ax:?} workspace {ws:?} window list {cg:?} process manager {pm:?}", truth.trim());
+        }
+    }
+
 }

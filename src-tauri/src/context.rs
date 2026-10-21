@@ -2100,4 +2100,49 @@ mod tests {
         let text = ocr_window(hwnd).expect("OCR of the window in front");
         println!("OCR {} chars in {} ms: {:?}", text.len(), t.elapsed().as_millis(), text.chars().take(160).collect::<String>());
     }
+
+    /// Opens a window in Terminal, Safari and Chrome in turn and checks what `capture` makes of
+    /// each: the app, its category and, in a browser, the site from the address bar. Closes what
+    /// it opened. Needs Accessibility for whatever runs it. Run by hand:
+    /// cargo test --lib context::tests::live_mac_apps -- --ignored --nocapture
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore]
+    fn live_mac_apps() {
+        use std::process::Command;
+        let script = |s: &str| {
+            Command::new("/usr/bin/osascript").args(["-e", s]).output().expect("osascript");
+        };
+        let settings = ContextSettings { read_field: true, read_app: true, ..Default::default() };
+        let look = |what: &str| {
+            std::thread::sleep(std::time::Duration::from_millis(2500));
+            let ctx = capture(&settings);
+            println!("{what}: process {:?}, label {:?}, category {:?}, host {:?}, hwnd {:#x}", ctx.process_name, ctx.app_label, ctx.category, ctx.host, ctx.hwnd);
+            ctx
+        };
+        script(r#"tell application "Terminal" to activate
+tell application "Terminal" to do script """#);
+        let t = look("Terminal");
+        script(r#"tell application "Terminal" to close front window"#);
+        assert_eq!((t.process_name.as_str(), t.category.as_str()), ("terminal", "terminal"));
+        assert_ne!(t.hwnd & 0xFFFF_FFFF, 0, "a real window id, never 0");
+
+        script(r#"tell application "Safari" to make new document with properties {URL:"https://example.com/some/page"}
+tell application "Safari" to activate"#);
+        let safari = look("Safari");
+        script(r#"tell application "Safari" to close front window"#);
+        assert_eq!(safari.category, "browser");
+        assert_eq!(safari.host, "example.com");
+
+        if std::path::Path::new("/Applications/Google Chrome.app").exists() {
+            script(r#"tell application "Google Chrome" to make new window
+tell application "Google Chrome" to set URL of active tab of front window to "https://example.org/x"
+tell application "Google Chrome" to activate"#);
+            let chrome = look("Chrome");
+            script(r#"tell application "Google Chrome" to close front window"#);
+            assert_eq!((chrome.process_name.as_str(), chrome.category.as_str()), ("chrome.exe", "browser"));
+            assert_eq!(chrome.host, "example.org");
+        }
+    }
+
 }
