@@ -328,7 +328,7 @@ export async function render(root, { store, arg }) {
   const vol = h('input', { type: 'range', class: 'slider', min: '0', max: '100', value: String(Math.round(S().sounds.volume * 100)) });
   vol.style.setProperty('--v', vol.value + '%');
   vol.addEventListener('input', () => vol.style.setProperty('--v', vol.value + '%'));
-  vol.addEventListener('change', async () => { await save((n) => { n.sounds.volume = Number(vol.value) / 100; }); playCue(store, S().sounds.set || 'hush', 'done'); });
+  vol.addEventListener('change', async () => { await save((n) => { n.sounds.volume = Number(vol.value) / 100; }); playCue(store, S().sounds.set || 'bubble', 'done'); });
   section('sound', 'Sound', 'Soft, low sounds tell you when Navi starts and stops listening. Pick the one you like best.',
     h('div', { style: { margin: '6px 0 16px' } }, sounds.el),
     setRow('Sounds', 'Turn every cue off.', toggle(S().sounds.enabled, (v) => save((n) => { n.sounds.enabled = v; }))),

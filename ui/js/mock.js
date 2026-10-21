@@ -328,7 +328,7 @@ const state = {
   settings: {
     onboarded: true, userName: 'Alex',
     hotkeys: { talk: ['Ctrl', 'Win'], rambleKey: 'Space', doubleTapHandsFree: true, cancelKey: 'Escape', modeKeys: [{ mode: 'email', keys: ['F4'] }] },
-    sounds: { enabled: true, set: 'hush', volume: 0.7, custom: {}, whileTalking: 'pause' },
+    sounds: { enabled: true, set: 'bubble', volume: 0.7, custom: {}, whileTalking: 'pause' },
     mic: { device: null, trimCue: true },
     engine: { model: 'large-v3-turbo', language: 'en', useGpu: true, serverPath: null, modelPath: null, vad: true },
     // Claude Code on the Claude plan the sample user already has: no API key (text/cli_ai.rs).
@@ -548,7 +548,7 @@ const handlers = {
   ai_tool_signed_in: async ({ id }) => { await wait(200); return state.cli[id].signedIn; },
   sign_in_ai_tool: ({ id }) => { setTimeout(() => { state.cli[id].signedIn = true; }, 4000); },
   list_sound_sets: async () => {
-    try { return await (await fetch('sounds/sets/index.json')).json(); } catch { return { default: 'hush', sets: [] }; }
+    try { return await (await fetch('sounds/sets/index.json')).json(); } catch { return { default: 'bubble', sets: [] }; }
   },
   key_labels: ({ keys }) => keys.map((k) => ({ RCtrl: 'Right Ctrl', RAlt: 'Right Alt', CapsLock: 'Caps Lock', Backslash: '\\', Oem8: '`', Escape: 'Esc' }[k] || k)),
   key_monitor: ({ on }) => { if (on) startMonitor(); else stopMonitor(); },

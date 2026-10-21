@@ -42,7 +42,7 @@ export function run({ store }) {
         h('p', { class: 'lead' }, 'Hold a shortcut, talk, and let go. Your words appear wherever you were typing, tidied up and spelt the British way. It runs on this computer, and AI only comes in if you turn it on.'),
         h('div', { class: 'row', style: { gap: '8px', marginTop: '20px', flexWrap: 'wrap' } }, chip('Private by default', 'line'), chip('Works in almost every app', 'line'), chip('Learns your words', 'line'))),
         { next: 'Get started', back: false });
-      setTimeout(() => playCue(store, s().sounds.set || 'hush', 'start'), 450);
+      setTimeout(() => playCue(store, s().sounds.set || 'bubble', 'start'), 450);
     }
 
     function voice() {

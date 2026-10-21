@@ -1,6 +1,11 @@
 {
-  "default": "hush",
+  "default": "bubble",
   "sets": [
+    {
+      "id": "bubble",
+      "name": "Bubble",
+      "description": "A low, round bloop."
+    },
     {
       "id": "hush",
       "name": "Hush",
@@ -20,16 +25,6 @@
       "id": "kalimba",
       "name": "Kalimba",
       "description": "A gentle thumb piano."
-    },
-    {
-      "id": "bubble",
-      "name": "Bubble",
-      "description": "A low, round bloop."
-    },
-    {
-      "id": "bowl",
-      "name": "Bowl",
-      "description": "A small singing bowl."
     },
     {
       "id": "dusk",

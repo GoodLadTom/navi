@@ -221,12 +221,15 @@ SETS = [
     ("lull", "Lull", "A slow, soft swell. The calmest start.", i_lull, 233.1, 1400, -11),
 ]
 
-# Sets taken out of the app (breeze, removed 15 Oct 2026). They are still synthesised so the shared
+# Sets taken out of the app (breeze, removed 15 Oct 2026; bowl, 21 Oct 2026). They are still synthesised so the shared
 # random generator stays in step, but never written.
 # They stay in SETS and are still synthesised, because every set draws from the one shared random
 # generator (RNG) in this order: skipping one would change the sets after it. They are never
 # written, and they are left out of index.json.
-RETIRED = {"breeze"}
+RETIRED = {"breeze", "bowl"}  # bowl removed 21 Oct 2026: it didn't sound good
+
+# The set Navi starts with, listed first.
+DEFAULT = "bubble"
 
 # Each cue: list of (pitch ratio, start time s, amplitude, glide) and its total length.
 CUES = {
@@ -272,8 +275,9 @@ def main():
             print(f"{sid:8} {cue:7} {len(x) * 1000 // SR:5d} {20 * math.log10(np.max(np.abs(x))):8.1f} {c:10.0f}")
         if sid not in RETIRED:
             index.append({"id": sid, "name": name, "description": desc})
+    index.sort(key=lambda s: s["id"] != DEFAULT)  # stable: the rest keep their order
     with open(os.path.join(OUT, "index.json"), "w", encoding="utf-8") as f:
-        json.dump({"default": "hush", "sets": index}, f, indent=2)
+        json.dump({"default": DEFAULT, "sets": index}, f, indent=2)
     print(f"\n{len(index)} sets, highest spectral centre {worst:.0f} Hz")
 
 

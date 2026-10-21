@@ -4,7 +4,7 @@
 //!
 //! Contract:
 //! * Sound sets live in Paths::sounds/sets/<set>/<cue>.wav, listed with their names in
-//!   sets/index.json ({"default": "hush", "sets": [{"id", "name", "description"}]}). Every set has
+//!   sets/index.json ({"default": "bubble", "sets": [{"id", "name", "description"}]}). Every set has
 //!   start, stop, done, ramble, cancel, error and learn (soft, low, calm sounds made by
 //!   scripts/make_sounds.py).
 //! * Cue -> file: Talk = start, Ramble = ramble, Stop = stop, Done = done, Cancel = cancel,
@@ -40,7 +40,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 /// Used when the index is missing or does not name a default.
-const FALLBACK_SET: &str = "hush";
+const FALLBACK_SET: &str = "bubble";
 const MAX_CUSTOM_MS: u64 = 3_000;
 const FADE_MS: u64 = 10;
 const HOUSEKEEPING_INTERVAL: Duration = Duration::from_secs(3);
@@ -558,7 +558,9 @@ mod tests {
     fn decodes_every_set_completely() {
         let s = service();
         assert!(s.sets().len() >= 10, "loads of options: {}", s.sets().len());
-        assert_eq!(s.default_set(), "hush");
+        assert_eq!(s.default_set(), "bubble");
+        assert_eq!(s.sets()[0].id, "bubble", "the default is listed first");
+        assert!(!s.sets().iter().any(|set| set.id == "bowl"), "Bowl was taken out");
         for set in s.sets() {
             assert!(!set.name.is_empty() && !set.description.is_empty(), "{set:?}");
             for cue in Cue::ALL {
@@ -577,14 +579,16 @@ mod tests {
     fn maps_cues_to_the_chosen_set() {
         let s = service();
         let mut settings = SoundSettings::default();
-        assert_eq!(settings.set, "hush");
-        assert_eq!(s.duration_ms(Cue::Talk, &settings), clip_ms(&s, "hush", Cue::Talk));
-        assert_eq!(s.duration_ms(Cue::Ramble, &settings), clip_ms(&s, "hush", Cue::Ramble));
+        assert_eq!(settings.set, "bubble");
+        assert_eq!(s.duration_ms(Cue::Talk, &settings), clip_ms(&s, "bubble", Cue::Talk));
+        assert_eq!(s.duration_ms(Cue::Ramble, &settings), clip_ms(&s, "bubble", Cue::Ramble));
         settings.set = "pebble".into();
         assert_eq!(s.duration_ms(Cue::Talk, &settings), clip_ms(&s, "pebble", Cue::Talk));
         assert_eq!(s.duration_ms(Cue::Error, &settings), clip_ms(&s, "pebble", Cue::Error));
         settings.set = "fern".into(); // the retired voices
-        assert_eq!(s.duration_ms(Cue::Talk, &settings), clip_ms(&s, "hush", Cue::Talk), "an unknown set falls back to the default");
+        assert_eq!(s.duration_ms(Cue::Talk, &settings), clip_ms(&s, "bubble", Cue::Talk), "an unknown set falls back to the default");
+        settings.set = "bowl".into(); // taken out on 21 Oct 2026
+        assert_eq!(s.duration_ms(Cue::Talk, &settings), clip_ms(&s, "bubble", Cue::Talk), "a removed set falls back to the default");
         settings.volume = 0.0;
         assert_eq!(s.duration_ms(Cue::Talk, &settings), 0, "silent cue needs no trimming");
         settings.volume = 0.7;
@@ -627,7 +631,7 @@ mod tests {
         assert_eq!(s.duration_ms(Cue::Talk, &settings), 3_000);
 
         // Missing or broken files fall back to the built-in cue.
-        let builtin_talk = clip_ms(&s, "hush", Cue::Talk);
+        let builtin_talk = clip_ms(&s, "bubble", Cue::Talk);
         settings.custom.insert("talk".into(), dir.join("missing.wav").to_string_lossy().into_owned());
         assert_eq!(s.duration_ms(Cue::Talk, &settings), builtin_talk);
         let broken = dir.join("broken.wav");

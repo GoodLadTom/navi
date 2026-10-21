@@ -600,7 +600,7 @@ impl Default for HotkeySettings {
 #[serde(rename_all = "camelCase", default)]
 pub struct SoundSettings {
     pub enabled: bool,
-    /// Sound set id ("hush", "felt", "oak"...; see ui/sounds/sets/index.json).
+    /// Sound set id ("bubble", "hush", "felt"...; see ui/sounds/sets/index.json).
     pub set: String,
     /// 0.0 to 1.0.
     pub volume: f32,
@@ -612,7 +612,7 @@ pub struct SoundSettings {
 
 impl Default for SoundSettings {
     fn default() -> Self {
-        Self { enabled: true, set: "hush".into(), volume: 0.7, custom: HashMap::new(), while_talking: "pause".into() }
+        Self { enabled: true, set: "bubble".into(), volume: 0.7, custom: HashMap::new(), while_talking: "pause".into() }
     }
 }
 
