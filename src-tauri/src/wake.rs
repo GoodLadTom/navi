@@ -168,6 +168,13 @@ fn listen(app: Arc<App>) {
             match opened {
                 Ok(m) => {
                     log::info!("listening for {}", app.settings.read().voice_commands.wake_label());
+                    // On a Mac, start the quick engine the checks use now, not on the first "Navi".
+                    let warm_app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Some(engine) = warm_app.engine.read().await.clone() {
+                            engine.warm_quick();
+                        }
+                    });
                     mic = Some(m);
                     open_error = None;
                 }
@@ -282,7 +289,7 @@ fn send_check(app: &Arc<App>, check: IdleCheck, audio: Vec<f32>, opts: Transcrib
         let engine = app.engine.read().await.clone();
         let (text, ms) = match engine {
             None => (None, None),
-            Some(engine) => match engine.transcribe(&audio, &opts).await {
+            Some(engine) => match engine.transcribe_quick(&audio, &opts).await {
                 Ok(t) => {
                     log::debug!("voice: checked {} ms of speech in {} ms", audio.len() * 1000 / RATE, t.ms);
                     (Some(t.text), Some(t.ms))

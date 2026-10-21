@@ -45,6 +45,12 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Clips up to this long go to the quick server (`transcribe_quick`), within its audio window.
+#[cfg(target_os = "macos")]
+const QUICK_MAX_SAMPLES: usize = audio::SAMPLE_RATE as usize * 7;
+/// The quick server's audio window in Whisper's frames (1500 is the full 30 s): 384 is 7.68 s.
+#[cfg(target_os = "macos")]
+const QUICK_AUDIO_CTX: u32 = 384;
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// Enough to hold the server's whole usage text, which follows an "unknown argument" error.
@@ -88,6 +94,9 @@ pub struct Engine {
 }
 
 struct Inner {
+    /// A second server with a short audio window for voice-command checks (macOS; see
+    /// `Engine::transcribe_quick`). Started on first use.
+    quick: tokio::sync::Mutex<Option<Server>>,
     settings: EngineSettings,
     paths: Paths,
     on_status: StatusCallback,
@@ -197,6 +206,7 @@ impl Engine {
             http,
             status: Mutex::new(status),
             server: tokio::sync::Mutex::new(None),
+            quick: tokio::sync::Mutex::new(None),
             cuda_build: has_cuda_backend(&exe),
             exe,
             model,
@@ -220,18 +230,46 @@ impl Engine {
         Ok(Engine { inner })
     }
 
+    /// For voice-command checks: short clips the user is waiting on. Whisper always works through a
+    /// 30-second window, which on Apple silicon's GPU costs about 1.2 s with large-v3-turbo however
+    /// short the clip, so on a Mac a clip of up to QUICK_MAX_SAMPLES goes to a second server
+    /// started with a 7.68-second window (`-ac 384`), about 0.3 s a check. Takes keep the full
+    /// window. Anything else, or a quick server that can't start, uses `transcribe`.
+    pub async fn transcribe_quick(&self, samples_16k: &[f32], opts: &TranscribeOptions) -> Result<Transcript> {
+        #[cfg(target_os = "macos")]
+        if !samples_16k.is_empty() && samples_16k.len() <= QUICK_MAX_SAMPLES {
+            match self.inner.quick_port().await {
+                Ok(port) => {
+                    let (wav, duration_ms) = wav_for(samples_16k)?;
+                    match self.inner.infer(port, &wav, opts, duration_ms).await {
+                        Ok(transcript) => return Ok(transcript),
+                        Err(e) => log::debug!("the quick speech engine failed a check ({e:#}); using the main one"),
+                    }
+                }
+                Err(e) => log::debug!("the quick speech engine isn't available ({e:#}); using the main one"),
+            }
+        }
+        self.transcribe(samples_16k, opts).await
+    }
+
+    /// Starts the quick server ahead of the first check (no-op off macOS).
+    pub fn warm_quick(&self) {
+        #[cfg(target_os = "macos")]
+        {
+            let inner = self.inner.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = inner.quick_port().await {
+                    log::info!("the quick speech engine didn't start ({e:#}); checks use the main one");
+                }
+            });
+        }
+    }
+
     pub async fn transcribe(&self, samples_16k: &[f32], opts: &TranscribeOptions) -> Result<Transcript> {
         if samples_16k.is_empty() {
             return Ok(Transcript::default());
         }
-        let duration_ms = samples_16k.len() as u64 * 1000 / audio::SAMPLE_RATE as u64;
-        let wav = if samples_16k.len() < MIN_SAMPLES {
-            let mut padded = samples_16k.to_vec();
-            padded.resize(MIN_SAMPLES, 0.0);
-            audio::wav_bytes(&padded)?
-        } else {
-            audio::wav_bytes(samples_16k)?
-        };
+        let (wav, duration_ms) = wav_for(samples_16k)?;
 
         let (port, restarted) = self.inner.ensure_running().await?;
         let first = match self.inner.infer(port, &wav, opts, duration_ms).await {
@@ -258,6 +296,10 @@ impl Engine {
 
     pub async fn shutdown(&self) {
         self.inner.stopped.store(true, Ordering::SeqCst);
+        let quick = self.inner.quick.lock().await.take();
+        if let Some(quick) = quick {
+            let _ = tokio::task::spawn_blocking(move || drop(quick)).await;
+        }
         let server = self.inner.server.lock().await.take();
         if let Some(server) = server {
             let _ = tokio::task::spawn_blocking(move || drop(server)).await;
@@ -272,6 +314,35 @@ impl Engine {
 }
 
 impl Inner {
+    /// The quick server's port, starting it if it isn't running.
+    #[cfg(target_os = "macos")]
+    async fn quick_port(&self) -> Result<u16> {
+        let mut guard = self.quick.lock().await;
+        if let Some(server) = guard.as_mut() {
+            if matches!(server.child.try_wait(), Ok(None)) {
+                return Ok(server.port);
+            }
+        }
+        if let Some(old) = guard.take() {
+            let _ = tokio::task::spawn_blocking(move || drop(old)).await;
+        }
+        if self.stopped.load(Ordering::SeqCst) {
+            bail!("The speech engine is stopped");
+        }
+        // Short clips need no silence trimming, and it would only add time.
+        let plan = LaunchPlan { vad: false, ..*self.plan.lock() };
+        let device = self.device_for(plan);
+        let mut server = self.spawn(plan, device, Some(QUICK_AUDIO_CTX))?;
+        if self.wait_ready(&mut server).await.is_err() {
+            let _ = tokio::task::spawn_blocking(move || drop(server)).await;
+            bail!("it did not start");
+        }
+        log::info!("quick speech engine ready on port {} for voice commands", server.port);
+        let port = server.port;
+        *guard = Some(server);
+        Ok(port)
+    }
+
     fn set_status(&self, state: &str, message: impl Into<String>, device: Option<&str>) {
         let snapshot = {
             let mut status = self.status.lock();
@@ -313,7 +384,7 @@ impl Inner {
             };
             self.set_status("starting", format!("Loading {model_name} on {place}"), Some(device));
 
-            let mut server = match self.spawn(plan, device) {
+            let mut server = match self.spawn(plan, device, None) {
                 Ok(server) => server,
                 Err(e) => {
                     self.set_status("error", format!("{e:#}"), None);
@@ -378,7 +449,8 @@ impl Inner {
         bail!(message)
     }
 
-    fn spawn(&self, plan: LaunchPlan, device: &'static str) -> Result<Server> {
+    /// `audio_ctx`: a shorter audio window than Whisper's 30 seconds (the quick server).
+    fn spawn(&self, plan: LaunchPlan, device: &'static str, audio_ctx: Option<u32>) -> Result<Server> {
         let port = free_port()?;
         let language = match self.settings.language.trim() {
             "" => "en",
@@ -395,6 +467,9 @@ impl Inner {
         }
         if device == "cpu" {
             cmd.arg("--no-gpu");
+        }
+        if let Some(ctx) = audio_ctx {
+            cmd.args(["-ac", &ctx.to_string()]);
         }
         if plan.vad {
             if let Some(vad) = &self.vad_model {
@@ -600,6 +675,19 @@ struct ReplySegment {
 }
 
 /// Parses a verbose_json or json reply from whisper-server.
+/// The clip as WAV bytes (padded to MIN_SAMPLES, which the server needs) and its length in ms.
+fn wav_for(samples_16k: &[f32]) -> Result<(Vec<u8>, u64)> {
+    let duration_ms = samples_16k.len() as u64 * 1000 / audio::SAMPLE_RATE as u64;
+    let wav = if samples_16k.len() < MIN_SAMPLES {
+        let mut padded = samples_16k.to_vec();
+        padded.resize(MIN_SAMPLES, 0.0);
+        audio::wav_bytes(&padded)?
+    } else {
+        audio::wav_bytes(samples_16k)?
+    };
+    Ok((wav, duration_ms))
+}
+
 fn parse_reply(body: &str, ms: u64, duration_ms: u64) -> Result<Transcript> {
     let reply: Reply = serde_json::from_str(body)
         .map_err(|e| anyhow!("The speech engine sent a reply Navi could not read: {e}"))?;
@@ -884,11 +972,13 @@ mod job {
 
     fn stop_leftover() {
         let Ok(text) = std::fs::read_to_string(pid_file()) else { return };
-        let Ok(pid) = text.trim().parse::<i32>() else { return };
-        let Ok(out) = std::process::Command::new("/bin/ps").args(["-p", &pid.to_string(), "-o", "comm="]).output() else { return };
-        if String::from_utf8_lossy(&out.stdout).trim().ends_with("whisper-server") {
-            log::info!("stopping a speech engine left running by an earlier Navi (pid {pid})");
-            let _ = std::process::Command::new("/bin/kill").arg(pid.to_string()).status();
+        let _ = std::fs::remove_file(pid_file());
+        for pid in text.lines().filter_map(|l| l.trim().parse::<i32>().ok()) {
+            let Ok(out) = std::process::Command::new("/bin/ps").args(["-p", &pid.to_string(), "-o", "comm="]).output() else { continue };
+            if String::from_utf8_lossy(&out.stdout).trim().ends_with("whisper-server") {
+                log::info!("stopping a speech engine left running by an earlier Navi (pid {pid})");
+                let _ = std::process::Command::new("/bin/kill").arg(pid.to_string()).status();
+            }
         }
     }
 
@@ -899,8 +989,11 @@ mod job {
             Ok(JobHandle)
         }
 
+        /// Notes the server's pid (the main and the quick server each add theirs).
         pub fn assign(&self, child: &std::process::Child) -> anyhow::Result<()> {
-            std::fs::write(pid_file(), child.id().to_string())?;
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new().create(true).append(true).open(pid_file())?;
+            writeln!(file, "{}", child.id())?;
             Ok(())
         }
     }

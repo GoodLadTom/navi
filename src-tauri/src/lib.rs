@@ -831,6 +831,10 @@ pub async fn start_engine_and_wait(app: Arc<App>) {
     match engine::Engine::start(&settings.engine, &app.paths, cb.clone()).await {
         Ok(e) => {
             let status = e.status();
+            // Voice commands on: their quick engine (macOS) is started now, ready for "Navi".
+            if app.settings.read().voice_commands.enabled {
+                e.warm_quick();
+            }
             *app.engine.write().await = Some(Arc::new(e));
             if !status.state.is_empty() {
                 cb(status);

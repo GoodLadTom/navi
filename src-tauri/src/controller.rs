@@ -980,7 +980,7 @@ pub fn spawn_take_listener(app: Arc<App>, seq: u64, heard: Option<u64>) {
                     tauri::async_runtime::spawn(async move {
                         let engine = engine_app.engine.read().await.clone();
                         let text = match engine {
-                            Some(engine) => match engine.transcribe(&clip, &opts).await {
+                            Some(engine) => match engine.transcribe_quick(&clip, &opts).await {
                                 Ok(t) => {
                                     log::debug!("voice: checked {} ms of the take in {} ms", clip.len() * 1000 / audio::SAMPLE_RATE as usize, t.ms);
                                     Some(t.text)
