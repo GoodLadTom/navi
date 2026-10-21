@@ -480,7 +480,7 @@ pub(crate) fn describe_open_error(err: &dyn std::fmt::Display, unplugged: bool, 
         anyhow!("The microphone '{label}' is not connected")
     } else if lower.contains("0x8889000a") {
         anyhow!("The microphone '{label}' is being used exclusively by another app")
-    } else if lower.contains("0x88890010") {
+    } else if !cfg!(target_os = "macos") && lower.contains("0x88890010") {
         anyhow!("The Windows Audio service is not running")
     } else if lower.contains("not supported") {
         anyhow!("The microphone '{label}' does not offer an audio format Navi can use")

@@ -127,7 +127,7 @@ export function run({ store }) {
       }
       const prog = h('div', { class: 'progress', style: { marginTop: '14px' } }, h('i'));
       const label = h('p', { class: 'small faint', style: { marginTop: '8px' } }, '');
-      const gpuNote = setup.gpu ? `Your ${setup.gpu} will make it fast.` : 'No NVIDIA graphics card found, so Navi will use a lighter, English-only model on the processor. Settings > Speech engine has models for other languages.';
+      const gpuNote = setup.gpu ? `Your ${setup.gpu} will make it fast.` : os('No NVIDIA graphics card found, so Navi will use a lighter, English-only model on the processor. Settings > Speech engine has models for other languages.', 'This Mac has no Apple silicon graphics, so Navi will use a lighter, English-only model on the processor. Settings > Speech engine has models for other languages.');
       const modelId = setup.gpu ? 'large-v3-turbo' : 'base.en';
       body.append(h('div', { class: 'card flat', style: { marginTop: '18px', background: 'var(--well)', border: 0 } },
         h('div', { class: 'h3' }, setup.gpu ? 'Whisper Large v3 Turbo · 1.6 GB' : 'Whisper Base (English) · 148 MB'),
@@ -210,7 +210,7 @@ export function run({ store }) {
         h('p', { class: 'lead' }, 'A few things worth knowing:'),
         h('div', { class: 'stack', style: { marginTop: '14px', gap: '10px' } },
           hk.doubleTapHandsFree !== false ? tip('Double-tap', 'your shortcut for hands-free.') : null,
-          tip(`Hold ${chordLabel(hk.talk)}, tap ${chordLabel([hk.rambleKey || 'Space'])}`, 'to ramble. Press Enter when you’re done and Navi turns it into notes.'),
+          tip(`Hold ${chordLabel(hk.talk)}, tap ${chordLabel([hk.rambleKey || 'Space'])}`, `to ramble. Press ${os('Enter', 'Return')} when you’re done and Navi turns it into notes.`),
           tip('“Navi, scratch that”', 'undoes the last thing you said.'),
           vc?.enabled
             ? tip(`“${wake}, ${said('watch_on') || 'watch my screen'}”`, 'and other voice commands. Change the words in Settings > Voice commands.')

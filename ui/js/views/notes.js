@@ -3,6 +3,7 @@
 // (meeting.rs); without one the note keeps the transcript and your own notes. Along the way it can
 // do jobs you give it with "Navi, ..." (or "Hey Navi, ...", jobs.rs) and keep screenshots
 // (screen.rs). Screen watches (watch.rs) end up here too.
+import { os } from '../platform.js';
 import { invoke, listen, copyText, fileSrc } from '../bridge.js';
 import { h, btn, chip, dayLabel, clock, toast, confirmDialog, errText } from '../ui.js';
 
@@ -468,7 +469,7 @@ function viewShot(path, caption) {
       h('figcaption', {},
         h('span', {}, caption || ''),
         h('div', { class: 'row', style: { gap: '6px', flex: 'none' } },
-          btn('Show in folder', { size: 'sm', icon: 'folder', onClick: () => invoke('reveal_file', { path }).catch((e) => toast(errText(e), { error: true })) }),
+          btn(os('Show in folder', 'Show in Finder'), { size: 'sm', icon: 'folder', onClick: () => invoke('reveal_file', { path }).catch((e) => toast(errText(e), { error: true })) }),
           btn('', { size: 'sm', variant: 'ghost', icon: 'x', title: 'Close (Esc)', onClick: close })))));
   document.body.append(box);
   document.addEventListener('keydown', onKey, true);

@@ -169,7 +169,7 @@ export async function render(root, { store, arg }) {
     const rows = [{ id: 'auto', name: 'Auto', note: 'Picks from the app' }, ...allModes.map((m) => ({ id: m.id, name: m.name })), { id: 'next', name: 'Next mode', note: 'Steps through them all' }];
     modeKeysBlock.replaceChildren(
       h('div', { class: 'row between', style: { marginBottom: '6px' } },
-        h('div', {}, h('div', { class: 'h3' }, 'Mode keys'), h('p', { class: 'small quiet', style: { marginTop: '3px', maxWidth: '520px' } }, 'Press one anywhere to switch mode. The bubble shows which mode you are on. While Navi runs, a key you pick here stops doing its usual job (F1 opens Help, F5 refreshes).')),
+        h('div', {}, h('div', { class: 'h3' }, 'Mode keys'), h('p', { class: 'small quiet', style: { marginTop: '3px', maxWidth: '520px' } }, os('Press one anywhere to switch mode. The bubble shows which mode you are on. While Navi runs, a key you pick here stops doing its usual job (F1 opens Help, F5 refreshes).', 'Press one anywhere to switch mode. The bubble shows which mode you are on. While Navi runs, a key you pick here stops doing its usual job. On most Mac keyboards the top row changes brightness and volume unless you hold fn, so hold fn with an F key, or pick F13 to F19 if your keyboard has them.'))),
         btn('Use F1 to F5', { size: 'sm', variant: 'ghost', icon: 'keyboard', onClick: useFKeys })),
       h('div', { class: 'mode-keys' }, rows.map((r) => {
         const entry = keyEntry(r.id);
@@ -186,8 +186,8 @@ export async function render(root, { store, arg }) {
   cleanups.push(() => { if (capturingMode) invoke('cancel_shortcut_capture').catch(() => {}); });
   section('shortcuts', 'Shortcuts', os('Hold to talk, let go to finish. Works in almost every app: one running as administrator gets your words on the clipboard to paste instead.', 'Hold to talk, let go to finish. Works in almost every app: in a password field macOS hides typing, so your words go on the clipboard to paste instead.'),
     h('div', { class: 'set-row', style: { display: 'block' } }, h('div', { class: 'h3', style: { marginBottom: '12px' } }, 'Talk'), picker.el),
-    setRow('Hands-free', 'Double-tap the talk keys to keep listening without holding. Press Enter, or tap the keys again, to finish.', toggle(S().hotkeys.doubleTapHandsFree, (v) => save((n) => { n.hotkeys.doubleTapHandsFree = v; }))),
-    setRow('Ramble', 'While holding the talk keys, tap this to switch to notes mode. A different sound plays and Navi keeps listening until you press Enter (or tap the talk keys again), then saves it to Notes.', select(['Space', 'Enter', 'Tab', 'N', 'R'], S().hotkeys.rambleKey, (v) => save((n) => { n.hotkeys.rambleKey = v; }))),
+    setRow('Hands-free', `Double-tap the talk keys to keep listening without holding. Press ${os('Enter', 'Return')}, or tap the keys again, to finish.`, toggle(S().hotkeys.doubleTapHandsFree, (v) => save((n) => { n.hotkeys.doubleTapHandsFree = v; }))),
+    setRow('Ramble', `While holding the talk keys, tap this to switch to notes mode. A different sound plays and Navi keeps listening until you press ${os('Enter', 'Return')} (or tap the talk keys again), then saves it to Notes.`, select(['Space', { value: 'Enter', label: os('Enter', 'Return') }, 'Tab', 'N', 'R'], S().hotkeys.rambleKey, (v) => save((n) => { n.hotkeys.rambleKey = v; }))),
     setRow('Cancel', 'Throws the take away while it is recording.', keycaps([S().hotkeys.cancelKey])),
     modeKeysBlock,
     setRow('Voice edits', 'Start with “Navi”: “Navi, scratch that”, “Navi, make that shorter”, “Navi, change Tuesday to Wednesday”. Select text first and say “Navi, turn this into bullet points”, or “Navi, what’s wrong with this?” for a blunt list of its problems. “Scratch that” works without an AI, and so does “change Tuesday to Wednesday” when Navi finds the word. Shorter, bullet points and “what’s wrong” need an AI (set one up under AI).' + (scratchThatOn(S()) ? '' : ' “Scratch that” is off: give it a phrase under Voice commands to use it.'), chip('Always on', 'accent', true)),
@@ -286,7 +286,7 @@ export async function render(root, { store, arg }) {
     vcExample.textContent = example(vc, ['watch_on', 'notes_on', 'watch_off', 'notes_off', 'scratch_that']);
     jobsSpans.forEach((s) => { s.textContent = jobsWake(vc); });
     vcHost.replaceChildren(
-      vcGroup('Start dictating', `Say it at the start of a sentence, then what you want typed: “${wakeLabel(vc)}, email Sam about Friday.” Navi stops after six seconds of quiet, when you say your finish phrase, or when you press Enter.`,
+      vcGroup('Start dictating', `Say it at the start of a sentence, then what you want typed: “${wakeLabel(vc)}, email Sam about Friday.” Navi stops after six seconds of quiet, when you say your finish phrase, or when you press ${os('Enter', 'Return')}.`,
         vcRow(vc, 'wake', 'Wake word', 'Any word or phrase. Keep at least one.')),
       vcGroup('Straight after the wake word', `Say the wake word first, in the same breath or after a pause: “${example(vc, ['notes_on', 'watch_on', 'notes_off', 'watch_off', 'scratch_that'])}.” These work from the shortcut too.`,
         vcRow(vc, 'scratch_that', 'Scratch that', 'Removes the last thing Navi typed.'),
@@ -334,7 +334,7 @@ export async function render(root, { store, arg }) {
     h('div', { style: { margin: '6px 0 16px' } }, sounds.el),
     setRow('Sounds', 'Turn every cue off.', toggle(S().sounds.enabled, (v) => save((n) => { n.sounds.enabled = v; }))),
     setRow('Volume', null, vol),
-    setRow('While you talk', 'What happens to music and videos playing on this computer while Navi listens. Pause stops them and plays them again when you finish. Mute silences other apps and brings them back at the same volume. Nothing changes while Navi takes call notes.', seg([{ value: 'keep', label: 'Keep playing' }, { value: 'pause', label: 'Pause' }, { value: 'mute', label: 'Mute' }, { value: 'both', label: 'Both' }], S().sounds.whileTalking || 'pause', (v) => save((n) => { n.sounds.whileTalking = v; }))),
+    setRow('While you talk', os('What happens to music and videos playing on this computer while Navi listens. Pause stops them and plays them again when you finish. Mute silences other apps and brings them back at the same volume. Nothing changes while Navi takes call notes.', 'What happens to music and videos playing on this Mac while Navi listens. Mute silences other apps and brings them back at the same volume. macOS doesn’t let Navi pause other apps, so Pause mutes them too. Nothing changes while Navi takes call notes.'), seg([{ value: 'keep', label: 'Keep playing' }, { value: 'pause', label: 'Pause' }, { value: 'mute', label: 'Mute' }, { value: 'both', label: 'Both' }], S().sounds.whileTalking || 'pause', (v) => save((n) => { n.sounds.whileTalking = v; }))),
     setRow('Your own sounds', 'Use any WAV file for a cue. Only its first 3 seconds play. Built-in sounds are used for the rest.', btn('Choose a file…', { size: 'sm', icon: 'folder', onClick: async () => {
       const path = await pickFile({ filters: [{ name: 'WAV audio', extensions: ['wav'] }] });
       if (!path) return;
@@ -380,7 +380,7 @@ export async function render(root, { store, arg }) {
       h('span', { class: 'big-dot' }, ico(e.state === 'ready' ? 'bolt' : 'info', 20)),
       h('div', { style: { flex: 1 } },
         h('div', { class: 'h3' }, e.state === 'ready' ? `${prettyModel(e.model)} is ready` : e.state === 'starting' ? 'Starting the speech engine…' : 'The speech engine needs attention'),
-        h('div', { class: 'small quiet' }, e.state === 'ready' ? `Running on ${e.device === 'cuda' ? (e.gpu || 'your graphics card') : 'the processor'}. Everything is transcribed on this computer.` : (e.message || ''))),
+        h('div', { class: 'small quiet' }, e.state === 'ready' ? `Running on ${e.device === 'cuda' || e.device === 'metal' ? (e.gpu || 'your graphics card') : 'the processor'}. Everything is transcribed on this computer.` : (e.message || ''))),
       btn('Restart', { size: 'sm', icon: 'rerun', onClick: async () => { try { store.set({ engine: await invoke('restart_engine') }); } catch (err) { toast(errText(err), { error: true }); } } })));
   };
   // Trim silences needs a small model of its own. Turned on without it, Navi fetches it and
@@ -437,7 +437,7 @@ export async function render(root, { store, arg }) {
     const vc = VC();
     const inTake = [vcPhrases(vc, 'cancel')[0], vcPhrases(vc, 'finish')[0]].filter(Boolean).map((p) => `“${p}”`);
     const listening = inTake.length ? `the wake word and ${inTake.join(' or ')} during a take get slower or stop working` : 'the wake word gets slower or stops working';
-    return `Much faster with an NVIDIA card. Turned off, Navi uses the processor instead: a take with Large v3 Turbo takes about 10 seconds (Base is quicker), and ${listening}.`;
+    return `${os('Much faster with an NVIDIA card.', 'Much faster on Apple silicon.')} Turned off, Navi uses the processor instead: a take with Large v3 Turbo takes about 10 seconds (Base is quicker), and ${listening}.`;
   };
   section('engine', 'Speech engine', 'Navi runs Whisper on this computer. Nothing you say is uploaded to transcribe it.',
     engineHost,
@@ -790,7 +790,7 @@ export async function render(root, { store, arg }) {
   // ---------------------------------------------------------------- integrations
   const r = S().ramble;
   // A folder path can be long: it wraps anywhere rather than running out of the row.
-  const folderLabel = h('span', { class: 'small faint', style: { overflowWrap: 'anywhere' } }, r.notesDir || 'Documents\\Navi Notes');
+  const folderLabel = h('span', { class: 'small faint', style: { overflowWrap: 'anywhere' } }, r.notesDir || os('Documents\\Navi Notes', 'Documents/Navi Notes'));
   const intRows = h('div', {});
   const tokenRow = (name, label, idKey, idLabel) => {
     const tok = h('input', { class: 'input', type: 'password', style: { width: '220px' }, placeholder: `${label} token` });
@@ -852,7 +852,8 @@ export async function render(root, { store, arg }) {
   listen('update', drawUpdate).then((off) => cleanups.push(off)).catch(() => {});
   section('about', 'About Navi', null,
     setRow('Version', h('span', {}, `Navi ${info.version || '0.1.0'}. `, upNote), upBtn),
-    setRow('Check for updates automatically', 'Navi looks on GitHub for a new version soon after it starts and every few hours, and tells you when one is ready. It doesn’t look while Local only is on.', toggle(S().general.checkUpdates !== false, (v) => save((n) => { n.general.checkUpdates = v; }))),
+    // A copy built on a Mac updates by pulling the source and re-running scripts/mac-setup.sh (update.rs), so it never looks.
+    isMac ? null : setRow('Check for updates automatically', 'Navi looks on GitHub for a new version soon after it starts and every few hours, and tells you when one is ready. It doesn’t look while Local only is on.', toggle(S().general.checkUpdates !== false, (v) => save((n) => { n.general.checkUpdates = v; }))),
     setRow('Your data', 'Settings, history, recordings, screenshots and speech models live in this folder. Markdown notes go to your notes folder.', btn('Open folder', { size: 'sm', icon: 'external', onClick: () => invoke('open_data_folder') })),
     setRow('Set-up', 'Walk through the first-run steps again.', btn('Run set-up again', { size: 'sm', onClick: async () => { await save((n) => { n.onboarded = false; }); location.reload(); } })),
     h('p', { class: 'small faint', style: { paddingTop: '14px', borderTop: '1px solid var(--line-soft)' } },
