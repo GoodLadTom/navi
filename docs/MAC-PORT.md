@@ -1,5 +1,27 @@
 # Navi for Mac: the plan
 
+## Status (21 October 2026)
+
+Work happens on the `mac` branch, on an Apple M4 running macOS 26.6. `git log --oneline main..mac`
+lists what has been done. In short:
+
+- **Done:** phase 1 (builds and runs, Keychain, the platform flag and Mac words throughout the
+  interface), phase 2 (the event tap, paste and typing, the bubble, the menu bar item, the Dock),
+  most of phase 3 (front app, window title and identity, text before the cursor, modes by bundle
+  ID, Claude Code and Codex found in Mac install folders), phase 5's audio side (calls noticed
+  through Core Audio process objects, the other side through a process tap) and the call notes
+  card as a panel, phase 6 (ScreenCaptureKit and Vision) and part of phase 7 (mute while you
+  talk, and a quick second engine so voice commands answer fast on the GPU).
+- **Phase 8 started:** `scripts/mac-setup.sh` checks the tools, builds `whisper-server` with Metal
+  (or uses Homebrew's), makes the "Navi Local" certificate and builds Navi.app; the README has a
+  "Build on a Mac" section.
+- **Still to check on the Mac:** real Zoom, Google Meet (in Chrome) and Teams calls with speakers
+  and with headphones; that permissions survive a rebuild signed with "Navi Local"; the full
+  setup script and first run on a fresh macOS user account; the wake word against the test list;
+  SpeechAnalyzer and Foundation Models (not started).
+- **Still to check on the PC:** merge `mac` into `main`, then run the Windows build and its tests
+  to make sure nothing on Windows changed.
+
 Read this first if you are the developer (or the Claude Code session) building the Mac version.
 It was written on 15 October 2026, on the Windows PC where Navi was built, from a review of every
 Windows-only part of the code, and brought up to date on 20 October with the order of work. Nothing

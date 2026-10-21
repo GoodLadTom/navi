@@ -109,7 +109,7 @@ function renderStatus() {
   const sub = document.getElementById('statusSub');
   const model = prettyModel(e.model);
   text.textContent = e.state === 'ready' ? 'Ready' : e.state === 'starting' ? 'Starting' : 'Needs attention';
-  sub.textContent = e.state === 'ready' ? `${model} · ${e.device === 'cuda' ? 'GPU' : 'CPU'}` : e.message || 'Speech engine not ready';
+  sub.textContent = e.state === 'ready' ? `${model} · ${e.device === 'cuda' || e.device === 'metal' ? 'GPU' : 'CPU'}` : e.message || 'Speech engine not ready';
 }
 
 export function prettyModel(id) {
