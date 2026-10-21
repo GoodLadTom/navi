@@ -1139,8 +1139,9 @@ mod tests {
             model: "large-v3-turbo".into(),
             language: "en".into(),
             use_gpu: true,
-            server_path: Some(home.join(r".local\tools\whisper-cuda\Release\whisper-server.exe").to_string_lossy().into_owned()),
-            model_path: Some(home.join(r".local\share\whisper\ggml-large-v3-turbo.bin").to_string_lossy().into_owned()),
+            // A Mac uses whichever engine Navi finds (Homebrew's or scripts/mac-setup.sh's).
+            server_path: if cfg!(target_os = "macos") { None } else { Some(home.join(r".local\tools\whisper-cuda\Release\whisper-server.exe").to_string_lossy().into_owned()) },
+            model_path: Some(home.join(".local").join("share").join("whisper").join("ggml-large-v3-turbo.bin").to_string_lossy().into_owned()),
             vad: true,
         }
     }
@@ -1196,7 +1197,7 @@ mod tests {
         let engine = Engine::start(&test_settings(), &paths, on_status).await.expect("engine start");
         println!("start-up including warm-up: {} ms", started.elapsed().as_millis());
         assert_eq!(engine.status().state, "ready");
-        assert_eq!(engine.status().device, "cuda");
+        assert_eq!(engine.status().device, if cfg!(target_os = "macos") { "metal" } else { "cuda" });
 
         let slice = narration_slice();
         assert_eq!(slice.len(), 160_000);

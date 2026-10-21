@@ -94,7 +94,7 @@ The source is on GitHub in a private repository for now, so only people with acc
   watches with their screenshots.
 - **Packs.** Share your words, snippets and modes with your team as one file.
 
-Sound cues: eleven sets of soft, low sounds (Hush, Felt, Oak, Kalimba, Bubble, Bowl and more)
+Sound cues: ten sets of soft, low sounds (Bubble, Hush, Felt, Oak, Kalimba and more)
 made to be heard all day. Or use your own WAV files, or none at all.
 
 While you talk, Navi pauses music and videos and plays them again when you finish, so you can

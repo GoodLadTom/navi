@@ -8,7 +8,7 @@ const CUES = [['start', 'Start'], ['stop', 'Stop'], ['done', 'Done'], ['ramble',
 let cached = null;
 export async function soundSets() {
   if (!cached) cached = await invoke('list_sound_sets').catch(() => null);
-  return cached || { default: 'hush', sets: [] };
+  return cached || { default: 'bubble', sets: [] };
 }
 
 // Plays a cue the way Navi does: volume squared, which follows how loud it sounds.
@@ -27,7 +27,7 @@ export function soundPicker({ store, showCues = false, compact = false }) {
   const cuesRow = h('div', { class: 'sp-cues' });
   root.append(grid);
   if (showCues) root.append(h('div', { class: 'h3', style: { margin: '18px 0 10px' } }, 'This set’s sounds'), cuesRow);
-  let data = { default: 'hush', sets: [] };
+  let data = { default: 'bubble', sets: [] };
   let timers = [];
 
   const current = () => {
