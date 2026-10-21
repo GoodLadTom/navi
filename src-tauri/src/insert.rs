@@ -100,8 +100,8 @@ const CLOUD_FORMAT: &str = "CanUploadToCloudClipboard";
 const ELEVATED_REASON: &str = "That window runs as administrator. Your text is on the clipboard: press Ctrl+V.";
 const BLOCKED_REASON: &str = "Windows blocked the typing. Your text is on the clipboard: press Ctrl+V.";
 const TYPING_STOPPED_REASON: &str = "Windows stopped the typing part way. The full text is on the clipboard.";
-#[cfg(not(windows))]
-const NOT_SUPPORTED: &str = "Inserting text only works on Windows for now.";
+#[cfg(not(any(windows, target_os = "macos")))]
+const NOT_SUPPORTED: &str = "Inserting text only works on Windows and macOS for now.";
 
 /// method: "paste" | "type".
 pub fn insert_text(text: &str, method: &str, restore: bool) -> Result<InsertOutcome> {
@@ -116,10 +116,31 @@ pub fn insert_text(text: &str, method: &str, restore: bool) -> Result<InsertOutc
         }
         put_in(text, typed, restore)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(outcome) = mac::clipboard_only_if_blocked(text)? {
+            return Ok(outcome);
+        }
+        put_in(text, typed, restore)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = restore;
         Err(anyhow!(NOT_SUPPORTED))
+    }
+}
+
+/// Pastes or types `text` where the cursor is (whatever is selected is replaced).
+#[cfg(target_os = "macos")]
+fn put_in(text: &str, typed: bool, restore: bool) -> Result<InsertOutcome> {
+    if typed {
+        let outcome = mac::type_text(text)?;
+        if !restore {
+            let _ = set_clipboard_text(text);
+        }
+        Ok(outcome)
+    } else {
+        mac::paste(text, restore)
     }
 }
 
@@ -171,7 +192,28 @@ pub fn select_back_and_replace_with(chars_utf16: usize, text: &str, method: &str
         }
         put_in(text, typed, restore)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        if text.is_empty() && mac::blocked() {
+            return Err(anyhow!("macOS isn't letting Navi type there, so it can't change the text."));
+        }
+        if let Some(outcome) = mac::clipboard_only_if_blocked(text)? {
+            return Ok(outcome);
+        }
+        if crate::context::foreground_category() == "terminal" {
+            mac::backspace(chars_utf16)?;
+        } else {
+            mac::select_back(chars_utf16)?;
+            if text.is_empty() && chars_utf16 > 0 {
+                mac::delete_selection()?;
+            }
+        }
+        if text.is_empty() {
+            return Ok(if typed { InsertOutcome::Typed } else { InsertOutcome::Pasted });
+        }
+        put_in(text, typed, restore)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = (chars_utf16, text, typed, restore);
         Err(anyhow!(NOT_SUPPORTED))
@@ -191,7 +233,17 @@ pub fn undo() -> Result<()> {
         }
         win::undo()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        if mac::blocked() {
+            return Err(anyhow!("macOS isn't letting Navi type there, so it can't undo."));
+        }
+        if crate::context::foreground_category() == "terminal" {
+            return Err(anyhow!("A terminal has no undo, so Navi didn't send ⌘Z."));
+        }
+        mac::undo()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     Err(anyhow!(NOT_SUPPORTED))
 }
 
@@ -200,7 +252,11 @@ pub fn copy_selection() -> Result<Option<String>> {
     {
         win::copy_selection()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        mac::copy_selection()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     Ok(None)
 }
 
@@ -210,7 +266,11 @@ pub fn set_clipboard_text(text: &str) -> Result<()> {
     {
         win::set_text(text, false)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        mac::set_text(text, false)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = text;
         Err(anyhow!(NOT_SUPPORTED))
@@ -959,6 +1019,349 @@ mod win {
             log::warn!("Could not restore the clipboard after copying the selection: {e}");
         }
         Ok(text.filter(|t| !t.is_empty()))
+    }
+}
+
+/// The Mac counterpart of `win`: NSPasteboard for the clipboard and Quartz keyboard events
+/// (CGEventPost) for Command + V, typing and selecting. Every posted event carries
+/// `NAVI_INPUT_TAG` in its user data, so Navi's own shortcut listener ignores it, and its flags are
+/// set explicitly, so a modifier the user still holds can't turn Command + V into something else.
+/// Posting keys needs the Accessibility permission; without it macOS drops them silently, so the
+/// text is left on the clipboard instead, with a reason.
+#[cfg(target_os = "macos")]
+mod mac {
+    use super::*;
+    use objc2::rc::Retained;
+    use objc2::runtime::ProtocolObject;
+    use objc2_app_kit::{NSPasteboard, NSPasteboardItem, NSPasteboardTypeString, NSPasteboardWriting};
+    use objc2_core_foundation::{CFRange, CFRetained};
+    use objc2_core_graphics::{CGEvent, CGEventField, CGEventFlags, CGEventSource, CGEventSourceStateID, CGEventTapLocation};
+    use objc2_foundation::{NSArray, NSData, NSString};
+    use std::thread::sleep;
+    use std::time::Instant;
+
+    const KC_RETURN: u16 = 0x24;
+    const KC_DELETE: u16 = 0x33;
+    const KC_LEFT: u16 = 0x7B;
+    const KC_V: u16 = 0x09;
+    const KC_C: u16 = 0x08;
+    const KC_Z: u16 = 0x06;
+    /// UTF-16 units per typed event: macOS takes at most 20.
+    const UNITS_PER_EVENT: usize = 20;
+
+    // Each fits the two-line bubble (80 characters at most).
+    const SECURE_REASON: &str = "macOS hides typing in password fields. Your text is on the clipboard: press ⌘V.";
+    const NO_PERMISSION_REASON: &str = "Navi needs the Accessibility permission to type. Your text is on the clipboard.";
+
+    #[link(name = "Carbon", kind = "framework")]
+    extern "C" {
+        fn IsSecureEventInputEnabled() -> u8;
+    }
+
+    // ----- the clipboard -----
+
+    fn pasteboard() -> Retained<NSPasteboard> {
+        NSPasteboard::generalPasteboard()
+    }
+
+    /// Every item on the pasteboard, each as (type, bytes) pairs, within the snapshot limits.
+    struct Snapshot(Vec<Vec<(String, Vec<u8>)>>);
+
+    fn snapshot() -> Snapshot {
+        let started = Instant::now();
+        let mut total = 0usize;
+        let mut items = Vec::new();
+        let Some(list) = pasteboard().pasteboardItems() else { return Snapshot(items) };
+        'items: for item in list.iter() {
+            let mut kept = Vec::new();
+            for kind in item.types().iter() {
+                if started.elapsed() > SNAPSHOT_BUDGET {
+                    break 'items;
+                }
+                let Some(data) = item.dataForType(&kind) else { continue };
+                let bytes = data.to_vec();
+                if bytes.len() > SNAPSHOT_MAX_FORMAT_BYTES || total + bytes.len() > SNAPSHOT_MAX_TOTAL_BYTES {
+                    continue;
+                }
+                total += bytes.len();
+                kept.push((kind.to_string(), bytes));
+            }
+            if !kept.is_empty() {
+                items.push(kept);
+            }
+        }
+        Snapshot(items)
+    }
+
+    fn restore(snapshot: &Snapshot) {
+        let board = pasteboard();
+        board.clearContents();
+        if snapshot.0.is_empty() {
+            return;
+        }
+        let items: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> = snapshot
+            .0
+            .iter()
+            .map(|pairs| {
+                let item = NSPasteboardItem::new();
+                for (kind, bytes) in pairs {
+                    item.setData_forType(&NSData::with_bytes(bytes), &NSString::from_str(kind));
+                }
+                ProtocolObject::from_retained(item)
+            })
+            .collect();
+        let array = NSArray::from_retained_slice(&items);
+        if !board.writeObjects(&array) {
+            log::warn!("Could not restore the clipboard");
+        }
+    }
+
+    /// Puts `text` on the pasteboard. `private`: marked transient and auto-generated, so clipboard
+    /// managers (Maccy, Raycast, Alfred, Paste) leave it out of their history.
+    pub(super) fn set_text(text: &str, private: bool) -> Result<()> {
+        let board = pasteboard();
+        board.clearContents();
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        let item = NSPasteboardItem::new();
+        if !item.setString_forType(&NSString::from_str(&text), unsafe { NSPasteboardTypeString }) {
+            return Err(anyhow!("Couldn't put the text on the clipboard."));
+        }
+        if private {
+            for marker in ["org.nspasteboard.TransientType", "org.nspasteboard.AutoGeneratedType"] {
+                item.setData_forType(&NSData::with_bytes(&[]), &NSString::from_str(marker));
+            }
+        }
+        let array = NSArray::from_retained_slice(&[ProtocolObject::from_retained(item)]);
+        if board.writeObjects(&array) {
+            Ok(())
+        } else {
+            Err(anyhow!("Couldn't put the text on the clipboard."))
+        }
+    }
+
+    fn read_text() -> Option<String> {
+        pasteboard().stringForType(unsafe { NSPasteboardTypeString }).map(|s| s.to_string())
+    }
+
+    fn change_count() -> isize {
+        pasteboard().changeCount()
+    }
+
+    // ----- keys -----
+
+    fn source() -> Option<CFRetained<CGEventSource>> {
+        CGEventSource::new(CGEventSourceStateID::Private)
+    }
+
+    fn post_key(code: u16, down: bool, flags: CGEventFlags) -> Result<()> {
+        let event = CGEvent::new_keyboard_event(source().as_deref(), code, down).ok_or_else(|| anyhow!("macOS couldn't make a key event."))?;
+        CGEvent::set_flags(Some(&event), flags);
+        CGEvent::set_integer_value_field(Some(&event), CGEventField::EventSourceUserData, NAVI_INPUT_TAG as i64);
+        CGEvent::post(CGEventTapLocation::HIDEventTap, Some(&event));
+        Ok(())
+    }
+
+    fn tap(code: u16, flags: CGEventFlags) -> Result<()> {
+        post_key(code, true, flags)?;
+        post_key(code, false, flags)
+    }
+
+    fn command(code: u16) -> Result<()> {
+        tap(code, CGEventFlags::MaskCommand)
+    }
+
+    /// Up to 20 UTF-16 units typed by one key event, whatever the keyboard layout.
+    fn post_units(units: &[u16]) -> Result<()> {
+        for down in [true, false] {
+            let event = CGEvent::new_keyboard_event(source().as_deref(), 0, down).ok_or_else(|| anyhow!("macOS couldn't make a key event."))?;
+            CGEvent::set_flags(Some(&event), CGEventFlags(0));
+            unsafe { CGEvent::keyboard_set_unicode_string(Some(&event), units.len() as _, units.as_ptr()) };
+            CGEvent::set_integer_value_field(Some(&event), CGEventField::EventSourceUserData, NAVI_INPUT_TAG as i64);
+            CGEvent::post(CGEventTapLocation::HIDEventTap, Some(&event));
+        }
+        Ok(())
+    }
+
+    /// Waits (up to MODIFIER_WAIT) for the user to let go of Command, Shift, Option, Control and Fn.
+    fn wait_for_modifiers() {
+        let held = CGEventFlags::MaskCommand.0
+            | CGEventFlags::MaskShift.0
+            | CGEventFlags::MaskAlternate.0
+            | CGEventFlags::MaskControl.0
+            | CGEventFlags::MaskSecondaryFn.0;
+        let started = Instant::now();
+        while started.elapsed() < MODIFIER_WAIT {
+            if CGEventSource::flags_state(CGEventSourceStateID::HIDSystemState).0 & held == 0 {
+                return;
+            }
+            sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn secure_input() -> bool {
+        unsafe { IsSecureEventInputEnabled() != 0 }
+    }
+
+    /// Leaves `text` on the clipboard when macOS would drop Navi's keys: a password field (Secure
+    /// Event Input) or no Accessibility permission.
+    pub(super) fn clipboard_only_if_blocked(text: &str) -> Result<Option<InsertOutcome>> {
+        let reason = if !crate::mac::ax::trusted() {
+            NO_PERMISSION_REASON
+        } else if secure_input() {
+            SECURE_REASON
+        } else {
+            return Ok(None);
+        };
+        set_text(text, false)?;
+        Ok(Some(InsertOutcome::ClipboardOnly(reason.to_string())))
+    }
+
+    pub(super) fn blocked() -> bool {
+        !crate::mac::ax::trusted() || secure_input()
+    }
+
+    // ----- the operations -----
+
+    pub(super) fn paste(text: &str, restore_after: bool) -> Result<InsertOutcome> {
+        let kept = restore_after.then(snapshot);
+        if let Err(e) = set_text(text, restore_after) {
+            if let Some(kept) = &kept {
+                restore(kept);
+            }
+            log::warn!("{e} Typing the text instead.");
+            return type_text(text);
+        }
+        let written = change_count();
+        let target = crate::context::foreground_process_name();
+        wait_for_modifiers();
+        if command(KC_V).is_err() {
+            return Ok(InsertOutcome::ClipboardOnly("macOS blocked the typing. Your text is on the clipboard: press ⌘V.".to_string()));
+        }
+        sleep(if reads_clipboard_late(&target) { REMOTE_PASTE_SETTLE } else { PASTE_SETTLE });
+        if let Some(kept) = kept {
+            if change_count() != written {
+                log::debug!("Clipboard changed during the paste; leaving it as it is");
+            } else {
+                restore(&kept);
+            }
+        }
+        Ok(InsertOutcome::Pasted)
+    }
+
+    pub(super) fn type_text(text: &str) -> Result<InsertOutcome> {
+        wait_for_modifiers();
+        let (_, title, process) = crate::context::foreground_app();
+        let shift_enter = line_break_needs_shift(&process, &title);
+        let mut pending: Vec<u16> = Vec::with_capacity(UNITS_PER_EVENT);
+        let flush = |pending: &mut Vec<u16>| -> Result<()> {
+            if !pending.is_empty() {
+                post_units(pending)?;
+                pending.clear();
+                sleep(Duration::from_millis(2));
+            }
+            Ok(())
+        };
+        for step in typing_steps(text) {
+            match step {
+                TypeStep::Unit(unit) => {
+                    // Never split a surrogate pair across two events.
+                    let high = (0xD800..=0xDBFF).contains(&unit);
+                    if pending.len() >= UNITS_PER_EVENT || (high && pending.len() + 2 > UNITS_PER_EVENT) {
+                        flush(&mut pending)?;
+                    }
+                    pending.push(unit);
+                }
+                TypeStep::Enter => {
+                    flush(&mut pending)?;
+                    tap(KC_RETURN, if shift_enter { CGEventFlags::MaskShift } else { CGEventFlags(0) })?;
+                }
+            }
+        }
+        flush(&mut pending)?;
+        Ok(InsertOutcome::Typed)
+    }
+
+    /// Selects the last `chars_utf16` characters before the cursor. Where the field says where its
+    /// caret is, the selection is set exactly through Accessibility (ranges count UTF-16 units, as
+    /// Navi does); otherwise Shift + Left is pressed that many times.
+    pub(super) fn select_back(chars_utf16: usize) -> Result<()> {
+        if chars_utf16 == 0 {
+            return Ok(());
+        }
+        if let Some(el) = crate::mac::ax::focused_element() {
+            if let Some(range) = el.range("AXSelectedTextRange") {
+                let start = range.location - chars_utf16 as isize;
+                if start >= 0 && el.set_range("AXSelectedTextRange", CFRange { location: start, length: chars_utf16 as isize }) {
+                    sleep(Duration::from_millis(30));
+                    if el.range("AXSelectedTextRange").is_some_and(|r| r.location == start && r.length == chars_utf16 as isize) {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        wait_for_modifiers();
+        for _ in 0..chars_utf16 {
+            tap(KC_LEFT, CGEventFlags::MaskShift)?;
+        }
+        sleep(Duration::from_millis(30));
+        Ok(())
+    }
+
+    pub(super) fn delete_selection() -> Result<()> {
+        tap(KC_DELETE, CGEventFlags(0))
+    }
+
+    pub(super) fn backspace(count: usize) -> Result<()> {
+        if count == 0 {
+            return Ok(());
+        }
+        wait_for_modifiers();
+        for i in 0..count {
+            tap(KC_DELETE, CGEventFlags(0))?;
+            if i % SELECT_BATCH == SELECT_BATCH - 1 {
+                sleep(TYPE_BATCH_GAP);
+            }
+        }
+        sleep(Duration::from_millis(30));
+        Ok(())
+    }
+
+    pub(super) fn undo() -> Result<()> {
+        wait_for_modifiers();
+        command(KC_Z).map_err(|_| anyhow!("macOS blocked Navi's keystrokes, so it couldn't undo."))
+    }
+
+    /// The selected text: read through Accessibility where the app says, else copied with
+    /// Command + C and the clipboard put back.
+    pub(super) fn copy_selection() -> Result<Option<String>> {
+        if blocked() {
+            return Ok(None);
+        }
+        if let Some(el) = crate::mac::ax::focused_element() {
+            if !el.is_secure() {
+                if let Some(text) = el.string("AXSelectedText").filter(|t| !t.is_empty()) {
+                    return Ok(Some(normalise(&text)));
+                }
+            }
+        }
+        let kept = snapshot();
+        let before = change_count();
+        wait_for_modifiers();
+        command(KC_C)?;
+        let started = Instant::now();
+        while change_count() == before && started.elapsed() < COPY_WAIT {
+            sleep(Duration::from_millis(15));
+        }
+        if change_count() == before {
+            return Ok(None);
+        }
+        let text = read_text();
+        restore(&kept);
+        Ok(text.filter(|t| !t.is_empty()).map(|t| normalise(&t)))
+    }
+
+    fn normalise(text: &str) -> String {
+        text.replace("\r\n", "\n").replace('\r', "\n")
     }
 }
 

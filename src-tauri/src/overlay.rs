@@ -56,6 +56,8 @@ pub fn prepare_pill(window: &WebviewWindow) -> Result<()> {
         let hwnd = win::pill_hwnd(window)?;
         win::apply_styles(hwnd);
     }
+    #[cfg(target_os = "macos")]
+    mac::float(window, true)?;
     Ok(())
 }
 
@@ -66,7 +68,12 @@ pub fn show_pill(window: &WebviewWindow, near_hwnd: isize) -> Result<()> {
         win::apply_styles(hwnd);
         win::position_and_show(hwnd, near_hwnd)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        let _ = near_hwnd;
+        mac::show_over_screen(window)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = near_hwnd;
         window.show()?;
@@ -81,10 +88,78 @@ pub fn hide_pill(window: &WebviewWindow) -> Result<()> {
         win::hide(hwnd);
         Ok(())
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        mac::order_out(window)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         window.hide()?;
         Ok(())
+    }
+}
+
+/// On a Mac the overlay windows float above everything (status level), on every Space and over
+/// full-screen apps, and are brought forward with orderFrontRegardless, which never activates Navi
+/// or makes the window key: the app being dictated into keeps the keyboard. AppKit wants all this
+/// on the main thread, so each call is queued there.
+#[cfg(target_os = "macos")]
+pub(crate) mod mac {
+    use super::*;
+    use objc2_app_kit::{NSScreen, NSWindow, NSWindowCollectionBehavior};
+    use objc2_foundation::MainThreadMarker;
+
+    /// kCGStatusWindowLevel: above ordinary and floating windows, below the menu bar's menus.
+    const STATUS_LEVEL: isize = 25;
+
+    fn on_main(window: &WebviewWindow, f: impl FnOnce(&NSWindow, MainThreadMarker) + Send + 'static) -> Result<()> {
+        let w = window.clone();
+        window.run_on_main_thread(move || {
+            let Some(mtm) = MainThreadMarker::new() else { return };
+            let Ok(ptr) = w.ns_window() else { return };
+            // SAFETY: Tauri's ns_window is the NSWindow behind this webview window, alive while `w` is.
+            let ns: &NSWindow = unsafe { &*(ptr as *const NSWindow) };
+            f(ns, mtm);
+        })?;
+        Ok(())
+    }
+
+    /// Makes `window` an overlay. `click_through`: the mouse goes to whatever is under it.
+    pub(crate) fn float(window: &WebviewWindow, click_through: bool) -> Result<()> {
+        on_main(window, move |ns, _| {
+            ns.setLevel(STATUS_LEVEL);
+            ns.setCollectionBehavior(
+                NSWindowCollectionBehavior::CanJoinAllSpaces
+                    | NSWindowCollectionBehavior::Stationary
+                    | NSWindowCollectionBehavior::FullScreenAuxiliary
+                    | NSWindowCollectionBehavior::IgnoresCycle,
+            );
+            ns.setHasShadow(false);
+            ns.setIgnoresMouseEvents(click_through);
+        })
+    }
+
+    /// Covers the usable area of the screen with the keyboard focus, and shows without focus.
+    pub(super) fn show_over_screen(window: &WebviewWindow) -> Result<()> {
+        on_main(window, |ns, mtm| {
+            if let Some(screen) = NSScreen::mainScreen(mtm) {
+                ns.setFrame_display(screen.visibleFrame(), true);
+            }
+            ns.setLevel(STATUS_LEVEL);
+            ns.orderFrontRegardless();
+        })
+    }
+
+    /// Shows `window` where it is, without focus (the corner card).
+    pub(crate) fn show_without_focus(window: &WebviewWindow) -> Result<()> {
+        on_main(window, |ns, _| {
+            ns.setLevel(STATUS_LEVEL);
+            ns.orderFrontRegardless();
+        })
+    }
+
+    pub(crate) fn order_out(window: &WebviewWindow) -> Result<()> {
+        on_main(window, |ns, _| ns.orderOut(None))
     }
 }
 
