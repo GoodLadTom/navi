@@ -1531,4 +1531,54 @@ mod tests {
             assert!(!reason.contains('\u{2014}') && !reason.contains('\u{2013}'), "{reason}");
         }
     }
+
+    /// Pastes and types into a new TextEdit document with the real Mac code, reads the document
+    /// back through Accessibility, then closes it unsaved. Needs the Accessibility permission for
+    /// whatever runs the test. Run by hand:
+    /// cargo test --lib insert::tests::live_mac_paste_and_type -- --ignored --nocapture
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore]
+    fn live_mac_paste_and_type() {
+        use std::process::Command;
+        use std::time::Duration;
+        assert!(crate::mac::ax::trusted(), "this needs the Accessibility permission");
+        let script = |s: &str| Command::new("/usr/bin/osascript").args(["-e", s]).output().expect("osascript");
+        script(r#"tell application "TextEdit" to activate
+tell application "TextEdit" to make new document"#);
+        std::thread::sleep(Duration::from_millis(1200));
+        crate::insert::set_clipboard_text("what you had copied").unwrap();
+        let pasted = insert_text("Pasted by Navi, on a Mac.", "paste", true).expect("paste");
+        std::thread::sleep(Duration::from_millis(400));
+        let typed = insert_text(" Typed too: café ✓.", "type", true).expect("type");
+        std::thread::sleep(Duration::from_millis(600));
+        let front = crate::mac::front::front_app().map(|a| a.name).unwrap_or_default();
+        let doc = script(r#"tell application "TextEdit" to get text of front document"#);
+        let field = String::from_utf8_lossy(&doc.stdout).trim_end_matches('\n').to_string();
+        println!("in front: {front}");
+        let ctx = crate::context::capture(&crate::types::ContextSettings { read_field: true, read_app: true, ..Default::default() });
+        println!("capture: app {:?} title {:?} before the caret {:?}", ctx.app_label, ctx.window_title, ctx.field_text);
+        assert_eq!(ctx.field_text.as_deref(), Some("Pasted by Navi, on a Mac. Typed too: café ✓."), "the text before the caret is read");
+        let full = crate::context::read_focused_text(ctx.hwnd, &crate::types::ContextSettings { read_field: true, read_app: true, ..Default::default() });
+        assert_eq!(full.as_deref(), Some("Pasted by Navi, on a Mac. Typed too: café ✓."), "the whole field is read for learning");
+        // "Scratch that": select back over what was typed and delete it.
+        select_back_and_replace_with(" Typed too: café ✓.".encode_utf16().count(), "", "paste", true).expect("scratch that");
+        std::thread::sleep(Duration::from_millis(400));
+        let after = script(r#"tell application "TextEdit" to get text of front document"#);
+        assert_eq!(String::from_utf8_lossy(&after.stdout).trim_end_matches('\n'), "Pasted by Navi, on a Mac.", "scratch that removes the last insert");
+        let clipboard = mac_clipboard();
+        script(r#"tell application "TextEdit" to close front document saving no"#);
+        println!("{pasted:?} {typed:?}; the document: {field:?}; the clipboard: {clipboard:?}");
+        assert_eq!(pasted, InsertOutcome::Pasted);
+        assert_eq!(typed, InsertOutcome::Typed);
+        assert_eq!(field, "Pasted by Navi, on a Mac. Typed too: café ✓.");
+        assert_eq!(clipboard.as_deref(), Some("what you had copied"), "the clipboard is put back");
+    }
+
+    #[cfg(target_os = "macos")]
+    fn mac_clipboard() -> Option<String> {
+        let out = std::process::Command::new("/usr/bin/pbpaste").output().ok()?;
+        Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
 }

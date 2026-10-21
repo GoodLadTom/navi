@@ -170,9 +170,13 @@ impl Element {
     }
 }
 
-/// The element that has the keyboard focus in the app in front, if the app says.
+/// The element that has the keyboard focus in the app in front, if the app says. Asked of the
+/// front app itself: the system-wide element often gives nothing (it did for TextEdit), while the
+/// app answers.
 pub fn focused_element() -> Option<Element> {
-    Element::system_wide().element("AXFocusedUIElement")
+    crate::mac::front::front_pid()
+        .and_then(|pid| Element::application(pid).element("AXFocusedUIElement"))
+        .or_else(|| Element::system_wide().element("AXFocusedUIElement"))
 }
 
 /// Chromium and Electron apps build their accessibility tree only once asked; this asks (once per
