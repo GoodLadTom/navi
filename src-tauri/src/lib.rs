@@ -604,7 +604,7 @@ pub fn close_main_window(app: &Arc<App>) {
     if !settings.general.tray_tip_shown {
         let label = hotkey::display_chord_label(&settings.hotkeys.talk);
         app.show_pill_window(0);
-        let gen = app.pill(PillState::Notice { message: format!("Navi is in the tray. Hold {label} to talk.") });
+        let gen = app.pill(PillState::Notice { message: if cfg!(target_os = "macos") { format!("Navi is in the menu bar. Hold {label} to talk.") } else { format!("Navi is in the tray. Hold {label} to talk.") } });
         app.hide_pill_later(gen, 4500);
         let mut next = settings;
         next.general.tray_tip_shown = true;

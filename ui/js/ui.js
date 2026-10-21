@@ -1,5 +1,6 @@
 // Small DOM helpers and shared components. No framework: h() builds elements, components are
 // functions that return elements.
+import { isMac } from './platform.js';
 import { icon } from './icons.js';
 
 export function h(tag, props = {}, ...children) {
@@ -104,8 +105,15 @@ const KEY_LABELS = {
 // Navi). Filled by app.js and the shortcut picker; consulted first.
 export const keyLabelCache = {};
 
+// The same keys as a Mac keyboard names them (mirrors hotkey::mac_key_label).
+const MAC_KEY_LABELS = {
+  Win: 'Command', LWin: 'Left Command', RWin: 'Right Command', Ctrl: 'Control', LCtrl: 'Left Control', RCtrl: 'Right Control',
+  Alt: 'Option', LAlt: 'Left Option', RAlt: 'Right Option', Enter: 'Return', Backspace: 'Delete', Delete: 'Forward Delete', Fn: 'Fn',
+};
+
 export function keyLabel(k) {
   if (keyLabelCache[k]) return keyLabelCache[k];
+  if (isMac && MAC_KEY_LABELS[k]) return MAC_KEY_LABELS[k];
   if (KEY_LABELS[k]) return KEY_LABELS[k];
   const num = /^Numpad(\d)$/.exec(k);
   return num ? `Num ${num[1]}` : k;

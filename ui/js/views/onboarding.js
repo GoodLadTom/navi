@@ -1,4 +1,5 @@
 // First run: welcome, name and sound, microphone, shortcut, speech engine, a first take.
+import { os } from '../platform.js';
 import { invoke, listen } from '../bridge.js';
 import { h, ico, btn, chip, select, chordLabel, errText } from '../ui.js';
 import { shortcutPicker } from '../shortcut.js';
@@ -64,7 +65,7 @@ export function run({ store }) {
       // Listing microphones can take a moment; if Continue was pressed meanwhile, don't draw over the next step.
       if (steps[step] !== mic) return;
       const meter = h('div', { class: 'meter', style: { marginTop: '18px' } }, h('i'));
-      const pick = select([{ value: '', label: 'Windows default' }, ...devices.map((d) => ({ value: d.name, label: d.name + (d.isDefault ? ' (default)' : '') }))], s().mic.device || '', async (v) => {
+      const pick = select([{ value: '', label: os('Windows default', 'System default') }, ...devices.map((d) => ({ value: d.name, label: d.name + (d.isDefault ? ' (default)' : '') }))], s().mic.device || '', async (v) => {
         await store.saveSettings((n) => { n.mic.device = v || null; });
         await invoke('mic_test_stop').catch(() => {});
         // Only reopen the mic if this step is still showing (a quick Continue must not leave it on).
@@ -94,7 +95,7 @@ export function run({ store }) {
       frame(h('div', {},
         h('div', { class: 'eyebrow' }, 'Your shortcut'),
         h('h1', {}, 'Hold to talk. Let go to finish.'),
-        h('p', { class: 'lead' }, 'Pick the key you’ll hold while you speak. One key is easiest. It works in almost every app: one running as administrator gets your words on the clipboard to paste instead.'),
+        h('p', { class: 'lead' }, os('Pick the key you’ll hold while you speak. One key is easiest. It works in almost every app: one running as administrator gets your words on the clipboard to paste instead.', 'Pick the key you’ll hold while you speak. One key is easiest. If you pick Fn, set System Settings > Keyboard > “Press 🌐 key to” to “Do Nothing”, so the emoji picker doesn’t open too.')),
         h('div', { style: { marginTop: '22px' } }, picker.el)));
     }
 

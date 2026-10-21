@@ -489,7 +489,7 @@ async fn start(app: &Arc<App>, settings: &Settings, pressed: Instant) -> Result<
         "take started in {} ({} mode), microphone: {}",
         if ctx.app_label.is_empty() { "an unknown app" } else { ctx.app_label.as_str() },
         mode.name,
-        settings.mic.device.as_deref().unwrap_or("Windows default")
+        settings.mic.device.as_deref().unwrap_or(if cfg!(target_os = "macos") { "system default" } else { "Windows default" })
     );
     let seq = {
         let mut s = app.session.lock();

@@ -54,7 +54,10 @@ const START_TIMEOUT: Duration = Duration::from_secs(5);
 const STOP_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub(crate) const NO_MICROPHONE: &str = "No microphone found";
+#[cfg(not(target_os = "macos"))]
 const PRIVACY_BLOCKED: &str = "Microphone access is off in Windows Settings > Privacy & security > Microphone";
+#[cfg(target_os = "macos")]
+const PRIVACY_BLOCKED: &str = "Microphone access is off in System Settings > Privacy & Security > Microphone";
 
 pub struct Recording {
     /// 16 kHz mono, -1..1.

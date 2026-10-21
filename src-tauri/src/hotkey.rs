@@ -527,6 +527,9 @@ pub fn check_chord_with(names: &[String], ramble_key: &str, label: &dyn Fn(&str)
             Key::Vk(VK_LSHIFT | VK_RSHIFT) => {
                 check.warning = Some("Shift is used for capital letters, so Navi may start listening while you type. Right Ctrl or Caps Lock is a safer pick.".into())
             }
+            Key::Vk(VK_CAPITAL) if cfg!(target_os = "macos") => {
+                check.error = Some("A Mac only tells apps when Caps Lock switches on or off, so it can't be held to talk. Try Right Option or Fn.".into())
+            }
             // Navi swallows it, so it no longer toggles capitals; with Shift held it passes through.
             Key::Vk(VK_CAPITAL) => check.warning = Some("Caps Lock won't switch capitals on by itself any more. Shift + Caps Lock still does.".into()),
             Key::Vk(_) => {}
@@ -562,6 +565,10 @@ fn everyday_shortcut(keys: &[Key]) -> Option<&'static str> {
     let key = *key;
     let only = |set: &[Modifier]| mods.len() == set.len() && set.iter().all(|m| mods.contains(m));
     let letter_or_digit = matches!(key, 0x30..=0x39 | 0x41..=0x5A);
+    // Control + Space switches the input source on a Mac.
+    if cfg!(target_os = "macos") && only(&[Modifier::Ctrl]) && key == 0x20 {
+        return Some("a Mac shortcut");
+    }
     if only(&[Modifier::Ctrl]) {
         return Some(match key {
             b'C' => "Copy in most apps",
@@ -589,10 +596,6 @@ fn everyday_shortcut(keys: &[Key]) -> Option<&'static str> {
     }
     if mods.contains(&Modifier::Win) && (letter_or_digit || matches!(key, 0x09 | 0x0D | 0x20 | 0x25..=0x28)) {
         return Some("a Windows shortcut");
-    }
-    // Control + Space switches the input source on a Mac.
-    if cfg!(target_os = "macos") && only(&[Modifier::Ctrl]) && key == 0x20 {
-        return Some("a Mac shortcut");
     }
     None
 }
@@ -2470,7 +2473,13 @@ mod tests {
 
     #[test]
     fn validation_keeps_normal_typing_safe() {
+        // A Mac can't hold Caps Lock, and Control + Space switches its input source.
+        let mac_only_bad: [&[&str]; 2] = [&["CapsLock"], &["Ctrl", "Space"]];
         for ok in [&["Ctrl", "Win"][..], &["F9"], &["RCtrl"], &["CapsLock"], &["Ctrl", "Space"], &["Alt", "A"], &["ScrollLock"], &["Backslash"], &["RAlt"]] {
+            if cfg!(target_os = "macos") && mac_only_bad.contains(&ok) {
+                assert!(validate_chord(&names(ok)).is_err(), "{ok:?}");
+                continue;
+            }
             assert!(validate_chord(&names(ok)).is_ok(), "{ok:?}");
         }
         for bad in [&["A"][..], &["Space"], &["7"], &["Enter"], &["Tab"], &["Escape"], &["Ctrl"], &["Shift"], &["Win"], &["Bogus"]] {
@@ -3143,6 +3152,10 @@ mod tests {
             assert!(check(bad).error.is_some(), "{bad:?}");
         }
         for ok in [&["Shift", "F9"][..], &["Ctrl", "Shift", "A"], &["Alt", "J", "K"], &["Ctrl", "Space"], &["F9", "F10"], &["J", "F9"]] {
+            // Control + Space switches a Mac's input source (see everyday_shortcut).
+            if cfg!(target_os = "macos") && ok == ["Ctrl", "Space"] {
+                continue;
+            }
             assert!(check(ok).error.is_none(), "{ok:?}: {:?}", check(ok).error);
         }
         // Mode keys get the same check.

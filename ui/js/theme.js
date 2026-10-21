@@ -27,5 +27,5 @@ export function applyTheme(next, nextColour) {
   document.documentElement.dataset.colour = colour;
 }
 
-// "Match Windows" follows Windows when it switches.
+// "Match Windows" ("Match macOS" on a Mac) follows the system when it switches.
 media.addEventListener('change', () => applyTheme(choice, colour));

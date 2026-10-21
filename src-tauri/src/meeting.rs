@@ -555,7 +555,11 @@ impl Session {
         } else if self.system_audio && them_silent {
             (
                 "Can't hear the other side",
-                "Nothing has come through your speakers for a while. If the call plays on a headset, make it the default device in Windows sound settings and Navi follows it.",
+                if cfg!(target_os = "macos") {
+                    "Nothing has come through your speakers for a while. If the call plays on a headset, make it the output in System Settings > Sound and Navi follows it."
+                } else {
+                    "Nothing has come through your speakers for a while. If the call plays on a headset, make it the default device in Windows sound settings and Navi follows it."
+                },
             )
         } else {
             ("", "")

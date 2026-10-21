@@ -1,3 +1,4 @@
+import { isMac, os } from '../platform.js';
 import { invoke, pickFile, listen } from '../bridge.js';
 import { h, ico, btn, chip, toggle, select, seg, setRow, field, toast, confirmDialog, errText, keycaps } from '../ui.js';
 
@@ -123,8 +124,8 @@ export async function render(root, { store, arg, go }) {
       m.apps.forEach((a, i) => { const c = chip(a.replace(/\.exe$/i, ''), 'line'); c.append(h('button', { title: 'Remove', onClick: () => { m.apps.splice(i, 1); drawApps(); }, html: '&times;' })); appsWrap.append(c); });
     };
     drawApps();
-    const appInput = h('input', { class: 'input', placeholder: 'Add an app, e.g. notion.exe' });
-    appInput.addEventListener('keydown', (e) => { if (e.key === 'Enter' && appInput.value.trim()) { let v = appInput.value.trim().toLowerCase(); if (!v.endsWith('.exe')) v += '.exe'; m.apps.push(v); appInput.value = ''; drawApps(); } });
+    const appInput = h('input', { class: 'input', placeholder: os('Add an app, e.g. notion.exe', 'Add an app, e.g. notion') });
+    appInput.addEventListener('keydown', (e) => { if (e.key === 'Enter' && appInput.value.trim()) { let v = appInput.value.trim().toLowerCase(); if (!isMac && !v.endsWith('.exe')) v += '.exe'; m.apps.push(v); appInput.value = ''; drawApps(); } });
 
     const iconPick = h('div', { class: 'row', style: { gap: '6px', flexWrap: 'wrap' } });
     ICONS.forEach((ic) => {
