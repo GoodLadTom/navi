@@ -1,0 +1,21 @@
+name: Request a feature
+description: An idea for something Navi could do, or do better.
+title: "Idea: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like Navi to do?
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: How would it help you?
+      description: What you're doing when you'd want it, and what you do instead now.
+  - type: input
+    id: system
+    attributes:
+      label: Your computer (optional)
+      placeholder: Windows 11

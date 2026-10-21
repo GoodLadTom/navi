@@ -1,0 +1,44 @@
+name: Report a bug
+description: Something in Navi doesn't work as it should.
+title: "Bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting it. Issues here are public, so please leave out anything private: what you dictated, names, keys or anything from your screen.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you did, and what Navi did.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+  - type: textarea
+    id: steps
+    attributes:
+      label: How can it be made to happen again?
+      description: The steps, if you know them.
+  - type: input
+    id: system
+    attributes:
+      label: Your computer
+      description: Windows or Mac, and which version.
+      placeholder: Windows 11
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Navi version
+      description: It's in Settings > About.
+      placeholder: "0.1.1"
+  - type: textarea
+    id: log
+    attributes:
+      label: Navi's log (optional)
+      description: On Windows it's at %LOCALAPPDATA%\com.goodlad.navi\logs\Navi.log. It never contains what you said. Drag the file in here, or paste its last few lines.
