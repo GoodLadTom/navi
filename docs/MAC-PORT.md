@@ -15,12 +15,42 @@ lists what has been done. In short:
 - **Phase 8 started:** `scripts/mac-setup.sh` checks the tools, builds `whisper-server` with Metal
   (or uses Homebrew's), makes the "Navi Local" certificate and builds Navi.app; the README has a
   "Build on a Mac" section.
+- **Verified on the Mac (21 October):** `cargo test --lib` (616 pass, Windows-only tests gated);
+  `scripts/mac-setup.sh` end to end, building a Navi.app signed with "Navi Local" into
+  /Applications; Accessibility kept across a rebuild with that certificate; and these live tests
+  (`--ignored`): the engine on Metal and its restart after a crash, the microphone, apps using the
+  microphone, the process tap, screenshots, Vision OCR, mute and restore, Claude Code (every mode,
+  "what's wrong with this?", watch write-ups, jobs on calls), pasting and typing into TextEdit and
+  reading the field back and "scratch that" (`insert::tests::live_mac_paste_and_type`), and the
+  app, category and site in Terminal, Safari and Chrome (`context::tests::live_mac_apps`).
+- **Found and fixed while verifying:** cpal 0.16.0 crashes an optimised Mac build when it lists
+  audio devices, so `src-tauri/vendor/cpal` carries a patched copy (see its NAVI-PATCH.md); the
+  system-wide focused element gave nothing, so the field is read through the front app; and
+  NSWorkspace's front app lags off the main thread, so the Process Manager's is used.
 - **Still to check on the Mac:** real Zoom, Google Meet (in Chrome) and Teams calls with speakers
-  and with headphones; that permissions survive a rebuild signed with "Navi Local"; the full
-  setup script and first run on a fresh macOS user account; the wake word against the test list;
-  SpeechAnalyzer and Foundation Models (not started).
-- **Still to check on the PC:** merge `mac` into `main`, then run the Windows build and its tests
-  to make sure nothing on Windows changed.
+  and with headphones; Watch my screen and mute while you talk in the app; the first run on a
+  fresh macOS user account; the wake word against the test list; SpeechAnalyzer and Foundation
+  Models (not started).
+- **Still to check on the PC:** see "Bringing the mac branch to the PC" below.
+
+## Bringing the mac branch to the PC
+
+Nothing Windows does was meant to change: Mac code sits beside the Windows code behind
+`cfg(target_os = "macos")`, and the interface picks its words with `ui/js/platform.js`. The
+changes Windows does build are the shared ones: Bubble as the default sound set (Bowl retired),
+the Find installed tools button in Settings > AI, `Engine::transcribe_quick` (on Windows it is
+`transcribe`), and cpal coming from `src-tauri/vendor/cpal`, whose Windows code is unchanged
+0.16.0. On the PC:
+
+```
+git fetch origin
+git checkout mac
+npm install
+cd src-tauri && cargo test --lib     # the 600 or so Windows tests
+cd .. && npm run dev                 # a take, a voice command, Settings > AI > Find installed tools
+```
+
+When those pass, merge `mac` into `main` and push.
 
 Read this first if you are the developer (or the Claude Code session) building the Mac version.
 It was written on 15 October 2026, on the Windows PC where Navi was built, from a review of every
