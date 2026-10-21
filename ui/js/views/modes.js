@@ -1,6 +1,6 @@
 import { isMac, os } from '../platform.js';
 import { invoke, pickFile, listen } from '../bridge.js';
-import { h, ico, btn, chip, toggle, select, seg, setRow, field, toast, confirmDialog, errText, keycaps } from '../ui.js';
+import { h, ico, btn, chip, toggle, select, seg, setRow, field, toast, confirmDialog, errText, keycaps, appName } from '../ui.js';
 
 const ICONS = ['clean', 'pen', 'mail', 'chat', 'terminal', 'notes', 'spark', 'wand'];
 const KIND_LABEL = { raw: 'As said', clean: 'Tidy', rewrite: 'Rewrite', prompt: 'Agent prompt', notes: 'Notes' };
@@ -98,7 +98,7 @@ export async function render(root, { store, arg, go }) {
           btn('', { variant: 'ghost', size: 'sm', icon: 'pen', title: `Edit ${m.name}`, onClick: () => openEditor(m) })),
         h('div', {}, h('div', { class: 'h2' }, m.name), h('div', { class: 'small faint' }, kindLabel(m) + (usesAi(m, store.settings) ? ' · AI' : ''))),
         h('div', { class: 'desc' }, m.description),
-        h('div', { class: 'apps' }, key ? keycaps(key) : null, ...(m.apps || []).slice(0, 3).map((a) => chip(a.replace(/\.exe$/i, ''), 'line')), m.apps?.length > 3 ? chip(`+${m.apps.length - 3}`, 'line') : null,
+        h('div', { class: 'apps' }, key ? keycaps(key) : null, ...(m.apps || []).slice(0, 3).map((a) => chip(appName(a), 'line')), m.apps?.length > 3 ? chip(`+${m.apps.length - 3}`, 'line') : null,
           m.kind === 'notes' ? chip('Used by ramble', 'line') : null));
       card.querySelector('.default .btn')?.classList.add('mode-edit');
       card.addEventListener('keydown', (e) => { if (e.key === 'Enter' && m.kind !== 'notes') choose(m.id); });
@@ -121,7 +121,7 @@ export async function render(root, { store, arg, go }) {
     const appsWrap = h('div', { class: 'row', style: { flexWrap: 'wrap', gap: '6px' } });
     const drawApps = () => {
       appsWrap.innerHTML = '';
-      m.apps.forEach((a, i) => { const c = chip(a.replace(/\.exe$/i, ''), 'line'); c.append(h('button', { title: 'Remove', onClick: () => { m.apps.splice(i, 1); drawApps(); }, html: '&times;' })); appsWrap.append(c); });
+      m.apps.forEach((a, i) => { const c = chip(appName(a), 'line'); c.append(h('button', { title: 'Remove', onClick: () => { m.apps.splice(i, 1); drawApps(); }, html: '&times;' })); appsWrap.append(c); });
     };
     drawApps();
     const appInput = h('input', { class: 'input', placeholder: os('Add an app, e.g. notion.exe', 'Add an app, e.g. notion') });

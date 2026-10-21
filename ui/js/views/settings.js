@@ -1,6 +1,6 @@
 import { isMac, os } from '../platform.js';
 import { invoke, listen, pickFile, openPath, isTauri } from '../bridge.js';
-import { h, ico, btn, chip, toggle, select, seg, setRow, field, keycaps, toast, confirmDialog, errText, debounce } from '../ui.js';
+import { h, ico, btn, chip, toggle, select, seg, setRow, field, keycaps, toast, confirmDialog, errText, debounce, appName } from '../ui.js';
 import { prettyModel } from '../app.js';
 import { shortcutPicker } from '../shortcut.js';
 import { soundPicker, playCue } from '../soundpicker.js';
@@ -753,7 +753,7 @@ export async function render(root, { store, arg }) {
   const excl = h('div', { class: 'row', style: { flexWrap: 'wrap', gap: '6px', maxWidth: '360px', justifyContent: 'flex-end' } });
   const drawExcl = () => {
     excl.innerHTML = '';
-    S().context.excludedApps.forEach((a) => { const c = chip(a.replace(/\.exe$/i, ''), 'line'); c.append(h('button', { html: '&times;', title: 'Remove', onClick: () => save((n) => { n.context.excludedApps = n.context.excludedApps.filter((x) => x !== a); }).then(drawExcl) })); excl.append(c); });
+    S().context.excludedApps.forEach((a) => { const c = chip(appName(a), 'line'); c.append(h('button', { html: '&times;', title: 'Remove', onClick: () => save((n) => { n.context.excludedApps = n.context.excludedApps.filter((x) => x !== a); }).then(drawExcl) })); excl.append(c); });
     const add = h('input', { class: 'input', style: { width: '150px', height: '28px', borderRadius: '999px', fontSize: '12px' }, placeholder: os('Add app.exe', 'Add an app') });
     add.addEventListener('keydown', (e) => { if (e.key === 'Enter' && add.value.trim()) { let v = add.value.trim(); if (!isMac && !/\.exe$/i.test(v)) v += '.exe'; if (isMac) v = v.toLowerCase(); save((n) => { n.context.excludedApps = [...n.context.excludedApps, v]; }).then(drawExcl); } });
     excl.append(add);

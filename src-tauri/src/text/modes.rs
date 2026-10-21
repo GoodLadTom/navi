@@ -59,7 +59,12 @@ pub fn builtin_modes() -> Vec<Mode> {
             description: "Short and natural, ready for Slack, Teams or WhatsApp.".into(),
             kind: ModeKind::Rewrite,
             instructions: String::new(),
-            apps: apps(&["slack.exe", "teams.exe", "ms-teams.exe", "discord.exe", "whatsapp.exe", "telegram.exe", "signal.exe"]),
+            // A Mac lists its apps by the names `mac::front` gives them (Windows' where there is one).
+            apps: if cfg!(target_os = "macos") {
+                apps(&["slack.exe", "ms-teams.exe", "discord.exe", "whatsapp.exe", "telegram.exe", "signal.exe", "messages"])
+            } else {
+                apps(&["slack.exe", "teams.exe", "ms-teams.exe", "discord.exe", "whatsapp.exe", "telegram.exe", "signal.exe"])
+            },
             use_ai: true,
             builtin: true,
         },
@@ -70,7 +75,11 @@ pub fn builtin_modes() -> Vec<Mode> {
             description: "Clear paragraphs, ready to send. Greetings and sign-offs only if you say them.".into(),
             kind: ModeKind::Rewrite,
             instructions: String::new(),
-            apps: apps(&["outlook.exe", "olk.exe", "thunderbird.exe"]),
+            apps: if cfg!(target_os = "macos") {
+                apps(&["outlook.exe", "thunderbird.exe", "mail", "spark", "superhuman"])
+            } else {
+                apps(&["outlook.exe", "olk.exe", "thunderbird.exe"])
+            },
             use_ai: true,
             builtin: true,
         },
@@ -81,7 +90,13 @@ pub fn builtin_modes() -> Vec<Mode> {
             description: "A clear, direct brief for an AI tool such as Claude Code, Cursor or ChatGPT, with references to your project's files.".into(),
             kind: ModeKind::Prompt,
             instructions: String::new(),
-            apps: apps(&[
+            apps: if cfg!(target_os = "macos") {
+                apps(&[
+                    "terminal", "iterm2", "ghostty", "warp.exe", "code.exe", "cursor.exe", "windsurf.exe", "zed.exe", "bb.exe",
+                    "claude.exe", "codex.exe", "chatgpt.exe",
+                ])
+            } else {
+                apps(&[
                 "windowsterminal.exe",
                 "code.exe",
                 "cursor.exe",
@@ -93,7 +108,8 @@ pub fn builtin_modes() -> Vec<Mode> {
                 "powershell.exe",
                 "pwsh.exe",
                 "cmd.exe",
-            ]),
+            ])
+            },
             use_ai: true,
             builtin: true,
         },
@@ -440,7 +456,10 @@ mod tests {
         assert_eq!(get("message").icon, "chat");
         assert!(get("message").apps.contains(&"ms-teams.exe".to_string()));
         assert_eq!(get("email").icon, "mail");
-        assert!(get("email").apps.contains(&"olk.exe".to_string()));
+        // The new Outlook for Windows; a Mac's Outlook is outlook.exe (see mac::front).
+        assert!(get("email").apps.contains(&if cfg!(target_os = "macos") { "outlook.exe" } else { "olk.exe" }.to_string()));
+        #[cfg(target_os = "macos")]
+        assert!(get("prompt").apps.contains(&"terminal".to_string()) && !get("prompt").apps.contains(&"powershell.exe".to_string()));
         assert_eq!(get("prompt").kind, ModeKind::Prompt);
         assert!(get("prompt").apps.contains(&"bb.exe".to_string()));
         assert!(get("prompt").apps.contains(&"codex.exe".to_string()) && get("prompt").apps.contains(&"chatgpt.exe".to_string()));
