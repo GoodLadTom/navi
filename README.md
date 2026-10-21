@@ -5,9 +5,35 @@ spelt the British way. Navi runs speech recognition on your own computer, so wha
 never uploaded to be transcribed.
 
 Free and open source under the GNU General Public License, version 3 (see [Licence](#licence)).
-The source is on GitHub in a private repository for now, so only people with access can read it.
 Navi runs on Windows and macOS. Windows has an installer; on a Mac you build it yourself from the
 source with one script (see [Build on a Mac](#build-on-a-mac)).
+
+## Install
+
+**The quick way: ask Claude Code.** Paste this into Claude Code (Codex works too) and it installs
+Navi for you, on Windows or a Mac:
+
+```
+Install Navi on this computer for me. It's a free, open-source dictation app: https://github.com/GoodLadTom/navi
+
+On Windows, download the Windows installer (the .exe) from the latest release, https://github.com/GoodLadTom/navi/releases/latest, and run it.
+
+On a Mac, clone the repository and run scripts/mac-setup.sh from inside it. It checks the tools Navi needs, offers to install anything missing, builds Navi and copies it to Applications.
+
+If a step needs my password or a click in a system dialog, stop and tell me exactly what to do. When it's installed, open Navi and I'll do its set-up.
+```
+
+**Windows 10 or 11 (64-bit).** Download the installer (`Navi_<version>_x64-setup.exe`) from the
+[latest release](https://github.com/GoodLadTom/navi/releases/latest) and run it. It installs for
+your account only, so it needs no admin rights. The installer isn't code-signed yet, so Windows
+SmartScreen may say "Windows protected your PC": choose **More info**, then **Run anyway**.
+
+**macOS 14.2 or later.** Navi for Mac is built on the Mac that runs it, by one script that checks
+and installs what it needs. See [Build on a Mac](#build-on-a-mac).
+
+When Navi first opens, set-up takes you through your name, a sound, your microphone, your shortcut
+and the speech engine. Then hold the shortcut (Ctrl + Win on Windows, Right Option on a Mac), talk,
+and let go.
 
 ## What it does
 
@@ -183,7 +209,7 @@ page or from History. It reads up to 5,000 characters at a time.
 
 ## Building from source
 
-While the repository is private, cloning it needs access to GoodLadTom/navi. On a Mac, see
+Clone it with `git clone https://github.com/GoodLadTom/navi`. On a Mac, see
 [Build on a Mac](#build-on-a-mac). On Windows you need:
 
 - Rust 1.90 or newer, with the MSVC toolchain (`rustup default stable-msvc`)
@@ -216,12 +242,10 @@ macOS opens it without complaint and you don't need an Apple developer account. 
 Mac works, but slowly, on the processor.
 
 1. Install Apple's command-line tools, which include git: `xcode-select --install`.
-2. The repository is private for now, so sign in to GitHub first. With the GitHub CLI
-   (`brew install gh`):
+2. Get the source:
 
    ```
-   gh auth login
-   gh repo clone GoodLadTom/navi
+   git clone https://github.com/GoodLadTom/navi
    cd navi
    ```
 
@@ -275,9 +299,6 @@ it. Nothing downloads until you press **Update now**. Navi then downloads it, ch
 against the public key built into the app, runs the installer (a small progress window with
 nothing to click) and restarts. It won't install while a take or call is being recorded, the
 screen is being watched, or notes are being written up.
-
-No release has been published yet and the repository is private, so for now the automatic check
-finds nothing and **Check for updates** says "No updates have been published yet."
 
 A copy built on a Mac never checks: update it with `git pull` and `scripts/mac-setup.sh` (see
 [Build on a Mac](#build-on-a-mac)).

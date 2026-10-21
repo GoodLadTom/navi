@@ -249,9 +249,8 @@ held up.
 
 Updates (`update`): tauri-plugin-updater reads `latest.json` from the latest GitHub release of
 GoodLadTom/navi (20 seconds after start, then every six hours, unless Settings or Local only says
-no; Settings > About can always check). That needs a published release anyone can download: the
-repository is private and has none yet, so the URL returns 404 and a check reports "No updates have
-been published yet." Nothing downloads until the user presses Update now; the installer must match
+no; Settings > About can always check). That needs a published release anyone can download: until
+there is one, the URL returns 404 and a check reports "No updates have been published yet." Nothing downloads until the user presses Update now; the installer must match
 the minisign public key in tauri.conf.json and runs in passive mode (a progress window, nothing to
 click). A plain `npm run build` makes no update files (tauri.conf.json sets
 `createUpdaterArtifacts` to false) and needs no key. `scripts/release.py` bumps the version in

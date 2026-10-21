@@ -52,10 +52,9 @@ Windows tests there (`cd src-tauri && cargo test --lib`) and try a take, a voice
 Settings > AI > Find it in `npm run dev` before pushing.
 
 Read this first if you are the developer (or the Claude Code session) building the Mac version.
-It was written on 15 October 2026, on the Windows PC where Navi was built, from a review of every
-Windows-only part of the code, and brought up to date on 20 October with the order of work. Nothing
-here has been tried on a Mac yet: treat API details as the starting point and check them on the
-machine.
+The plan below was written on 15 October 2026, on the Windows PC where Navi was built, from a
+review of every Windows-only part of the code, and brought up to date on 20 October with the order
+of work. The Status section above says what has since been built and tested on a Mac.
 
 ## What we are building
 
@@ -65,8 +64,7 @@ machine.
   Dictionary, Modes, Packs, the floating bubble and firefly, the corner card and the menu bar item.
 - **Built from source.** People clone the repo and build it on their own Mac. An app you compile
   yourself is not quarantined, so Gatekeeper does not block it and no Apple Developer account is
-  needed. A signed, notarised download can come later. While the repo is private, cloning it needs
-  access to GoodLadTom/navi and a signed-in git or GitHub CLI (`gh auth login`).
+  needed. A signed, notarised download can come later.
 - **Windows must keep working exactly as it does.** Add Mac code beside the Windows code; don't
   rewrite shared logic unless it truly has to change. The Windows build and its 600 or so tests are
   the reference.
@@ -83,7 +81,7 @@ machine.
 3. **Default shortcut.** Suggested: hold Fn, with set-up telling the user to turn off Fn's own
    action (emoji picker or Apple Dictation) in System Settings > Keyboard. Right Option as the
    other preset.
-4. **Dan's access.** While the repo is private, Dan needs adding as a collaborator.
+4. **Dan's access.** To push changes, Dan needs adding as a collaborator on GoodLadTom/navi.
 5. **A signed download, later.** Self-built copies are fine for Tom and Dan. A download for anyone
    else needs Apple's Developer Program ($99 a year), signing and notarisation. Decide that at the
    public Mac launch.
@@ -191,7 +189,7 @@ machine unchanged.
 | `screen.rs`: screenshots | ScreenCaptureKit: the display holding the front window, excluding Navi and the "never read" apps. macOS re-asks about screen recording from time to time | Screen Recording |
 | OCR (`context.rs ocr_bgra`) | Vision `VNRecognizeTextRequest`, accurate level, en-US | none |
 | `engine.rs` and `models.rs`: speech engine | whisper.cpp publishes no macOS server binary. Build `whisper-server` with Metal (`cmake -B build -DGGML_METAL=ON && cmake --build build --config Release`) in the setup script, or use Homebrew's whisper.cpp as a stopgap. Name it `whisper-server` (no `.exe`), add a "metal" device, and don't let the Windows engine download run on a Mac | none |
-| `text/cli_ai.rs`: Claude Code and Codex | Settings' Find it button (`cli_ai::search`, added 21 Oct) already knows the Mac: the login shell's PATH (a Finder-launched app has a short one), `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, npm's global bin, nvm, fnm, Volta, Bun and pnpm, editor extensions, and npm links to `cli.js` run with Node directly. Sign in opens Terminal with a `.command` file. Still Windows-only: `find_claude` and `find_codex` (what Navi checks before the button) look for `.exe` names, so on a Mac the cards start as not found until Find it is pressed. Test the button on the Mac, then make those two use the same Mac places | none |
+| `text/cli_ai.rs`: Claude Code and Codex | Done (21 Oct). `cli_ai::mac` finds both in their Mac install folders (`~/.local/bin`, Homebrew, npm's global bin, nvm, Volta, Bun, pnpm), runs npm links to `cli.js` with Node, and starts them with a full PATH, because an app opened from Finder gets a short one. Settings' Find it (`cli_ai::search`) adds the login shell's PATH, fnm and editor extensions, and Sign in opens Terminal with a `.command` file. Find it and Sign in still need a test on the Mac | none |
 | `overlay.rs`: the bubble and firefly | A non-activating `NSPanel` via the `tauri-nspanel` plugin: borderless, never key, status level, joins all Spaces, ignores the mouse. Check the full-screen transparent firefly's frame rate on a Retina screen | none |
 | Corner card | A second NSPanel that may become key (its buttons work and text can be copied) without taking focus from the call app. The Windows title-bar guard isn't needed | none |
 | Tray menu | Becomes the menu bar item: a black-and-alpha template icon, menu on left click | none |
