@@ -1,6 +1,6 @@
 {
   "name": "navi",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Navi: local, private dictation that writes like you.",
   "license": "GPL-3.0-only",
