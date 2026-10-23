@@ -845,6 +845,12 @@ pub struct HookMachine {
     hands_free: bool,
     paused: bool,
     capture: Option<Capture>,
+    /// Trust the hook's own record of which keys are down when the system's says a key is up. On a
+    /// Mac the event tap sees every press and release, but macOS's key state (CGEventSourceKeyState)
+    /// can report a held key as up, which ended every hold-to-talk take a moment after it began
+    /// while double taps (which never ask) worked. On Windows the system's state is kept as the
+    /// judge, so a release the hook missed (lock screen, UAC prompt) is still caught.
+    trust_own_view: bool,
 }
 
 const VK_RETURN: u8 = 0x0D;
@@ -932,9 +938,23 @@ impl HookMachine {
             hands_free: false,
             paused: false,
             capture: None,
+            // Tests model the system's key state explicitly, so they choose (`trusting_own_view`).
+            trust_own_view: cfg!(target_os = "macos") && !cfg!(test),
         };
         machine.set_keys(chord, ramble, cancel);
         machine
+    }
+
+    /// Whether `vk` counts as down for the stale-key and still-held checks: the system's view
+    /// (`probe`), or on a Mac also the hook's own (see `trust_own_view`).
+    fn held_now(&self, vk: u8, probe: &dyn Fn(u8) -> bool) -> bool {
+        probe(vk) || (self.trust_own_view && self.down[vk as usize])
+    }
+
+    #[cfg(test)]
+    fn trusting_own_view(mut self) -> Self {
+        self.trust_own_view = true;
+        self
     }
 
     pub fn set_keys(&mut self, chord: Vec<Key>, ramble: Option<Key>, cancel: Option<Key>) {
@@ -1047,7 +1067,7 @@ impl HookMachine {
     fn forget_stale_keys(&mut self, except: u8, probe: &dyn Fn(u8) -> bool) {
         for vk in 1..=254u8 {
             let i = vk as usize;
-            if vk != except && self.down[i] && !self.swallowed[i] && !probe(vk) {
+            if vk != except && self.down[i] && !self.swallowed[i] && !self.held_now(vk, probe) {
                 self.down[i] = false;
                 self.injected_down[i] = false;
             }
@@ -1151,7 +1171,7 @@ impl HookMachine {
 
         // A key-down for a key already down is auto-repeat, unless Windows says the key is up, in
         // which case its release went unseen and this is a fresh press.
-        let repeat = self.down[i] && (self.swallowed[i] || probe(vk));
+        let repeat = self.down[i] && (self.swallowed[i] || self.held_now(vk, probe));
         if repeat {
             d.swallow = self.swallowed[i];
             return d;
@@ -1276,14 +1296,14 @@ impl HookMachine {
             && self.capture.is_none()
             && !(1..=254u8).any(|vk| {
                 let i = vk as usize;
-                self.swallowed[i] || (self.down[i] && probe(vk))
+                self.swallowed[i] || (self.down[i] && self.held_now(vk, probe))
             })
     }
 
     /// True if every chord key is down: Windows' view for keys that reach it, the hook's own view
     /// for keys it swallowed (Windows never sees those).
     pub fn chord_is_down(&self, probe: &dyn Fn(u8) -> bool) -> bool {
-        let down = |vk: u8| probe(vk) || (self.swallowed[vk as usize] && self.down[vk as usize]);
+        let down = |vk: u8| self.held_now(vk, probe) || (self.swallowed[vk as usize] && self.down[vk as usize]);
         !self.chord.is_empty()
             && self.chord.iter().all(|k| match *k {
                 Key::Vk(vk) => down(vk),
@@ -3480,6 +3500,40 @@ mod tests {
         assert!(r.m.chord_is_down(&|k| os.contains(&k)));
         r.up(F9);
         assert!(!r.m.chord_is_down(&|_| false));
+    }
+
+    /// macOS can report a held key as up (CGEventSourceKeyState). Trusting the event tap's own
+    /// record, as the Mac does, a held shortcut stays held (so hold to talk is announced and the
+    /// release watchdog leaves it alone), a two-key chord still fires, and letting go ends it.
+    #[test]
+    fn a_mac_trusts_the_tap_when_the_system_says_a_held_key_is_up() {
+        let never = |_: u8| false;
+        // Right Option on its own, the Mac's default shortcut.
+        let mut m = HookMachine::new(chord(&["RAlt"]), None, None).trusting_own_view();
+        assert_eq!(m.on_key(VK_RMENU, false, &never).event, Some(HotkeyEvent::TalkDown));
+        assert!(m.chord_is_down(&never), "held, whatever macOS says");
+        assert!(!m.is_idle(&never));
+        assert_eq!(m.on_key(VK_RMENU, false, &never).event, None, "a second key-down is not a new press");
+        assert_eq!(m.on_key(VK_RMENU, true, &never).event, Some(HotkeyEvent::TalkUp));
+        assert!(!m.chord_is_down(&never), "let go");
+        assert!(m.is_idle(&never));
+
+        // Two modifiers: the first is not forgotten as stale when the second goes down.
+        let mut m = HookMachine::new(chord(&["Ctrl", "Alt"]), None, None).trusting_own_view();
+        assert_eq!(m.on_key(VK_LCONTROL, false, &never).event, None);
+        assert_eq!(m.on_key(VK_LMENU, false, &never).event, Some(HotkeyEvent::TalkDown));
+        assert!(m.chord_is_down(&never));
+        assert_eq!(m.on_key(VK_LCONTROL, true, &never).event, Some(HotkeyEvent::TalkUp));
+        assert!(!m.chord_is_down(&never));
+    }
+
+    /// Windows keeps its own key state as the judge, so a release the hook missed is still caught.
+    #[test]
+    fn windows_judges_held_keys_by_the_system() {
+        let never = |_: u8| false;
+        let mut m = HookMachine::new(chord(&["RAlt"]), None, None);
+        assert_eq!(m.on_key(VK_RMENU, false, &never).event, Some(HotkeyEvent::TalkDown));
+        assert!(!m.chord_is_down(&never), "Windows says it is up, so it is treated as let go");
     }
 
     #[test]
