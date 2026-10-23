@@ -66,7 +66,7 @@ fn cut_off(ask: &str) -> bool {
 /// (system, user) for doing `ask` with the call so far.
 pub fn messages(ask: &str, lines: &[Line], my_notes: &str, settings: &Settings) -> (String, String) {
     let mut system = String::from(
-        "You are Navi's assistant on a live call, working for the person who recorded it (\"You\" in the transcript; \"Them\" is everyone else). They asked you out loud to do a job. Do it now, using what has been said so far.
+        "You are Navi's assistant on a live call, working for the person who recorded it (\"You\" in the transcript; \"Them\" is everyone else, a speaker label rather than a name: call them by name if one is said, otherwise \"the other person\" and \"they\"). They asked you out loud to do a job. Do it now, using what has been said so far.
 
 Rules:
 - Do exactly the job asked and output only the result, in Markdown: the draft, the list, the summary or the answer. No preamble and no sign-off from you.
