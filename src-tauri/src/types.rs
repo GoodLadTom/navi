@@ -744,13 +744,14 @@ pub struct ModeSettings {
     /// Pick a mode from the app you are typing into (Outlook -> Email, Slack -> Message...).
     pub auto_by_app: bool,
     /// The mode every take uses, chosen on the Modes page, by a mode key or from the tray.
-    /// Empty means Auto: pick from the app (if `auto_by_app`), else `default_mode`.
+    /// Empty means Auto: pick from the app (if `auto_by_app`), else `default_mode`. Clean to start
+    /// with (Tom, 23 Oct 2026): Auto is one click away in the tray or on the Modes page.
     pub active: String,
 }
 
 impl Default for ModeSettings {
     fn default() -> Self {
-        Self { default_mode: "clean".into(), auto_by_app: true, active: String::new() }
+        Self { default_mode: "clean".into(), auto_by_app: true, active: "clean".into() }
     }
 }
 

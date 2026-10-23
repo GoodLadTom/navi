@@ -797,7 +797,7 @@ pub fn forget_missing_modes(settings: &mut types::Settings, modes: &[types::Mode
     settings.hotkeys.mode_keys.retain(|k| matches!(k.mode.as_str(), "auto" | "next") || usable(&k.mode));
     let mut changed = settings.hotkeys.mode_keys.len() != keys_before;
     if !settings.modes.active.trim().is_empty() && !usable(settings.modes.active.trim()) {
-        settings.modes.active = String::new();
+        settings.modes.active = types::ModeSettings::default().active;
         changed = true;
     }
     if !usable(settings.modes.default_mode.trim()) {
@@ -1055,7 +1055,7 @@ mod tests {
         assert!(forget_missing_modes(&mut s, &modes_with(&[]), &[]));
         let left: Vec<&str> = s.hotkeys.mode_keys.iter().map(|k| k.mode.as_str()).collect();
         assert_eq!(left, ["auto", "email", "next"], "Auto, Next and modes that exist keep their keys");
-        assert_eq!(s.modes.active, "", "back to Auto");
+        assert_eq!(s.modes.active, "clean", "back to the mode Navi starts with");
         assert_eq!(s.modes.default_mode, "clean");
     }
 
@@ -1090,7 +1090,7 @@ mod tests {
     }
 
     #[test]
-    fn interview_me_and_speak_fall_back_to_auto_even_with_a_saved_edit() {
+    fn interview_me_and_speak_fall_back_to_clean_even_with_a_saved_edit() {
         let db = store::Db::open_memory().unwrap();
         // An edit of each, saved while they were built-ins.
         for id in ["interview", "speak"] {
@@ -1106,7 +1106,7 @@ mod tests {
             s.modes.active = id.into();
             s.modes.default_mode = id.into();
             assert!(forget_missing_modes(&mut s, &modes, &unreadable), "{id}");
-            assert_eq!(s.modes.active, "", "{id}: the active mode goes back to Auto");
+            assert_eq!(s.modes.active, "clean", "{id}: the active mode goes back to the one Navi starts with");
             assert_eq!(s.modes.default_mode, "clean", "{id}: the default goes back to the one Navi ships with");
             assert_eq!(s.hotkeys.mode_keys.iter().map(|k| k.mode.as_str()).collect::<Vec<_>>(), ["email"], "{id}: its key goes");
         }
