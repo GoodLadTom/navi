@@ -60,7 +60,7 @@ const BLIND_EDIT_WINDOW: Duration = Duration::from_secs(15);
 const BUSY_NOTE_MS: u64 = 1600;
 /// A wake word take finishes after this much quiet, whether or not anything followed the name yet.
 /// 1.6 s cut people off while they were thinking of the next word; 6 s leaves room to think, and
-/// Enter or the finish phrase ("that's all") finishes it sooner.
+/// the finish phrase ("that's all"), a tap of the shortcut or (if Settings allows) Enter finishes it sooner.
 const WAKE_QUIET: Duration = Duration::from_secs(6);
 const WAKE_MAX: Duration = Duration::from_secs(120);
 /// How often the take's own listener reads the take's audio (spawn_take_listener).
@@ -255,9 +255,9 @@ async fn handle(app: &Arc<App>, ev: HotkeyEvent, at: Instant) -> Result<()> {
                 }
                 2 => {
                     log::info!("double tap: hands-free (first press {held_ms} ms, keys up for {gap_ms} ms)");
-                    // Enter can finish it from now on.
+                    // A tap of the shortcut finishes it; Enter too, if Settings allows.
                     if let Some(h) = app.hotkeys.lock().as_ref() {
-                        h.set_hands_free(true);
+                        h.set_enter_finishes(settings.hotkeys.enter_finishes);
                     }
                     // The second tap of a double tap: hands-free. Greet now if the first tap was
                     // too quick to have been announced; otherwise switch the bubble over.
@@ -355,13 +355,14 @@ async fn handle(app: &Arc<App>, ev: HotkeyEvent, at: Instant) -> Result<()> {
             if let Some(hwnd) = became {
                 app.reveal_pill_window(hwnd);
                 if let Some(h) = app.hotkeys.lock().as_ref() {
-                    h.set_hands_free(true);
+                    h.set_enter_finishes(settings.hotkeys.enter_finishes);
                 }
                 spawn_ramble_preview(app.clone());
             }
         }
         HotkeyEvent::Finish => {
-            // Enter during a hands-free take or a ramble: finish it as pressing the shortcut would.
+            // Enter during a hands-free take or a ramble (when Settings lets Enter finish): finish it
+            // as pressing the shortcut would.
             let hands_free = matches!(&app.session.lock().phase, Phase::Recording(rec) if rec.kind != Kind::Talk);
             if hands_free {
                 stop(app).await?;
@@ -544,8 +545,8 @@ async fn start(app: &Arc<App>, settings: &Settings, pressed: Instant) -> Result<
 /// The wake word was heard (wake.rs): starts a hands-free take with the words said while Navi woke
 /// up already in it. The sound and the bubble come first, at once; the take's microphone opens
 /// behind them, and what the listener heard meanwhile is joined on (wake::join_gap), so nothing
-/// is lost. It finishes by itself after 6 s of quiet, with the finish phrase, or with Enter or the
-/// shortcut. Some(seq) when a take started; None when another take has the microphone.
+/// is lost. It finishes by itself after 6 s of quiet, with the finish phrase, or with the shortcut
+/// (or Enter, if Settings > Shortcuts allows it). Some(seq) when a take started; None when another take has the microphone.
 pub async fn start_from_wake(app: &Arc<App>, preroll: Vec<f32>) -> Result<Option<u64>> {
     {
         let mut s = app.session.lock();
@@ -613,7 +614,7 @@ pub async fn start_from_wake(app: &Arc<App>, preroll: Vec<f32>) -> Result<Option
         });
         if let Some(h) = app.hotkeys.lock().as_ref() {
             h.set_recording(true);
-            h.set_hands_free(true);
+            h.set_enter_finishes(settings.hotkeys.enter_finishes);
         }
         seq
     };

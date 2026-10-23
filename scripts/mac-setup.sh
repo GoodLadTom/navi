@@ -9,8 +9,9 @@
 #   scripts/mac-setup.sh --check    only report what is present and what is missing; changes nothing
 #   scripts/mac-setup.sh --brew     use Homebrew's whisper-cpp instead of building the engine
 #
-# Safe to run again: anything already in place is left alone. To update Navi, run `git pull` in
-# the Navi folder and then this script again.
+# Safe to run again: anything already in place is left alone. To update Navi, press Update in
+# Navi's Settings > About, which runs `git pull` and this script with -y in Terminal; or do the
+# same by hand in the Navi folder.
 #
 # What it does, in order:
 #   1. Apple's command-line tools (compiler, git), Homebrew or CMake, Rust 1.90+, Node.js 18+.
@@ -319,6 +320,11 @@ npm run build
 [ -d "$APP" ] || fail "The build finished, but $APP isn't there. Scroll up for the error."
 ok "Navi.app is at $APP"
 
+# Lets Navi's Update button (Settings > About) find this folder: it fetches GitHub here, and
+# updating runs git pull and this script again in Terminal.
+NAVI_DATA="$HOME/Library/Application Support/com.goodlad.navi"
+mkdir -p "$NAVI_DATA" && printf '%s\n' "$ROOT" > "$NAVI_DATA/source-folder"
+
 if [ -d /Applications/Navi.app ]; then
   QUESTION="Replace Navi in your Applications folder with this build?"
 else
@@ -339,4 +345,4 @@ fi
 echo
 echo "${BOLD}Done.${RESET} Open Navi with:  open \"$APP\""
 echo "The first time, it asks for Accessibility, Microphone, Screen Recording and System Audio"
-echo "Recording. To update later: git pull in this folder, then run scripts/mac-setup.sh again."
+echo "Recording. To update later, press Update in Navi's Settings > About."

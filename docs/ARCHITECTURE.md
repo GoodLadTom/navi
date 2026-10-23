@@ -36,7 +36,7 @@ shortcut, speak, release: the words appear in whatever app has focus, transcribe
    apartment open until they are let go. Muting sets each session's mute flag and never its
    volume, Navi's own sounds are never muted, and nothing changes during call notes. What it muted
    is kept in `media-muted.json` until it's unmuted, so the next start can unmute it after a crash.
-3. On `TalkUp` (or, in hands-free, the next press of the talk keys or Enter), audio stops. The
+3. On `TalkUp` (or, in hands-free, the next press of the talk keys, or Enter if Settings allows), audio stops. The
    audio recorded while the start cue played (at most about 0.1 s: the cue's length, capped at
    160 ms, less its last 60 ms) is cut out so speaker bleed never becomes text; anything said
    before the cue is kept. Nothing is cut in a wake-word take, with sounds off, or when Settings >
@@ -113,8 +113,9 @@ Notes page and the notes folder even with Save history off: notes are documents 
 for, and only the take in History follows that setting. Write again on the Notes page
 (`meeting::rewrite_ramble`) writes a ramble's notes again from what was said, with the ramble
 prompt and the same AI, and its Markdown file keeps the ramble layout (`meeting::ramble_file`).
-A hands-free take or a ramble finishes on Enter (`HotkeyEvent::Finish`, swallowed)
-or on the talk shortcut.
+A hands-free take or a ramble finishes on the talk shortcut, or on Enter (`HotkeyEvent::Finish`,
+swallowed) when Settings > Shortcuts allows it (`hotkeys.enterFinishes`, off by default: people
+press Enter in other apps while Navi listens).
 
 Meeting notes (`meeting`): a watcher reads which apps are using the microphone (the registry key
 behind Windows' privacy light, every 3 seconds) and offers notes on the `prompt` card when a call
@@ -181,8 +182,8 @@ and the unit tests and the live measurement run the same code.
   ramble, the first cancel asks to be said again.
 - On calls the listener only acts on stop taking notes, watch my screen and stop watching; "Navi,
   ..." on a call is still a job.
-- A wake take ends after six seconds of quiet (`WAKE_QUIET`), on the finish phrase, Enter or the
-  talk shortcut, or after two minutes (`WAKE_MAX`). It pauses while Navi reads aloud, so it never
+- A wake take ends after six seconds of quiet (`WAKE_QUIET`), on the finish phrase, the talk
+  shortcut (or Enter, if allowed), or after two minutes (`WAKE_MAX`). It pauses while Navi reads aloud, so it never
   wakes itself. Measured on the owner's PC (18 Oct 2026, generated speech): the bubble about 0.3 s
   after the wake word, one-breath commands in 0.2 to 0.3 s, cancel and finish about 0.5 s after the
   phrase.

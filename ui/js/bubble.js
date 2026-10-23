@@ -86,7 +86,7 @@ export class BubbleView {
       chip.textContent = p.modeName || 'Clean';
       chip.style.display = '';
       // Hands-free and rambles carry on after you let go, so say how to finish them.
-      label.textContent = kind === 'listening' ? '' : 'Enter to finish';
+      label.textContent = kind === 'listening' ? '' : 'Tap keys to finish';
       if (this.state !== 'listening' && this.state !== 'handsFree' && this.state !== 'ramble') {
         this.started = performance.now();
         this.levels.fill(0);

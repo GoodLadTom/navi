@@ -196,7 +196,7 @@ machine unchanged.
 | Main window | Native traffic lights (`TitleBarStyle::Overlay`, hidden title); hide the custom Windows buttons with a `body.mac` class. Dock icon only while the main window is open; handle `RunEvent::Reopen` | none |
 | `store/secrets.rs` | keyring feature `apple-native` (login Keychain). Without it, keys go to an in-memory store and vanish | none |
 | Start at login | Already uses `MacosLauncher::LaunchAgent`; check it on the Mac | none |
-| Updates | Self-built copies don't need the updater; leave it off on Mac until there is a signed build | none |
+| Updates | A self-built copy fetches GitHub's main branch into its clone and counts the new changes; Update runs `git pull` and `scripts/mac-setup.sh -y` in Terminal (`update.rs`). The setup script records the clone in `~/Library/Application Support/com.goodlad.navi/source-folder` | none |
 
 ## Files to add or change for the Mac build
 
@@ -282,4 +282,4 @@ faster.
 
 Once the Mac version runs, the README gets a short "Build on a Mac" section: install the tools
 above, clone, run `scripts/mac-setup.sh`, then open `Navi.app` from
-`src-tauri/target/release/bundle/macos`. To update: `git pull` and run the script again.
+`src-tauri/target/release/bundle/macos`. To update: Settings > About > Update, or `git pull` and run the script again.

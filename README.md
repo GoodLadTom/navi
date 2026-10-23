@@ -39,14 +39,14 @@ and let go.
 
 - **Talk anywhere.** Hold Ctrl + Win (or one key of your choice, such as Right Ctrl or Caps Lock)
   in any app, speak and let go. On a Mac the default is Right Option, and Fn, Right Command or
-  Control + Option work too. Double-tap for hands-free, then press Enter (Return on a Mac) or the
-  shortcut to finish; Esc cancels. Windows won't let Navi type into an app running as
+  Control + Option work too. Double-tap for hands-free, then tap the shortcut once more to finish;
+  Esc cancels. (Settings > Shortcuts can let Enter, or Return on a Mac, finish it too.) Windows won't let Navi type into an app running as
   administrator, so there the text is left on your clipboard instead. A Mac does the same in
   password fields and while Terminal's Secure Keyboard Entry is on: macOS hides typing there, so
   your words go on the clipboard to paste.
 - **Voice commands.** Turn them on and talk to Navi without touching the keyboard. Say "Navi"
   (or "Hey Navi") and keep talking, and Navi types what you say; it finishes after six seconds of
-  quiet, when you say "that's all", or when you press Enter (Return). Say the wake word and a command and it
+  quiet, when you say "that's all", or when you tap the shortcut. Say the wake word and a command and it
   happens straight away: "Navi, watch my screen", "Navi, take notes", "Navi, scratch that",
   "Navi, turn gold". Say
   "don't worry" on its own during a take to throw it away. Every phrase can be changed in Settings >
@@ -274,9 +274,11 @@ Set-up asks for four permissions, each in System Settings > Privacy & Security:
 - **Screen Recording**, for Watch my screen and call screenshots.
 - **System Audio Recording**, to hear the other side of a call for call notes.
 
-To update, run `git pull` in the `navi` folder, then `scripts/mac-setup.sh` again. It skips
-everything already in place and builds the new version. Settings > About can't update a copy you
-built yourself.
+To update, press **Update** in Navi's Settings > About when it says there are new changes (it
+checks GitHub every six hours). It opens Terminal, runs `git pull` and `scripts/mac-setup.sh`
+there, and Navi closes and opens again when the new build is ready. You can also run those two
+yourself in the `navi` folder. The first time after this arrives, update by hand once, so the
+script can record where your `navi` folder is.
 
 A few things work differently on a Mac:
 

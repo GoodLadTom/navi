@@ -148,23 +148,28 @@ export async function go(id, arg) {
 let updateCard = null;
 const updateLater = new Set();
 function renderUpdate(u) {
-  const show = u && (u.state === 'available' || u.state === 'downloading') && !updateLater.has(u.version);
+  // A Mac copy built from source is offered changes from GitHub (u.changes), not a new version.
+  const key = u ? `${u.version}:${u.changes || 0}` : '';
+  const show = u && (u.state === 'available' || u.state === 'downloading' || u.state === 'building') && !updateLater.has(key);
   if (!show) { updateCard?.remove(); updateCard = null; return; }
   if (!updateCard) { updateCard = h('div', { class: 'update-card', role: 'status' }); document.getElementById('updateSlot').append(updateCard); }
-  const downloading = u.state === 'downloading';
+  const downloading = u.state === 'downloading', building = u.state === 'building', busy = downloading || building;
   const pct = Math.round((u.progress || 0) * 100);
+  const n = u.changes || 0;
+  const title = building ? 'Updating Navi' : downloading ? 'Downloading update' : n ? 'A Navi update is available' : `Navi ${u.version} is available`;
+  const line = building ? 'Building in Terminal. Navi closes and opens again when it’s ready.'
+    : downloading ? `${pct}%. Navi restarts when it’s done.`
+    : n ? `${n} new change${n === 1 ? '' : 's'}. Update now rebuilds Navi in Terminal.`
+    : 'Update now restarts Navi to install it.';
   // Nothing downloads until Update now is pressed, so the card mustn't promise a restart.
   updateCard.replaceChildren(...[
     h('span', { class: 'u-ic', html: icon('download', 15) }),
-    h('div', { class: 'u-txt' },
-      h('b', {}, downloading ? 'Downloading update' : `Navi ${u.version} is available`),
-      h('span', {}, downloading ? `${pct}%. Navi restarts when it’s done.` : 'Update now restarts Navi to install it.')),
-    downloading ? null : h('button', { class: 'u-x', title: 'Later', html: icon('x', 13, 2), onClick: () => { updateLater.add(u.version); renderUpdate(u); } }),
-    downloading
-      ? h('div', { class: 'u-bar' }, h('i', { style: { width: `${pct}%` } }))
-      : btn('Update now', { size: 'sm', variant: 'primary', onClick: async () => {
-        try { await invoke('install_update'); } catch (e) { toast(errText(e), { error: true }); }
-      } }),
+    h('div', { class: 'u-txt' }, h('b', {}, title), h('span', {}, line)),
+    busy ? null : h('button', { class: 'u-x', title: 'Later', html: icon('x', 13, 2), onClick: () => { updateLater.add(key); renderUpdate(u); } }),
+    downloading ? h('div', { class: 'u-bar' }, h('i', { style: { width: `${pct}%` } })) : null,
+    busy ? null : btn('Update now', { size: 'sm', variant: 'primary', onClick: async () => {
+      try { await invoke('install_update'); } catch (e) { toast(errText(e), { error: true }); }
+    } }),
   ].filter(Boolean));
 }
 

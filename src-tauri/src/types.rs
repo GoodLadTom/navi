@@ -570,6 +570,10 @@ pub struct HotkeySettings {
     pub ramble_key: String,
     /// Double-tap the talk chord to lock hands-free; tap once more to finish.
     pub double_tap_hands_free: bool,
+    /// Enter also finishes a hands-free take, a ramble or a "Navi" take (and never reaches the app).
+    /// Off by default: people press Enter in other apps while Navi listens, and a tap of the
+    /// shortcut finishes them anyway.
+    pub enter_finishes: bool,
     /// Cancels the take while recording (swallowed so the app underneath never sees it).
     pub cancel_key: String,
     /// Keys that switch mode (F1 for Clean, F2 for Email...). The bubble says which mode is on.
@@ -591,6 +595,7 @@ impl Default for HotkeySettings {
             talk: if cfg!(target_os = "macos") { vec!["RAlt".into()] } else { vec!["Ctrl".into(), "Win".into()] },
             ramble_key: "Space".into(),
             double_tap_hands_free: true,
+            enter_finishes: false,
             cancel_key: "Escape".into(),
             mode_keys: Vec::new(),
         }

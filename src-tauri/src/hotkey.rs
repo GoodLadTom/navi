@@ -8,9 +8,10 @@
 //!   them is released after that.
 //! * While the chord is held, the ramble key (default Space) fires `Ramble` and is SWALLOWED.
 //! * While `set_recording(true)`, the cancel key (default Escape) fires `Cancel` and is SWALLOWED.
-//! * While a hands-free or ramble take records (`set_hands_free(true)`), Enter fires `Finish` and is
-//!   SWALLOWED: the way to finish one, besides pressing the shortcut again. This holds whether or
-//!   not the talk keys are still held.
+//! * While a hands-free, ramble or wake take records with Enter allowed to finish it
+//!   (`set_enter_finishes(true)`, from Settings, off by default), Enter fires `Finish` and is
+//!   SWALLOWED, whether or not the talk keys are still held. Otherwise Enter passes untouched and a
+//!   tap of the shortcut is the way to finish.
 //! * Chords that include Win must not open the Start menu when released: inject a harmless key
 //!   (VK 0xE8, down then up) before letting the Win key-up through, the way AutoHotkey does.
 //!   Navi's own keystrokes (dwExtraInfo == NAVI_INPUT_TAG) are ignored by the hook. Keys other
@@ -842,7 +843,7 @@ pub struct HookMachine {
     chord_spent: bool,
     recording: bool,
     /// The take being recorded is hands-free or a ramble: Enter finishes it.
-    hands_free: bool,
+    enter_finishes: bool,
     paused: bool,
     capture: Option<Capture>,
     /// Trust the hook's own record of which keys are down when the system's says a key is up. On a
@@ -935,7 +936,7 @@ impl HookMachine {
             chord_active: false,
             chord_spent: false,
             recording: false,
-            hands_free: false,
+            enter_finishes: false,
             paused: false,
             capture: None,
             // Tests model the system's key state explicitly, so they choose (`trusting_own_view`).
@@ -991,12 +992,12 @@ impl HookMachine {
     pub fn set_recording(&mut self, on: bool) {
         self.recording = on;
         if !on {
-            self.hands_free = false;
+            self.enter_finishes = false;
         }
     }
 
-    pub fn set_hands_free(&mut self, on: bool) {
-        self.hands_free = on;
+    pub fn set_enter_finishes(&mut self, on: bool) {
+        self.enter_finishes = on;
     }
 
     pub fn set_paused(&mut self, paused: bool) {
@@ -1206,7 +1207,7 @@ impl HookMachine {
                 // Another shortcut already claimed this press; everything passes until release.
                 return d;
             }
-            if self.recording && self.hands_free && vk == VK_RETURN {
+            if self.recording && self.enter_finishes && vk == VK_RETURN {
                 // Enter finishes a ramble or hands-free take even with the talk keys still held:
                 // it is not another shortcut (and Ctrl + Win + Enter would start Narrator).
                 self.swallowed[i] = true;
@@ -1236,7 +1237,7 @@ impl HookMachine {
             return d;
         }
 
-        if self.recording && self.hands_free && vk == VK_RETURN {
+        if self.recording && self.enter_finishes && vk == VK_RETURN {
             self.swallowed[i] = true;
             d.swallow = true;
             d.event = Some(HotkeyEvent::Finish);
@@ -1286,7 +1287,7 @@ impl HookMachine {
             || self.in_chord(vk)
             || self.ramble.is_some_and(|k| k.matches(vk))
             || self.cancel.is_some_and(|k| k.matches(vk))
-            || (self.hands_free && vk == VK_RETURN)
+            || (self.enter_finishes && vk == VK_RETURN)
             || self.extras.iter().any(|extra| extra.iter().any(|k| k.matches(vk)))
     }
 
@@ -1464,8 +1465,8 @@ impl HotkeyService {
     }
 
     /// The take being recorded went hands-free (or became a ramble): Enter now finishes it.
-    pub fn set_hands_free(&self, on: bool) {
-        with_machine(|m| m.set_hands_free(on));
+    pub fn set_enter_finishes(&self, on: bool) {
+        with_machine(|m| m.set_enter_finishes(on));
     }
 
     /// The next chord the user presses, as logical key names (e.g. ["Ctrl", "Win"]). Keys pressed
@@ -3125,7 +3126,7 @@ mod tests {
         // A take being held down: Enter is just a key.
         assert_eq!(r.down(VK_RETURN), Decision::default());
         assert!(!r.up(VK_RETURN).swallow);
-        r.m.set_hands_free(true);
+        r.m.set_enter_finishes(true);
         let d = r.down(VK_RETURN);
         assert_eq!(d.event, Some(HotkeyEvent::Finish));
         assert!(d.swallow);
@@ -3136,6 +3137,19 @@ mod tests {
         assert!(!r.up(VK_RETURN).swallow);
     }
 
+    /// The default (Settings off): in a hands-free take Enter reaches the app you're typing in, and
+    /// a tap of the talk keys is what finishes the take.
+    #[test]
+    fn enter_types_normally_in_a_hands_free_take_by_default() {
+        let mut r = Rig::new(&["Ctrl", "Win"]);
+        r.m.set_recording(true);
+        r.m.set_enter_finishes(crate::types::HotkeySettings::default().enter_finishes);
+        assert_eq!(r.down(VK_RETURN), Decision::default(), "no Finish, not swallowed");
+        assert!(!r.up(VK_RETURN).swallow);
+        r.down(VK_LCONTROL);
+        assert_eq!(r.down(VK_LWIN).event, Some(HotkeyEvent::TalkDown), "the tap that finishes it");
+    }
+
     #[test]
     fn enter_finishes_a_ramble_while_the_talk_keys_are_still_held() {
         let mut r = Rig::new(&["Ctrl", "Win"]);
@@ -3144,7 +3158,7 @@ mod tests {
         r.m.set_recording(true);
         assert_eq!(r.down(SPACE).event, Some(HotkeyEvent::Ramble));
         r.up(SPACE);
-        r.m.set_hands_free(true);
+        r.m.set_enter_finishes(true);
         // Still holding Ctrl + Win out of habit: Enter finishes, never cancels, and never reaches
         // Windows as Ctrl + Win + Enter.
         let d = r.down(VK_RETURN);
@@ -3170,7 +3184,7 @@ mod tests {
         r.m.set_recording(true);
         assert_eq!(r.down(VK_RETURN).event, Some(HotkeyEvent::Ramble));
         r.up(VK_RETURN);
-        r.m.set_hands_free(true);
+        r.m.set_enter_finishes(true);
         assert_eq!(r.down(VK_RETURN).event, Some(HotkeyEvent::Finish));
     }
 
@@ -3178,7 +3192,7 @@ mod tests {
     fn a_take_running_when_paused_can_still_be_ended() {
         let mut r = Rig::new(&["Ctrl", "Win"]);
         r.m.set_recording(true);
-        r.m.set_hands_free(true);
+        r.m.set_enter_finishes(true);
         r.m.set_paused(true);
         let d = r.down(VK_RETURN);
         assert_eq!(d.event, Some(HotkeyEvent::Finish), "Enter still finishes it");

@@ -186,8 +186,9 @@ export async function render(root, { store, arg }) {
   cleanups.push(() => { if (capturingMode) invoke('cancel_shortcut_capture').catch(() => {}); });
   section('shortcuts', 'Shortcuts', os('Hold to talk, let go to finish. Works in almost every app: one running as administrator gets your words on the clipboard to paste instead.', 'Hold to talk, let go to finish. Works in almost every app: in a password field macOS hides typing, so your words go on the clipboard to paste instead.'),
     h('div', { class: 'set-row', style: { display: 'block' } }, h('div', { class: 'h3', style: { marginBottom: '12px' } }, 'Talk'), picker.el),
-    setRow('Hands-free', `Double-tap the talk keys to keep listening without holding. Press ${os('Enter', 'Return')}, or tap the keys again, to finish.`, toggle(S().hotkeys.doubleTapHandsFree, (v) => save((n) => { n.hotkeys.doubleTapHandsFree = v; }))),
-    setRow('Ramble', `While holding the talk keys, tap this to switch to notes mode. A different sound plays and Navi keeps listening until you press ${os('Enter', 'Return')} (or tap the talk keys again), then saves it to Notes.`, select(['Space', { value: 'Enter', label: os('Enter', 'Return') }, 'Tab', 'N', 'R'], S().hotkeys.rambleKey, (v) => save((n) => { n.hotkeys.rambleKey = v; }))),
+    setRow('Hands-free', 'Double-tap the talk keys to keep listening without holding. Tap them once more to finish.', toggle(S().hotkeys.doubleTapHandsFree, (v) => save((n) => { n.hotkeys.doubleTapHandsFree = v; }))),
+    setRow(`${os('Enter', 'Return')} finishes too`, `Off: ${os('Enter', 'Return')} types as normal while Navi listens, and you tap the talk keys to finish. On: ${os('Enter', 'Return')} also finishes a hands-free take, a ramble or a “Navi” take, and doesn’t reach the app you’re in.`, toggle(!!S().hotkeys.enterFinishes, (v) => save((n) => { n.hotkeys.enterFinishes = v; }))),
+    setRow('Ramble', `While holding the talk keys, tap this to switch to notes mode. A different sound plays and Navi keeps listening until you tap the talk keys again, then saves it to Notes.`, select(['Space', { value: 'Enter', label: os('Enter', 'Return') }, 'Tab', 'N', 'R'], S().hotkeys.rambleKey, (v) => save((n) => { n.hotkeys.rambleKey = v; }))),
     setRow('Cancel', 'Throws the take away while it is recording.', keycaps([S().hotkeys.cancelKey])),
     modeKeysBlock,
     setRow('Voice edits', 'Start with “Navi”: “Navi, scratch that”, “Navi, make that shorter”, “Navi, change Tuesday to Wednesday”. Select text first and say “Navi, turn this into bullet points”, or “Navi, what’s wrong with this?” for a blunt list of its problems. “Scratch that” works without an AI, and so does “change Tuesday to Wednesday” when Navi finds the word. Shorter, bullet points and “what’s wrong” need an AI (set one up under AI).' + (scratchThatOn(S()) ? '' : ' “Scratch that” is off: give it a phrase under Voice commands to use it.'), chip('Always on', 'accent', true)),
@@ -286,7 +287,7 @@ export async function render(root, { store, arg }) {
     vcExample.textContent = example(vc, ['watch_on', 'notes_on', 'watch_off', 'notes_off', 'scratch_that']);
     jobsSpans.forEach((s) => { s.textContent = jobsWake(vc); });
     vcHost.replaceChildren(
-      vcGroup('Start dictating', `Say it at the start of a sentence, then what you want typed: “${wakeLabel(vc)}, email Sam about Friday.” Navi stops after six seconds of quiet, when you say your finish phrase, or when you press ${os('Enter', 'Return')}.`,
+      vcGroup('Start dictating', `Say it at the start of a sentence, then what you want typed: “${wakeLabel(vc)}, email Sam about Friday.” Navi stops after six seconds of quiet, when you say your finish phrase, or when you tap the talk keys.`,
         vcRow(vc, 'wake', 'Wake word', 'Any word or phrase. Keep at least one.')),
       vcGroup('Straight after the wake word', `Say the wake word first, in the same breath or after a pause: “${example(vc, ['notes_on', 'watch_on', 'notes_off', 'watch_off', 'scratch_that'])}.” These work from the shortcut too.`,
         vcRow(vc, 'scratch_that', 'Scratch that', 'Removes the last thing Navi typed.'),
@@ -883,8 +884,15 @@ export async function render(root, { store, arg }) {
   const upBtn = btn('Check for updates', { size: 'sm', icon: 'download' });
   const drawUpdate = (u) => {
     const s = u || {};
-    upBtn.disabled = s.state === 'checking' || s.state === 'downloading';
-    if (s.state === 'available') {
+    upBtn.disabled = s.state === 'checking' || s.state === 'downloading' || s.state === 'building';
+    if (s.state === 'available' && s.changes) {
+      // A Mac copy built from source: the changes on GitHub it doesn't have yet.
+      upBtn.lastChild.textContent = `Update (${s.changes} change${s.changes === 1 ? '' : 's'})`;
+      upNote.textContent = 'Updating rebuilds Navi in Terminal, then opens it again. It takes a few minutes.';
+    } else if (s.state === 'building') {
+      upBtn.lastChild.textContent = 'Updating in Terminal…';
+      upNote.textContent = s.message || '';
+    } else if (s.state === 'available') {
       upBtn.lastChild.textContent = `Update to ${s.version}`;
       upNote.textContent = 'A new version is available. Updating restarts Navi.';
     } else if (s.state === 'downloading') {
