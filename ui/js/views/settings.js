@@ -290,7 +290,7 @@ export async function render(root, { store, arg }) {
       vcGroup('Start dictating', `Say it at the start of a sentence, then what you want typed: “${wakeLabel(vc)}, email Sam about Friday.” Navi stops after six seconds of quiet, when you say your finish phrase, or when you tap the talk keys.`,
         vcRow(vc, 'wake', 'Wake word', 'Any word or phrase. Keep at least one.')),
       vcGroup('Straight after the wake word', `Say the wake word first, in the same breath or after a pause: “${example(vc, ['notes_on', 'watch_on', 'notes_off', 'watch_off', 'scratch_that'])}.” These work from the shortcut too.`,
-        vcRow(vc, 'scratch_that', 'Scratch that', 'Removes the last thing Navi typed.'),
+        vcRow(vc, 'scratch_that', 'Scratch that', 'Removes the last thing Navi typed, or the text you’ve selected.'),
         vcRow(vc, 'watch_on', 'Watch my screen', 'Looks at your screen every few seconds, then writes up what you did.'),
         vcRow(vc, 'watch_off', 'Stop watching', 'Stops watching and writes it up on the Notes page.'),
         vcRow(vc, 'notes_on', 'Take notes', 'Starts call notes, like Take notes now on the Notes page.'),

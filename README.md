@@ -99,8 +99,8 @@ and let go.
   Navi has read the text before your cursor and found its words still there. Where it can't read
   that text (in a terminal, in an app that doesn't share it, or with "Read the text near my
   cursor" off), they only work on what Navi typed in the last 15 seconds with no key pressed since,
-  so your own typing is never selected over. Select text and say "Navi, turn this into bullet
-  points", or "Navi, what's wrong with this?" for a blunt list of its problems in a card you can
+  so your own typing is never selected over. Select text and say "Navi, scratch that" to delete it,
+  "Navi, turn this into bullet points", or "Navi, what's wrong with this?" for a blunt list of its problems in a card you can
   copy from.
 - **Writes like you.** British spelling and no em dashes (both on unless you turn them off), and a
   style profile that every AI rewrite follows.

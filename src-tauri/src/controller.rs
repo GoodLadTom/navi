@@ -1855,6 +1855,16 @@ async fn run_command(app: &Arc<App>, rec: &Recording, cmd: VoiceCommand, raw: &s
     // A change to a selection becomes the last insert, so "scratch that" can put the selection back.
     let mut new_insert: Option<LastInsert> = None;
     match &cmd {
+        // Text you selected yourself: "scratch that" deletes it, whoever typed it. (Selecting moves
+        // the caret, so the check below that Navi's words sit just before it would refuse.)
+        VoiceCommand::Undo if scratches_selection(rec) => {
+            tokio::task::spawn_blocking(insert::delete_selection).await.map_err(|e| anyhow!("{e}"))??;
+            // If the selection was what Navi last typed, that text is gone now.
+            if fresh.is_some_and(|l| same_words(rec.ctx.selection.as_deref().unwrap_or_default(), &l.text)) {
+                *app.last_insert.lock() = None;
+            }
+            summary = "Deleted".into();
+        }
         VoiceCommand::Undo => {
             let l = fresh.ok_or_else(|| anyhow!("There's nothing recent to scratch here."))?;
             insert_at_caret(rec, l)?;
@@ -1994,6 +2004,24 @@ fn select_back_in(last: &LastInsert, text: &str, method: &str, restore: bool, re
     // The second look: the time limit was checked before the AI was asked, so only keys count now.
     select_back_check(now.field_text.as_deref(), now.category == "terminal", &last.text, None, hotkey::keys_pressed_since(last.at)).map_err(|why| anyhow!(why))?;
     insert::select_back_and_replace_with(last.text.encode_utf16().count(), text, method, restore)
+}
+
+/// "Scratch that" said over a selection deletes the selection (see `run_command`).
+fn scratches_selection(rec: &Recording) -> bool {
+    deletes_selection(&rec.ctx.category, rec.ctx.selection.as_deref())
+}
+
+/// There is a selection that isn't only spaces (read when the take began), and this isn't a terminal,
+/// where Delete doesn't remove selected text (there "scratch that" deletes what Navi typed, as before).
+fn deletes_selection(category: &str, selection: Option<&str>) -> bool {
+    category != "terminal" && selection.is_some_and(|s| !s.trim().is_empty())
+}
+
+/// The same words, ignoring spacing, punctuation and case (as `ends_with_insert` compares them).
+fn same_words(a: &str, b: &str) -> bool {
+    let squash = |s: &str| s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect::<String>();
+    let (a, b) = (squash(a), squash(b));
+    !a.is_empty() && a == b
 }
 
 const TEXT_CHANGED: &str = "The text has changed since Navi typed it, so Navi left it alone.";
@@ -2434,6 +2462,19 @@ fn reworded(e: &anyhow::Error, message: String) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Tom selected a sentence and said "Navi, scratch that": Navi said the text had changed, as
+    /// selecting had moved the caret. Over a selection, "scratch that" now deletes the selection.
+    #[test]
+    fn scratch_that_over_a_selection_deletes_it() {
+        assert!(deletes_selection("chat", Some("so I like the images and the graphics")));
+        assert!(!deletes_selection("chat", None), "nothing selected: scratch what Navi typed, as before");
+        assert!(!deletes_selection("chat", Some("   ")), "only spaces");
+        assert!(!deletes_selection("terminal", Some("ls -la")), "a terminal can't delete a selection with Delete");
+        assert!(same_words("So I like the images.", "so i like the images"));
+        assert!(!same_words("so I like the images", "so I like the graphics"));
+        assert!(!same_words("", ""));
+    }
 
     #[test]
     fn a_key_bounce_is_not_a_double_tap() {

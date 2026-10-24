@@ -220,6 +220,27 @@ pub fn select_back_and_replace_with(chars_utf16: usize, text: &str, method: &str
     }
 }
 
+/// Deletes what is selected in the focused app, for "scratch that" said over text you selected.
+/// Refused where Navi can't type (an administrator window, a field macOS protects).
+pub fn delete_selection() -> Result<()> {
+    #[cfg(windows)]
+    {
+        if win::blocked_by_uipi() {
+            return Err(anyhow!("That window runs as administrator, so Navi can't change the text there."));
+        }
+        win::delete_selection()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if mac::blocked() {
+            return Err(anyhow!("macOS isn't letting Navi type there, so it can't change the text."));
+        }
+        mac::delete_selection()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    Err(anyhow!(NOT_SUPPORTED))
+}
+
 /// Ctrl+Z in the focused app. Refused in terminals, where Ctrl+Z pauses the running program (use
 /// `select_back_and_replace(n, "", ..)` there).
 pub fn undo() -> Result<()> {
