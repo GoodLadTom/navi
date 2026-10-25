@@ -1,6 +1,6 @@
 [package]
 name = "navi"
-version = "0.1.6"
+version = "0.1.7"
 description = "Navi: local, private dictation that writes like you."
 authors = ["GoodLad"]
 license = "GPL-3.0-only"
