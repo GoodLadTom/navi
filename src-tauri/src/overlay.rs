@@ -170,6 +170,22 @@ pub(crate) mod mac {
         })
     }
 
+    /// The answer card for a question (meeting.rs PromptState::Reply): in the middle of the screen.
+    pub(crate) fn show_centred(window: &WebviewWindow, width: f64, height: f64) -> Result<()> {
+        on_main(window, move |ns, mtm| {
+            ns.setIgnoresMouseEvents(false);
+            if let Some(screen) = NSScreen::mainScreen(mtm) {
+                let area = screen.visibleFrame();
+                let (w, h) = (width.min(area.size.width - 2.0 * CORNER_GAP), height.min(area.size.height - 2.0 * CORNER_GAP));
+                let x = area.origin.x + (area.size.width - w) / 2.0;
+                let y = area.origin.y + (area.size.height - h) / 2.0;
+                ns.setFrame_display(objc2_foundation::NSRect::new(objc2_foundation::NSPoint::new(x, y), objc2_foundation::NSSize::new(w, h)), true);
+            }
+            ns.setLevel(STATUS_LEVEL);
+            ns.orderFrontRegardless();
+        })
+    }
+
     pub(crate) fn order_out(window: &WebviewWindow) -> Result<()> {
         on_main(window, |ns, _| ns.orderOut(None))
     }

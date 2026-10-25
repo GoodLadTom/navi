@@ -87,6 +87,20 @@
 .bubble[data-state="handsFree"] .b-dot { display: none; }
 .bubble[data-state="handsFree"] .b-lock { display: block; }
 .bubble[data-state="handsFree"] .b-label { display: block; }
+/* An Ask AI take: the spark where the lock goes. */
+.bubble[data-state="handsFree"][data-ask="true"] .b-lock { display: none; }
+.bubble[data-state="handsFree"][data-ask="true"] .b-spark { display: block; color: var(--accent-ink); }
+
+/* The AI at work: the spark, what it is doing, the dots and a clock. */
+.bubble[data-state="working"] .b-dot,
+.bubble[data-state="working"] .b-wave,
+.bubble[data-state="working"] .b-chip { display: none; }
+.bubble[data-state="working"] .b-spark { display: block; animation: sparkPulse 1.6s var(--in-out) infinite; }
+.bubble[data-state="working"] .b-label { display: block; color: var(--accent-ink); }
+.bubble[data-state="working"] .b-think { display: inline-flex; padding-left: 0; }
+.bubble[data-state="working"] .b-time { margin-left: auto; }
+@keyframes sparkPulse { 0%, 100% { transform: scale(.88); opacity: .75; } 50% { transform: scale(1.12); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .bubble[data-state="working"] .b-spark { animation: none; } }
 
 .bubble[data-state="processing"] .b-wave,
 .bubble[data-state="processing"] .b-time,

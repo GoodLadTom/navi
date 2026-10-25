@@ -578,6 +578,10 @@ pub struct HotkeySettings {
     pub cancel_key: String,
     /// Keys that switch mode (F1 for Clean, F2 for Email...). The bubble says which mode is on.
     pub mode_keys: Vec<ModeKey>,
+    /// Keys that do what a voice command does, without saying it: Ask AI (which listens for what
+    /// to do with the selection), rewrite with the AI, scratch that, what's wrong with this, watch
+    /// my screen and call notes.
+    pub action_keys: Vec<ActionKey>,
 }
 
 /// One mode key. `mode` is a mode id, "auto" (pick from the app) or "next" (the next mode along).
@@ -586,6 +590,48 @@ pub struct HotkeySettings {
 pub struct ModeKey {
     pub mode: String,
     pub keys: Vec<String>,
+}
+
+/// One action key. `action` is one of ACTION_KEY_ACTIONS (a string, so one from a newer Navi
+/// can't make settings.json unreadable; the controller ignores it). Keys may be empty: a rewrite
+/// whose instruction was written before its key was picked.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ActionKey {
+    pub action: String,
+    pub keys: Vec<String>,
+    /// For "rewrite": what to do to the text ("make it shorter"). Empty: DEFAULT_REWRITE.
+    pub instruction: String,
+}
+
+/// What an action key can do. "rewrite" may appear more than once, each with its own instruction.
+pub const ACTION_KEY_ACTIONS: &[&str] = &["ask", "rewrite", "scratch_that", "critique", "watch", "notes"];
+
+/// What the rewrite key does when Settings gives it no instruction of its own.
+pub const DEFAULT_REWRITE: &str = "Rewrite this so it reads clearly and naturally. Fix spelling, grammar and punctuation and smooth any awkward phrasing, but keep the meaning, the tone and roughly the length.";
+
+impl ActionKey {
+    /// The instruction a rewrite key sends the AI.
+    pub fn rewrite_instruction(&self) -> &str {
+        match self.instruction.trim() {
+            "" => DEFAULT_REWRITE,
+            own => own,
+        }
+    }
+}
+
+/// An action key's name in messages ("Scratch that is already your key for..."). An unknown
+/// action is named by its id.
+pub fn action_key_label(action: &str) -> &str {
+    match action {
+        "ask" => "Ask AI",
+        "rewrite" => "Rewrite with AI",
+        "scratch_that" => "Scratch that",
+        "critique" => "What\u{2019}s wrong with this",
+        "watch" => "Watch my screen",
+        "notes" => "Call notes",
+        other => other,
+    }
 }
 
 impl Default for HotkeySettings {
@@ -598,6 +644,7 @@ impl Default for HotkeySettings {
             enter_finishes: false,
             cancel_key: "Escape".into(),
             mode_keys: Vec::new(),
+            action_keys: Vec::new(),
         }
     }
 }
@@ -1140,6 +1187,9 @@ pub enum PillState {
     Listening { kind: String, mode_name: String, app_label: String },
     #[serde(rename_all = "camelCase")]
     Processing { mode_name: String },
+    /// The AI is doing something that takes a while ("AI is rewriting"), so you know to wait.
+    #[serde(rename_all = "camelCase")]
+    Working { message: String },
     #[serde(rename_all = "camelCase")]
     Done { preview: String, outcome: String },
     #[serde(rename_all = "camelCase")]
@@ -1162,8 +1212,9 @@ pub enum HotkeyEvent {
     Ramble,
     /// The cancel key was pressed while recording (swallowed).
     Cancel,
-    /// Mode key number n (an index into HotkeySettings::mode_keys) was pressed.
-    ModeKey(u8),
+    /// Extra key number n was pressed: an index into HotkeySettings::mode_keys and then
+    /// action_keys, in that order (lib.rs extra_key_chords).
+    ExtraKey(u8),
     /// Enter was pressed while a hands-free or ramble take was recording (swallowed).
     Finish,
 }
@@ -1190,6 +1241,22 @@ pub enum VoiceCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rewrite_key_without_an_instruction_uses_the_default() {
+        let key = ActionKey { action: "rewrite".into(), keys: vec!["F8".into()], instruction: "  ".into() };
+        assert_eq!(key.rewrite_instruction(), DEFAULT_REWRITE);
+        let key = ActionKey { instruction: " Make it shorter ".into(), ..key };
+        assert_eq!(key.rewrite_instruction(), "Make it shorter");
+        for action in ACTION_KEY_ACTIONS {
+            assert_ne!(action_key_label(action), *action, "{action} has a name");
+        }
+        // Settings saved before action keys existed read with none.
+        let old: HotkeySettings = serde_json::from_str(r#"{"talk":["F9"],"modeKeys":[]}"#).expect("old settings");
+        assert!(old.action_keys.is_empty());
+        // Settings shows the default instruction as the box's placeholder.
+        assert!(include_str!("../../ui/js/views/settings.js").contains(DEFAULT_REWRITE), "settings.js DEFAULT_REWRITE is out of step");
+    }
 
     /// The default voice commands with some actions' phrases replaced.
     fn vc_with(changes: &[(&str, &[&str])]) -> VoiceCommandSettings {

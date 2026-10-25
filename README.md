@@ -101,7 +101,15 @@ and let go.
   cursor" off), they only work on what Navi typed in the last 15 seconds with no key pressed since,
   so your own typing is never selected over. Select text and say "Navi, scratch that" to delete it,
   "Navi, turn this into bullet points", or "Navi, what's wrong with this?" for a blunt list of its problems in a card you can
-  copy from.
+  copy from. While your AI works, the bubble says so ("AI is rewriting") with a clock.
+- **Action keys.** Give any voice edit a key of its own in Settings > Shortcuts, so it happens
+  without a word. **Ask AI** is the one to start with: select some text, press its key and say
+  what you want. "Shorten this" or "word this better" replaces the selection; a question about it
+  ("what does this paragraph commit us to?") gets an answer in a box in the middle of the screen,
+  which you click to read in full. With nothing selected you can ask it anything. **Rewrite with
+  AI** rewrites the selection in one press, the way you describe (add more rewrites, each with its
+  own key and instruction), and there are keys for scratch that, what's wrong with this, watch my
+  screen and call notes too. Ask AI and the rewrites use the AI you set up under Settings > AI.
 - **Writes like you.** British spelling and no em dashes (both on unless you turn them off), and a
   style profile that every AI rewrite follows.
 - **Six colours.** Lilac, Gold, Teal, Sky, Rose or Graphite, each in light and dark. Pick one in

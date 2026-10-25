@@ -19,7 +19,7 @@ use crate::meeting::PromptState;
 use crate::spoken::{self, Action, Matcher, TakeAction, TakeListener};
 use crate::state::{App, Kind, LastInsert, Phase, Recording};
 use crate::text::{agent, cleanup, learn, llm::Llm, modes, pipeline, ramble, voice};
-use crate::types::{AppContext, ContextSettings, EngineStatus, HotkeyEvent, Mode, ModeKind, PillState, Settings, Take, VoiceCommand};
+use crate::types::{ActionKey, AppContext, ContextSettings, EngineStatus, HotkeyEvent, Mode, ModeKind, PillState, Settings, Take, VoiceCommand};
 use crate::{audio, context, hotkey, integrations, store::secrets};
 use anyhow::{anyhow, Result};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -76,6 +76,16 @@ const CRITIQUE_DEADLINE: Duration = Duration::from_secs(120);
 /// How long a ramble waits for the AI's notes before making its own offline notes. Shortcut
 /// presses meanwhile get "Still finishing the last one", so it can't wait for ever.
 const RAMBLE_AI_DEADLINE: Duration = Duration::from_secs(90);
+/// An Ask AI take finishes this long after you stop talking (a tap of the key finishes it
+/// sooner), or after ASK_FIRST_WORDS if nothing is said at all.
+const ASK_QUIET: Duration = Duration::from_millis(2000);
+const ASK_FIRST_WORDS: Duration = Duration::from_secs(8);
+/// How long an Ask AI request waits for the AI (the model for longer jobs answers it).
+const ASK_DEADLINE: Duration = Duration::from_secs(120);
+/// What the bubble says while the AI works.
+const AI_REWRITING: &str = "AI is rewriting";
+const AI_ASKED: &str = "AI is working on it";
+const AI_WRITING: &str = "AI is writing";
 
 pub fn spawn(app: Arc<App>, mut rx: UnboundedReceiver<hotkey::HotkeyMsg>) {
     tauri::async_runtime::spawn(async move {
@@ -375,13 +385,220 @@ async fn handle(app: &Arc<App>, ev: HotkeyEvent, at: Instant) -> Result<()> {
             app.session.lock().busy_press = None;
             cancel(app, true, "the cancel key or another shortcut");
         }
-        HotkeyEvent::ModeKey(n) => {
-            if let Some(key) = settings.hotkeys.mode_keys.get(n as usize) {
+        HotkeyEvent::ExtraKey(n) => {
+            // Mode keys first, then action keys (lib.rs extra_key_chords).
+            let n = n as usize;
+            if let Some(key) = settings.hotkeys.mode_keys.get(n) {
                 switch_mode(app, &key.mode);
+            } else if let Some(key) = n.checked_sub(settings.hotkeys.mode_keys.len()).and_then(|i| settings.hotkeys.action_keys.get(i)) {
+                action_key(app, key.clone(), &settings).await?;
             }
         }
     }
     Ok(())
+}
+
+/// An action key (Settings > Shortcuts): what a voice command does, without saying it.
+async fn action_key(app: &Arc<App>, key: ActionKey, settings: &Settings) -> Result<()> {
+    let recording = matches!(&app.session.lock().phase, Phase::Recording(_));
+    match key.action.as_str() {
+        "ask" => {
+            // Pressed again while its take listens: the request is finished.
+            let asking = matches!(&app.session.lock().phase, Phase::Recording(r) if r.ask);
+            if asking {
+                return stop(app).await;
+            }
+            start_ask(app, settings).await
+        }
+        // Not over a take being recorded, whose bubble they would take over.
+        "watch" | "notes" if recording => {
+            log::info!("action key {} ignored: a take is recording", key.action);
+            Ok(())
+        }
+        "watch" | "notes" => {
+            let action = match key.action.as_str() {
+                "watch" if crate::watch::is_watching() => Action::WatchOff,
+                "watch" => Action::WatchOn,
+                _ if app.meeting.lock().is_some() => Action::NotesOff,
+                _ => Action::NotesOn,
+            };
+            log::info!("action key: {}", action.id());
+            // Starting call notes opens the call audio, which can take a moment: not here, where
+            // it would hold up the next press of the talk keys.
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = run_spoken(&app, action, "", Vec::new(), None).await {
+                    log::warn!("action key failed: {}", for_log(&e));
+                    show_error(&app, &short_error(&e));
+                }
+            });
+            Ok(())
+        }
+        "rewrite" | "scratch_that" | "critique" => {
+            if !claim_for_key(app) {
+                return Ok(());
+            }
+            app.show_pill_window(context::foreground_hwnd());
+            if key.action == "rewrite" {
+                show_working(app, AI_REWRITING);
+            }
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let result = run_key_edit(&app, &key).await;
+                {
+                    let mut s = app.session.lock();
+                    s.phase = Phase::Idle;
+                    s.working = None;
+                }
+                if let Err(e) = result {
+                    log::warn!("action key failed: {}", for_log(&e));
+                    fail(&app, &short_error(&e));
+                }
+            });
+            Ok(())
+        }
+        other => {
+            log::info!("an action key for {other:?}, which this Navi doesn't know, was ignored");
+            Ok(())
+        }
+    }
+}
+
+/// Claims the session for an action key that changes text, as a take does, so the talk keys say
+/// "Still finishing the last one" meanwhile rather than start a take that types into the middle
+/// of it. False, and nothing happens, while a take records or the last one is still being
+/// written up (which says so).
+fn claim_for_key(app: &Arc<App>) -> bool {
+    let mut s = app.session.lock();
+    match s.phase {
+        Phase::Idle if !s.starting => {
+            s.phase = Phase::Processing;
+            s.processing_mode = String::new();
+            s.working = None;
+            true
+        }
+        Phase::Processing => {
+            drop(s);
+            busy_key(app);
+            false
+        }
+        _ => {
+            log::info!("action key ignored: a take is recording");
+            false
+        }
+    }
+}
+
+/// An action key pressed while the last take or key is still being worked on: says so, then the
+/// bubble goes back to what it was showing.
+fn busy_key(app: &Arc<App>) {
+    log::info!("action key pressed while the last one is still processing");
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        app.sounds.play(Cue::Error, &app.settings().sounds);
+        let gen = app.pill(PillState::Error { message: "Still finishing the last one. Try again in a moment.".into() });
+        tokio::time::sleep(Duration::from_millis(BUSY_NOTE_MS)).await;
+        back_to_processing(&app, gen);
+    });
+}
+
+/// The rewrite, scratch that and "what's wrong" keys: on the selection, or what Navi just typed.
+async fn run_key_edit(app: &Arc<App>, key: &ActionKey) -> Result<()> {
+    let settings = app.settings();
+    // Said before anything is read or copied, so a key with no AI fails at once.
+    match key.action.as_str() {
+        "rewrite" if make_llm(&settings).is_none() => return Err(anyhow!("Rewrites need an AI. Set one up in Settings > AI.")),
+        "critique" if make_llm_long(&settings).is_none() => return Err(anyhow!("That needs an AI. Set one up in Settings > AI.")),
+        _ => {}
+    }
+    let mut rec = bare_recording(app).await;
+    rec.from_wake = false;
+    if key.action != "scratch_that" && rec.ctx.selection.is_none() {
+        rec.ctx.selection = copied_selection(&rec.ctx, &settings).await;
+    }
+    let cmd = match key.action.as_str() {
+        "scratch_that" => VoiceCommand::Undo,
+        "critique" => VoiceCommand::Critique { instruction: "What's wrong with this?".into() },
+        _ => {
+            let instruction = key.rewrite_instruction().to_string();
+            if rec.ctx.selection.is_some() {
+                VoiceCommand::Transform { instruction }
+            } else {
+                VoiceCommand::Rewrite { instruction }
+            }
+        }
+    };
+    if !command_has_target(app, &rec, &cmd) {
+        return Err(anyhow!(if key.action == "scratch_that" { "There's nothing recent to scratch here." } else { "Select some text first, then press the key." }));
+    }
+    log::info!("action key: {}", command_name(&cmd));
+    run_command(app, &rec, cmd, None, Instant::now()).await
+}
+
+/// The selection, copied to the clipboard and read (the clipboard is then put back), for a key
+/// pressed where Navi couldn't read the field (`ctx.field_text` is None; read, it would have had
+/// the selection). Never in an app under "Never read these apps", a terminal (Ctrl + C stops the
+/// program) or a code editor (there Ctrl + C with nothing selected copies the whole line, which
+/// would be taken for a selection).
+async fn copied_selection(ctx: &AppContext, settings: &Settings) -> Option<String> {
+    if !may_copy_selection(ctx, settings) {
+        return None;
+    }
+    let copied = tokio::task::spawn_blocking(insert::copy_selection).await.ok()?;
+    copied
+        .unwrap_or_else(|e| {
+            log::warn!("couldn't copy the selection: {e:#}");
+            None
+        })
+        .filter(|t| !t.trim().is_empty())
+}
+
+/// See `copied_selection`.
+fn may_copy_selection(ctx: &AppContext, settings: &Settings) -> bool {
+    ctx.field_text.is_none()
+        && ctx.hwnd != 0
+        && !ctx.process_name.trim().is_empty()
+        && !matches!(ctx.category.as_str(), "terminal" | "editor")
+        && !context::is_excluded(&ctx.process_name, &settings.context.excluded_apps)
+}
+
+/// Says in the bubble that the AI is working ("AI is rewriting"), with a clock, so a wait of
+/// several seconds reads as work going on rather than nothing happening.
+fn show_working(app: &Arc<App>, message: &str) {
+    app.session.lock().working = Some(message.to_string());
+    app.pill(PillState::Working { message: message.to_string() });
+}
+
+/// Puts the bubble back to what it showed while the last take or key was being worked on, after a
+/// note (`gen`), unless that has finished or something newer is in the bubble.
+fn back_to_processing(app: &Arc<App>, gen: u64) {
+    let (still, working, mode_name) = {
+        let s = app.session.lock();
+        (matches!(s.phase, Phase::Processing), s.working.clone(), s.processing_mode.clone())
+    };
+    if still && app.pill_gen.load(Ordering::SeqCst) == gen {
+        app.pill(match working {
+            Some(message) => PillState::Working { message },
+            None => PillState::Processing { mode_name },
+        });
+    }
+}
+
+/// An error in the bubble that leaves any take alone (`fail` ends the processing phase).
+fn show_error(app: &Arc<App>, message: &str) {
+    app.sounds.play(Cue::Error, &app.settings().sounds);
+    app.show_pill_window(context::foreground_hwnd());
+    let gen = app.pill(PillState::Error { message: message.to_string() });
+    app.hide_pill_later(gen, read_ms(message, 3000));
+}
+
+/// The bubble while take `rec` records. An Ask AI take says so where the mode would be.
+fn listening(rec: &Recording) -> PillState {
+    if rec.ask {
+        return PillState::Listening { kind: "ask".into(), mode_name: "Ask AI".into(), app_label: rec.ctx.app_label.clone() };
+    }
+    let mode_name = if rec.kind == Kind::Ramble { "Notes".to_string() } else { rec.mode.name.clone() };
+    PillState::Listening { kind: rec.kind.as_str().into(), mode_name, app_label: rec.ctx.app_label.clone() }
 }
 
 /// Makes `target` the active mode ("auto", "next" or a mode id), saves it, ticks it in the tray
@@ -425,7 +642,7 @@ pub fn switch_mode(app: &Arc<App>, target: &str) {
             Phase::Recording(rec) if rec.kind != Kind::Ramble => {
                 rec.mode = all.iter().find(|m| m.id == next_id).cloned().unwrap_or_else(|| modes::pick_mode(&all, &rec.ctx, &next, None));
                 if rec.announced {
-                    app.pill(PillState::Listening { kind: rec.kind.as_str().into(), mode_name: rec.mode.name.clone(), app_label: rec.ctx.app_label.clone() });
+                    app.pill(listening(rec));
                 }
                 true
             }
@@ -520,6 +737,7 @@ async fn start(app: &Arc<App>, settings: &Settings, pressed: Instant) -> Result<
             ocr,
             from_wake: false,
             preroll_ms: 0,
+            ask: false,
         });
         seq
     };
@@ -611,6 +829,7 @@ pub async fn start_from_wake(app: &Arc<App>, preroll: Vec<f32>) -> Result<Option
             ocr,
             from_wake: true,
             preroll_ms,
+            ask: false,
         });
         if let Some(h) = app.hotkeys.lock().as_ref() {
             h.set_recording(true);
@@ -620,13 +839,117 @@ pub async fn start_from_wake(app: &Arc<App>, preroll: Vec<f32>) -> Result<Option
     };
     app.reveal_pill_window(hwnd);
     crate::media::hold(app, seq);
-    spawn_wake_finish(app.clone(), seq, preroll.len());
+    spawn_quiet_finish(app.clone(), seq, preroll.len(), Quiet { before_speech: WAKE_QUIET, after_speech: WAKE_QUIET, what: "wake word take" });
     spawn_mic_watch(app.clone(), seq);
     Ok(Some(seq))
 }
 
-/// Finishes a wake word take once you have been quiet for WAKE_QUIET.
-fn spawn_wake_finish(app: Arc<App>, seq: u64, from: usize) {
+/// The Ask AI key (Settings > Shortcuts): listens for what you want done to the selection, or a
+/// question when nothing is selected. Like a "Navi" take, the sound and the bubble come at once
+/// and it finishes by itself when you stop talking, or with a tap of the key or the talk keys;
+/// Esc cancels it. The caller has checked no take is recording.
+async fn start_ask(app: &Arc<App>, settings: &Settings) -> Result<()> {
+    {
+        let mut s = app.session.lock();
+        match s.phase {
+            Phase::Idle if !s.starting => s.starting = true,
+            Phase::Processing => {
+                drop(s);
+                busy_key(app);
+                return Ok(());
+            }
+            _ => return Ok(()),
+        }
+    }
+    if make_llm_long(settings).is_none() {
+        app.session.lock().starting = false;
+        return Err(anyhow!("Ask AI needs an AI. Set one up in Settings > AI."));
+    }
+    if app.mic_test.swap(false, Ordering::SeqCst) {
+        app.audio.cancel();
+        app.emit("mic-test", false);
+    }
+    app.sounds.play(Cue::Talk, &settings.sounds);
+    app.pill(PillState::Listening { kind: "ask".into(), mode_name: "Ask AI".into(), app_label: String::new() });
+    app.reveal_pill_window(context::foreground_hwnd());
+    if let Err(e) = app.audio.start(settings.mic.device.as_deref()) {
+        app.session.lock().starting = false;
+        return Err(e);
+    }
+    let started = Instant::now();
+    let ctx_settings = settings.context.clone();
+    let mut ctx = tokio::task::spawn_blocking(move || context::capture(&ctx_settings)).await.unwrap_or_default();
+    if ctx.selection.is_none() {
+        ctx.selection = copied_selection(&ctx, settings).await;
+    }
+    let all = all_modes(app);
+    let active = settings.modes.active.trim();
+    let mode = modes::pick_mode(&all, &ctx, settings, (!active.is_empty()).then_some(active));
+    let hwnd = ctx.hwnd;
+    log::info!(
+        "Ask AI take started in {} ({})",
+        if ctx.app_label.is_empty() { "an unknown app" } else { ctx.app_label.as_str() },
+        if ctx.selection.is_some() { "with a selection" } else { "nothing selected" }
+    );
+    // The start sound played before the microphone opened; trim what of it the microphone caught.
+    let cue_ms = if settings.sounds.enabled { app.sounds.duration_ms(Cue::Talk, &settings.sounds).min(CUE_TRIM_MAX_MS) } else { 0 };
+    let seq = {
+        let mut s = app.session.lock();
+        s.starting = false;
+        if !matches!(s.phase, Phase::Idle) {
+            return Ok(());
+        }
+        s.take_seq += 1;
+        let seq = s.take_seq;
+        let rec = Recording {
+            kind: Kind::HandsFree,
+            seq,
+            pressed: started,
+            started,
+            ctx,
+            mode,
+            announced: true,
+            cue_at_ms: 0,
+            cue_ms,
+            cue_word: None,
+            pending_tap: None,
+            tap_up_at: None,
+            ramble_cue: None,
+            ramble_started: None,
+            ocr: None,
+            from_wake: false,
+            preroll_ms: 0,
+            ask: true,
+        };
+        app.pill(listening(&rec));
+        s.phase = Phase::Recording(rec);
+        if let Some(h) = app.hotkeys.lock().as_ref() {
+            h.set_recording(true);
+            h.set_enter_finishes(settings.hotkeys.enter_finishes);
+        }
+        seq
+    };
+    app.reveal_pill_window(hwnd);
+    crate::media::hold(app, seq);
+    // Listened to from after the start sound, which the microphone may pick up as speech.
+    let from = (app.sounds.duration_ms(Cue::Talk, &settings.sounds) as usize).max(300) * (audio::SAMPLE_RATE as usize) / 1000;
+    spawn_quiet_finish(app.clone(), seq, from, Quiet { before_speech: ASK_FIRST_WORDS, after_speech: ASK_QUIET, what: "Ask AI take" });
+    spawn_mic_watch(app.clone(), seq);
+    spawn_take_listener(app.clone(), seq, None);
+    Ok(())
+}
+
+/// How long a take that finishes by itself waits: `before_speech` while nothing has been said,
+/// `after_speech` once something has. `what` names the take for the log.
+struct Quiet {
+    before_speech: Duration,
+    after_speech: Duration,
+    what: &'static str,
+}
+
+/// Finishes hands-free take `seq` once you have been quiet long enough (`quiet`), listening from
+/// 16 kHz sample `from` on: a wake word take, or an Ask AI take.
+fn spawn_quiet_finish(app: Arc<App>, seq: u64, from: usize, quiet: Quiet) {
     tauri::async_runtime::spawn(async move {
         let begun = Instant::now();
         let mut looked = from;
@@ -642,10 +965,10 @@ fn spawn_wake_finish(app: Arc<App>, seq: u64, from: usize) {
             if speech_seconds(&new) >= 0.06 {
                 last_voice = Some(Instant::now());
             }
-            let quiet = last_voice.unwrap_or(begun).elapsed();
+            let limit = if last_voice.is_some() { quiet.after_speech } else { quiet.before_speech };
             let too_long = begun.elapsed() >= WAKE_MAX;
-            if quiet >= WAKE_QUIET || too_long {
-                log::info!("wake word take finished: {}", if too_long { "two minutes is the most" } else { "you stopped talking" });
+            if last_voice.unwrap_or(begun).elapsed() >= limit || too_long {
+                log::info!("{} finished: {}", quiet.what, if too_long { "two minutes is the most" } else { "you stopped talking" });
                 if let Err(e) = stop(&app).await {
                     fail(&app, &short_error(&e));
                 }
@@ -686,7 +1009,7 @@ fn announce_locked(app: &Arc<App>, rec: &mut Recording, settings: &Settings) -> 
     rec.cue_ms = cue_ms;
     rec.cue_word = None;
     app.sounds.play(Cue::Talk, &settings.sounds);
-    app.pill(PillState::Listening { kind: rec.kind.as_str().into(), mode_name: rec.mode.name.clone(), app_label: rec.ctx.app_label.clone() });
+    app.pill(listening(rec));
     // Pause or mute other apps' sound until this take stops recording (Settings > Sound).
     crate::media::hold(app, rec.seq);
     rec.ctx.hwnd
@@ -768,7 +1091,13 @@ pub async fn stop_take(app: &Arc<App>, only: Option<u64>, cut: Option<usize>) ->
         }
         match std::mem::replace(&mut s.phase, Phase::Processing) {
             Phase::Recording(r) => {
-                let mode_name = if r.kind == Kind::Ramble { "Notes".to_string() } else { r.mode.name.clone() };
+                let mode_name = if r.kind == Kind::Ramble {
+                    "Notes".to_string()
+                } else if r.ask {
+                    "Ask AI".to_string()
+                } else {
+                    r.mode.name.clone()
+                };
                 s.processing_mode = mode_name.clone();
                 (r, mode_name)
             }
@@ -829,7 +1158,11 @@ pub async fn stop_take(app: &Arc<App>, only: Option<u64>, cut: Option<usize>) ->
             let gen = app2.pill(PillState::Error { message });
             app2.hide_pill_later(gen, hold);
         }
-        app2.session.lock().phase = Phase::Idle;
+        {
+            let mut s = app2.session.lock();
+            s.phase = Phase::Idle;
+            s.working = None;
+        }
         if let Err(e) = result {
             log::warn!("processing failed: {}", for_log(&e));
             fail(&app2, &short_error(&e));
@@ -1042,8 +1375,7 @@ fn restore_listening(app: &Arc<App>, seq: u64, gen: u64) {
     if rec.seq != seq || app.pill_gen.load(Ordering::SeqCst) != gen {
         return;
     }
-    let mode_name = if rec.kind == Kind::Ramble { "Notes".to_string() } else { rec.mode.name.clone() };
-    app.pill(PillState::Listening { kind: rec.kind.as_str().into(), mode_name, app_label: rec.ctx.app_label.clone() });
+    app.pill(listening(rec));
 }
 
 /// "Don't worry": drops take `seq` like Esc, with the cancel sound and a short "Cancelled" note.
@@ -1134,6 +1466,7 @@ async fn bare_recording(app: &Arc<App>) -> Recording {
         ocr: None,
         from_wake: true,
         preroll_ms: 0,
+        ask: false,
     }
 }
 
@@ -1200,7 +1533,7 @@ pub async fn run_spoken(app: &Arc<App>, action: Action, heard: &str, audio: Vec<
                     bare_recording(app).await
                 }
             };
-            run_command(app, &rec, VoiceCommand::Undo, heard, &audio, Instant::now()).await?;
+            run_command(app, &rec, VoiceCommand::Undo, Some((heard, &audio)), Instant::now()).await?;
         }
         Action::Colour(id) => {
             // Saved, and every window and the tray icon change at once. Nothing is typed.
@@ -1250,22 +1583,18 @@ fn busy_note(app: &Arc<App>, settings: &Settings, pressed: Instant) {
     let (app, settings) = (app.clone(), settings.clone());
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(wait).await;
-        let mode_name = {
+        {
             let mut s = app.session.lock();
             if s.busy_press != Some(pressed) || !matches!(s.phase, Phase::Processing) {
                 return;
             }
             s.busy_press = None;
-            s.processing_mode.clone()
-        };
+        }
         log::info!("talk keys held while the last take is still processing");
         app.sounds.play(Cue::Error, &settings.sounds);
         let gen = app.pill(PillState::Error { message: "Still finishing the last one. Try again in a moment.".into() });
         tokio::time::sleep(Duration::from_millis(BUSY_NOTE_MS)).await;
-        let still = matches!(app.session.lock().phase, Phase::Processing);
-        if still && app.pill_gen.load(Ordering::SeqCst) == gen {
-            app.pill(PillState::Processing { mode_name });
-        }
+        back_to_processing(&app, gen);
     });
 }
 
@@ -1570,6 +1899,9 @@ async fn process_take(app: &Arc<App>, mut rec: Recording, mut samples: Vec<f32>,
         app.hide_pill_later(gen, 2200);
         return Ok(());
     }
+    if rec.ask {
+        return run_ask(app, &rec, &raw, &full_audio, released).await;
+    }
 
     // Voice commands: the cancel phrase, a command after the wake word (the backstop when the
     // take's listener missed it, and how "Navi, take notes" works from the shortcut), and the
@@ -1612,7 +1944,7 @@ async fn process_take(app: &Arc<App>, mut rec: Recording, mut samples: Vec<f32>,
             // After the wake word a rewrite may really have been the next line of dictation, so
             // if it fails the words go on the clipboard rather than only into History.
             let words_matter = rec.from_wake && matches!(cmd, VoiceCommand::Rewrite { .. } | VoiceCommand::Replace { .. });
-            match run_command(app, &rec, cmd, &raw, &full_audio, released).await {
+            match run_command(app, &rec, cmd, Some((&raw, &full_audio)), released).await {
                 Ok(()) => return Ok(()),
                 // A command that fails (no AI, nothing to scratch, the AI didn't answer) says why
                 // and types nothing: the command words would land in the text, or over the
@@ -1658,6 +1990,9 @@ async fn process_take(app: &Arc<App>, mut rec: Recording, mut samples: Vec<f32>,
     let words = app.db.list_words().unwrap_or_default();
     let snippets = app.db.list_snippets().unwrap_or_default();
     let llm = if rec.mode.use_ai { make_llm(&settings) } else { None };
+    if pipeline::uses_ai(&rec.mode, llm.as_ref()) {
+        show_working(app, AI_WRITING);
+    }
     let files = if rec.mode.kind == ModeKind::Prompt { project_files(app, &rec.ctx, &settings, &raw).await } else { Vec::new() };
     let out = match pipeline::run(pipeline::PipelineInput {
         raw: &raw,
@@ -1845,7 +2180,9 @@ fn spawn_critique(app: Arc<App>, llm: Llm, instruction: String, text: String, se
     });
 }
 
-async fn run_command(app: &Arc<App>, rec: &Recording, cmd: VoiceCommand, raw: &str, audio: &[f32], released: Instant) -> Result<()> {
+/// Carries out `cmd` on take `rec`. `heard`: what was said and its recording, for History; None
+/// for an action key, where nothing was said and nothing goes in History.
+async fn run_command(app: &Arc<App>, rec: &Recording, cmd: VoiceCommand, heard: Option<(&str, &[f32])>, released: Instant) -> Result<()> {
     let settings = app.settings();
     let last = app.last_insert.lock().clone();
     let fresh = last.as_ref().filter(|l| l.at.elapsed() < Duration::from_secs(600) && l.hwnd == rec.ctx.hwnd);
@@ -1888,6 +2225,7 @@ async fn run_command(app: &Arc<App>, rec: &Recording, cmd: VoiceCommand, raw: &s
                 let llm = make_llm(&settings).ok_or_else(|| said_error(format!("Couldn't find \"{from}\" in what you just said."), "the words to change weren't found and there is no AI to look"))?;
                 let VoiceCommand::Rewrite { instruction } = voice::replace_as_rewrite(from, to) else { unreachable!() };
                 let (sys, user) = voice::rewrite_messages(&instruction, &l.text, &settings);
+                show_working(app, AI_REWRITING);
                 new_text = finish_text(&ai_edit(&llm, &sys, &user, 1200, 0.2).await?, &l.text, &settings)?;
             }
             replace_last(app, l, new_text.clone(), &settings).await?;
@@ -1899,6 +2237,7 @@ async fn run_command(app: &Arc<App>, rec: &Recording, cmd: VoiceCommand, raw: &s
             insert_at_caret(rec, l)?;
             let llm = make_llm(&settings).ok_or_else(|| anyhow!("Rewrites need an AI provider. Turn one on in Settings."))?;
             let (sys, user) = voice::rewrite_messages(instruction, &l.text, &settings);
+            show_working(app, AI_REWRITING);
             let new_text = finish_text(&ai_edit(&llm, &sys, &user, 1200, 0.3).await?, &l.text, &settings)?;
             replace_last(app, l, new_text.clone(), &settings).await?;
             final_text = new_text;
@@ -1929,39 +2268,100 @@ async fn run_command(app: &Arc<App>, rec: &Recording, cmd: VoiceCommand, raw: &s
             let selection = rec.ctx.selection.clone().ok_or_else(|| anyhow!("Select some text first."))?;
             let llm = make_llm(&settings).ok_or_else(|| anyhow!("That needs an AI provider. Turn one on in Settings."))?;
             let (sys, user) = voice::rewrite_messages(instruction, &selection, &settings);
+            show_working(app, AI_REWRITING);
             let new_text = finish_text(&ai_edit(&llm, &sys, &user, 1600, 0.3).await?, &selection, &settings)?;
-            let t = new_text.clone();
-            let method = settings.general.paste_method.clone();
-            let restore = settings.general.restore_clipboard;
-            let outcome = tokio::task::spawn_blocking(move || insert::insert_text(&t, &method, restore)).await.map_err(|e| anyhow!("{e}"))??;
-            if let InsertOutcome::ClipboardOnly(reason) = outcome {
-                // Nothing (or only part) went in, so the window no longer matches any last insert.
-                *app.last_insert.lock() = None;
-                return Err(anyhow!(reason));
-            }
-            new_insert = Some(LastInsert {
-                hwnd: rec.ctx.hwnd,
-                text: new_text.clone(),
-                take_id: String::new(),
-                app_label: rec.ctx.app_label.clone(),
-                at: Instant::now(),
-                // The AI wrote this, nobody said it: no misheard words to learn from.
-                checked: true,
-                replaced: Some(selection),
-            });
+            new_insert = Some(paste_over_selection(app, rec, &new_text, selection, &settings).await?);
             final_text = new_text;
             summary = "Done".into();
         }
     }
     let latency = released.elapsed().as_millis() as u64;
-    let take = save_take(app, &settings, rec, raw, &final_text, audio, latency, "command", "command", serde_json::json!({ "command": cmd }));
+    let take_id = match heard {
+        Some((raw, audio)) => save_take(app, &settings, rec, raw, &final_text, audio, latency, "command", "command", serde_json::json!({ "command": cmd })).id,
+        None => String::new(),
+    };
     if let Some(mut l) = new_insert {
-        l.take_id = take.id;
+        l.take_id = take_id;
         *app.last_insert.lock() = Some(l);
     }
     app.sounds.play(Cue::Done, &settings.sounds);
     let gen = app.pill(PillState::Done { preview: summary, outcome: "command".into() });
     app.hide_pill_later(gen, 1300);
+    Ok(())
+}
+
+/// Pastes `new_text` over the selection (`selection`, read when take `rec` began) and returns the
+/// last insert it makes, so "scratch that" can put the selection back. If you have moved to
+/// another window while the AI worked, nothing is pasted: the text goes on the clipboard instead.
+async fn paste_over_selection(app: &Arc<App>, rec: &Recording, new_text: &str, selection: String, settings: &Settings) -> Result<LastInsert> {
+    if context::foreground_hwnd() != rec.ctx.hwnd {
+        *app.last_insert.lock() = None;
+        insert::set_clipboard_text(new_text)?;
+        return Err(anyhow!("You've moved to another window, so the new text is on your clipboard."));
+    }
+    let t = new_text.to_string();
+    let method = settings.general.paste_method.clone();
+    let restore = settings.general.restore_clipboard;
+    let outcome = tokio::task::spawn_blocking(move || insert::insert_text(&t, &method, restore)).await.map_err(|e| anyhow!("{e}"))??;
+    if let InsertOutcome::ClipboardOnly(reason) = outcome {
+        // Nothing (or only part) went in, so the window no longer matches any last insert.
+        *app.last_insert.lock() = None;
+        return Err(anyhow!(reason));
+    }
+    Ok(LastInsert {
+        hwnd: rec.ctx.hwnd,
+        text: new_text.to_string(),
+        take_id: String::new(),
+        app_label: rec.ctx.app_label.clone(),
+        at: Instant::now(),
+        // The AI wrote this, nobody said it: no misheard words to learn from.
+        checked: true,
+        replaced: Some(selection),
+    })
+}
+
+/// What was said into an Ask AI take (`request`): the AI either changes the selection, pasted over
+/// it (so "scratch that" puts it back), or answers, in a card in the middle of the screen. With
+/// nothing selected it always answers. Both go in History with the recording.
+async fn run_ask(app: &Arc<App>, rec: &Recording, request: &str, audio: &[f32], released: Instant) -> Result<()> {
+    let settings = app.settings();
+    let request = request.trim();
+    let llm = make_llm_long(&settings).ok_or_else(|| anyhow!("Ask AI needs an AI. Set one up in Settings > AI."))?;
+    let selection = rec.ctx.selection.clone().filter(|s| !s.trim().is_empty());
+    show_working(app, AI_ASKED);
+    let (system, user) = voice::ask_messages(request, selection.as_deref(), &settings);
+    let reply = tokio::time::timeout(ASK_DEADLINE, llm.complete(&system, &user, 3000, 0.3)).await.map_err(|_| anyhow!("{} took too long to answer.", llm.display_name()))??;
+    let latency = released.elapsed().as_millis() as u64;
+    match (voice::read_ask_reply(&reply), selection) {
+        (voice::AskReply::Edit(text), Some(selection)) => {
+            let new_text = finish_text(&text, &selection, &settings)?;
+            let mut last = paste_over_selection(app, rec, &new_text, selection, &settings).await?;
+            log::info!("Ask AI: changed the selection in {latency} ms");
+            last.take_id = save_take(app, &settings, rec, request, &new_text, audio, latency, "command", "command", serde_json::json!({ "ask": "edit" })).id;
+            *app.last_insert.lock() = Some(last);
+            app.sounds.play(Cue::Done, &settings.sounds);
+            let gen = app.pill(PillState::Done { preview: "Done".into(), outcome: "command".into() });
+            app.hide_pill_later(gen, 1300);
+        }
+        // An answer, or an edit with nothing to edit (the AI was told it can only answer then).
+        (voice::AskReply::Answer(body) | voice::AskReply::Edit(body), _) => {
+            let mut body = body.trim().to_string();
+            if body.is_empty() {
+                return Err(anyhow!("{} sent back an empty answer.", llm.display_name()));
+            }
+            if settings.writing.no_em_dashes {
+                body = cleanup::no_em_dashes(&body);
+            }
+            if settings.writing.british {
+                body = crate::text::britishise::britishise(&body);
+            }
+            log::info!("Ask AI: answered in {latency} ms");
+            save_take(app, &settings, rec, request, &body, audio, latency, "answer", "command", serde_json::json!({ "ask": "answer" }));
+            app.sounds.play(Cue::Done, &settings.sounds);
+            app.pill(PillState::Hidden);
+            crate::meeting::show_prompt(app, crate::meeting::PromptState::Reply { question: capitalise_first(request), body, expanded: false });
+        }
+    }
     Ok(())
 }
 
@@ -2462,6 +2862,22 @@ fn reworded(e: &anyhow::Error, message: String) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An action key copies the selection only where Navi couldn't read the field, and where
+    /// copying is safe: never a terminal (Ctrl + C stops the program) or a code editor (with
+    /// nothing selected it copies the whole line, which would be taken for a selection).
+    #[test]
+    fn a_selection_is_copied_only_where_it_could_not_be_read_and_copying_is_safe() {
+        let s = Settings::default();
+        let ctx = |category: &str, process: &str, field: Option<&str>| AppContext { hwnd: 1, category: category.into(), process_name: process.into(), field_text: field.map(Into::into), ..Default::default() };
+        assert!(may_copy_selection(&ctx("chat", "WhatsApp.exe", None), &s));
+        assert!(!may_copy_selection(&ctx("chat", "WhatsApp.exe", Some("Hi Sam")), &s), "read, it would have had the selection");
+        assert!(!may_copy_selection(&ctx("terminal", "WindowsTerminal.exe", None), &s));
+        assert!(!may_copy_selection(&ctx("editor", "Code.exe", None), &s));
+        assert!(!may_copy_selection(&ctx("other", "1Password.exe", None), &s), "never read");
+        assert!(!may_copy_selection(&ctx("chat", "", None), &s), "an unknown app");
+        assert!(!may_copy_selection(&AppContext { hwnd: 0, ..ctx("chat", "WhatsApp.exe", None) }, &s), "no window");
+    }
 
     /// Tom selected a sentence and said "Navi, scratch that": Navi said the text had changed, as
     /// selecting had moved the caret. Over a selection, "scratch that" now deletes the selection.

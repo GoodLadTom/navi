@@ -78,9 +78,9 @@ pub async fn save_settings(app: State<'_, Arc<App>>, settings: Settings) -> Res<
         log::info!("talk shortcut is now {}", hotkey::display_chord_label(&settings.hotkeys.talk));
         crate::set_tray_tooltip(&app);
     }
-    if before.hotkeys.mode_keys != settings.hotkeys.mode_keys {
+    if before.hotkeys.mode_keys != settings.hotkeys.mode_keys || before.hotkeys.action_keys != settings.hotkeys.action_keys {
         if let Some(h) = app.hotkeys.lock().as_ref() {
-            h.set_extras(&crate::mode_key_chords(&settings));
+            h.set_extras(&crate::extra_key_chords(&settings));
         }
     }
     if before.modes.active != settings.modes.active {
@@ -397,7 +397,42 @@ pub fn check_shortcut(app: State<'_, Arc<App>>, keys: Vec<String>) -> hotkey::Ch
 pub fn check_mode_key(app: State<'_, Arc<App>>, keys: Vec<String>, mode: String, others: Option<Vec<Vec<String>>>) -> hotkey::ChordCheck {
     let s = app.settings();
     let others: Vec<Vec<String>> = others.unwrap_or_else(|| s.hotkeys.mode_keys.iter().filter(|k| k.mode != mode).map(|k| k.keys.clone()).collect());
-    hotkey::check_mode_key(&keys, &s.hotkeys.talk, &others, &hotkey::display_label)
+    let mut check = hotkey::check_mode_key(&keys, &s.hotkeys.talk, &others, &hotkey::display_label);
+    if check.error.is_none() {
+        // Nor may it be one of the action keys.
+        let actions = action_keys_taken(&s, None);
+        check = hotkey::check_action_key(&keys, &s.hotkeys.talk, &actions, &hotkey::display_label);
+    }
+    check
+}
+
+/// The same for an action key. `index`: its place in HotkeySettings::action_keys when it is
+/// already there (being changed), so its own current key is not a clash.
+#[tauri::command]
+pub fn check_action_key(app: State<'_, Arc<App>>, keys: Vec<String>, index: Option<usize>) -> hotkey::ChordCheck {
+    let s = app.settings();
+    let mut taken = action_keys_taken(&s, index);
+    let modes = crate::controller::all_modes(&app);
+    for k in &s.hotkeys.mode_keys {
+        let name = match k.mode.as_str() {
+            "auto" => "Auto".to_string(),
+            "next" => "the next mode".to_string(),
+            id => modes.iter().find(|m| m.id == id).map_or_else(|| id.to_string(), |m| m.name.clone()),
+        };
+        taken.push((k.keys.clone(), format!("switching to {name}")));
+    }
+    hotkey::check_action_key(&keys, &s.hotkeys.talk, &taken, &hotkey::display_label)
+}
+
+/// The action keys already set, each with what it does, leaving out the one at `skip`.
+fn action_keys_taken(s: &crate::types::Settings, skip: Option<usize>) -> Vec<(Vec<String>, String)> {
+    s.hotkeys
+        .action_keys
+        .iter()
+        .enumerate()
+        .filter(|(i, k)| Some(*i) != skip && !k.keys.is_empty())
+        .map(|(_, k)| (k.keys.clone(), crate::types::action_key_label(&k.action).to_string()))
+        .collect()
 }
 
 #[derive(Serialize, Clone)]
@@ -1217,6 +1252,12 @@ pub fn stop_watch(app: State<'_, Arc<App>>) -> Res<()> {
 #[tauri::command]
 pub fn prompt_state() -> PromptState {
     meeting::prompt_state()
+}
+
+/// The answer in the middle of the screen was clicked: show all of it.
+#[tauri::command]
+pub fn expand_reply(app: State<'_, Arc<App>>) {
+    crate::meeting::expand_reply(&app);
 }
 
 #[tauri::command]

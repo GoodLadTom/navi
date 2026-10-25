@@ -136,7 +136,7 @@ export async function render(root, { arg, store, go }) {
     detail.append(tabs, body);
     show(views[0][0]);
 
-    const statusLabel = { pasted: 'Pasted', typed: 'Typed', clipboard: 'On the clipboard', notes: 'Saved as notes', command: 'Voice edit', spoken: 'Read aloud', cancelled: 'Cancelled', error: 'Failed', rerun: 'Re-run from History' };
+    const statusLabel = { pasted: 'Pasted', typed: 'Typed', clipboard: 'On the clipboard', notes: 'Saved as notes', command: 'Voice edit', answer: 'Answered by your AI', spoken: 'Read aloud', cancelled: 'Cancelled', error: 'Failed', rerun: 'Re-run from History' };
     detail.append(h('div', { class: 'kv' },
       h('div', {}, h('span', { class: 'eyebrow' }, 'Mode'), h('b', {}, t.kind === 'ramble' ? 'Notes' : modeName(t.modeId))),
       h('div', {}, h('span', { class: 'eyebrow' }, 'Length'), h('b', {}, `${fmtDuration(t.durationMs)} · ${t.words} words`)),

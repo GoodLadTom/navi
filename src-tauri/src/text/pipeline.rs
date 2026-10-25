@@ -60,6 +60,17 @@ const AI_DEADLINE: Duration = Duration::from_secs(25);
 /// Most candidate files shown to the AI in Prompt mode.
 const MAX_PROMPT_FILES: usize = 60;
 
+/// Whether `run` asks the AI (`llm`) to write `mode`'s text, so the bubble can say so while it
+/// waits: the mode allows AI and is Clean, Rewrite or Prompt, except Clean with a subscription
+/// tool, which takes seconds a call (worth it for a rewrite, not for Clean's light polish).
+pub fn uses_ai(mode: &Mode, llm: Option<&Llm>) -> bool {
+    let wants_ai = mode.use_ai && matches!(mode.kind, ModeKind::Clean | ModeKind::Rewrite | ModeKind::Prompt);
+    match llm {
+        Some(llm) => wants_ai && !(mode.kind == ModeKind::Clean && llm.is_slow()),
+        None => false,
+    }
+}
+
 pub async fn run(input: PipelineInput<'_>) -> Result<PipelineOutput> {
     let s = input.settings;
     let mut warnings = Vec::new();
@@ -84,10 +95,7 @@ pub async fn run(input: PipelineInput<'_>) -> Result<PipelineOutput> {
     // 4 and 5. Optional AI step with a guard.
     let mut out = offline.clone();
     let mut used_ai = false;
-    let wants_ai = input.mode.use_ai && matches!(input.mode.kind, ModeKind::Clean | ModeKind::Rewrite | ModeKind::Prompt);
-    // A subscription tool takes seconds a call: worth it for a rewrite, not for Clean's light polish.
-    let wants_ai = wants_ai && !(input.mode.kind == ModeKind::Clean && input.llm.is_some_and(|l| l.is_slow()));
-    if let (Some(llm), true) = (input.llm, wants_ai) {
+    if let (Some(llm), true) = (input.llm, uses_ai(input.mode, input.llm)) {
         if !offline.trim().is_empty() {
             let files = if input.mode.kind == ModeKind::Prompt { prompt_files(&offline, input.project_files) } else { Vec::new() };
             let (system, user) = modes::build_messages(input.mode, &offline, input.ctx, s, &terms, &files);
@@ -322,6 +330,20 @@ mod tests {
 
     fn mode(id: &str) -> Mode {
         modes::builtin_modes().into_iter().find(|m| m.id == id).expect("mode")
+    }
+
+    /// The bubble says "AI is writing" exactly when the pipeline asks the AI.
+    #[test]
+    fn the_bubble_knows_when_the_ai_writes() {
+        let llm = custom_llm("http://127.0.0.1:9");
+        let mut clean = mode("clean");
+        assert!(!uses_ai(&clean, Some(&llm)), "Clean ships offline");
+        clean.use_ai = true;
+        assert!(uses_ai(&clean, Some(&llm)));
+        assert!(!uses_ai(&clean, None), "no AI set up");
+        assert!(!uses_ai(&mode("raw"), Some(&llm)));
+        let cli = Llm::from_settings(&AiSettings { provider: "claude-code".into(), ..Default::default() }, None, false).expect("Claude Code");
+        assert!(!uses_ai(&clean, Some(&cli)), "Clean's light polish skips a slow tool");
     }
 
     fn entry(term: &str, sounds: &[&str]) -> DictEntry {

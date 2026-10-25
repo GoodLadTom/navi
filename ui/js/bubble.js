@@ -1,5 +1,5 @@
 // The Navi bubble as a reusable view: the overlay window and the home-page demo both use it.
-// States: hidden, listening, handsFree, ramble, processing, done, error, learned, notice.
+// States: hidden, listening, handsFree, ramble, processing, working, done, error, learned, notice.
 import { icon } from './icons.js';
 import { createFirefly, FireflyRoam } from './firefly.js';
 
@@ -68,8 +68,10 @@ export class BubbleView {
     const wasHidden = this.state === 'hidden';
     this.el.classList.remove('hidden', 'popout');
     let kind = s;
-    if (s === 'listening') kind = p.kind === 'ramble' ? 'ramble' : p.kind === 'handsFree' ? 'handsFree' : 'listening';
+    // An Ask AI take (the Ask AI key) looks hands-free, with the spark for the lock.
+    if (s === 'listening') kind = p.kind === 'ramble' ? 'ramble' : p.kind === 'handsFree' || p.kind === 'ask' ? 'handsFree' : 'listening';
     this.el.dataset.state = kind;
+    this.el.dataset.ask = String(s === 'listening' && p.kind === 'ask');
     const isListening = kind === 'listening' || kind === 'handsFree' || kind === 'ramble';
     if (isListening && this.fireflyOn) {
       this.firefly.classList.toggle('ramble', kind === 'ramble');
@@ -85,8 +87,9 @@ export class BubbleView {
     if (kind === 'listening' || kind === 'handsFree' || kind === 'ramble') {
       chip.textContent = p.modeName || 'Clean';
       chip.style.display = '';
-      // Hands-free and rambles carry on after you let go, so say how to finish them.
-      label.textContent = kind === 'listening' ? '' : 'Tap keys to finish';
+      // Hands-free and rambles carry on after you let go, so say how to finish them. An Ask AI
+      // take finishes by itself when you stop talking.
+      label.textContent = kind === 'listening' ? '' : p.kind === 'ask' ? 'Say what you want' : 'Tap keys to finish';
       if (this.state !== 'listening' && this.state !== 'handsFree' && this.state !== 'ramble') {
         this.started = performance.now();
         this.levels.fill(0);
@@ -94,6 +97,16 @@ export class BubbleView {
       }
       this.startTimer();
       this.startDraw();
+    } else if (kind === 'working') {
+      // The AI at work ("AI is rewriting"), with a clock counting up so a long wait reads as work.
+      label.textContent = p.message || 'AI is working on it';
+      chip.style.display = 'none';
+      if (this.state !== 'working') {
+        this.stopTimer();
+        this.started = performance.now();
+      }
+      this.startTimer();
+      this.stopDraw();
     } else {
       this.stopTimer();
     }
@@ -165,6 +178,10 @@ export class BubbleView {
     if (kind === 'processing') {
       const chip = this.$('.b-chip');
       w = 120 + (chip.style.display === 'none' ? 0 : chipWidth() + 4);
+    }
+    if (kind === 'working') {
+      // padding + spark + label + dots + timer + gaps.
+      w = 15 + 15 + 10 + Math.ceil(this.$('.b-label').scrollWidth) + 10 + 34 + 10 + 32 + 12;
     }
     if (w) this.el.style.width = `${w}px`;
     if (kind === 'ramble') requestAnimationFrame(() => this.sizeCanvas());

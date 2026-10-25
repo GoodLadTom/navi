@@ -93,11 +93,33 @@ and their mode keys go (`forget_missing_modes`). A Prompt mode the user edited b
 ChatGPT joined its list gets them once (`store::modes::add_new_prompt_apps`, marked done in
 `meta`).
 
-Mode keys (HotkeySettings::mode_keys) fire `HotkeyEvent::ModeKey(n)`; `controller::switch_mode`
-saves the active mode, ticks the tray and shows "Mode: Email" in the bubble (or switches a take
-being recorded hands-free). Settings checks every mode key with `hotkey::check_mode_key` (the
-`check_mode_key` command) before saving it: by hand, and for each key of Use F1 to F5, against
-the mode keys as they will be (its `others`); one refused leaves them all as they were.
+Mode keys (HotkeySettings::mode_keys) and action keys (HotkeySettings::action_keys) are the hook's
+"extras", numbered mode keys first (`extra_key_chords`): each fires `HotkeyEvent::ExtraKey(n)`.
+For a mode key `controller::switch_mode` saves the active mode, ticks the tray and shows "Mode:
+Email" in the bubble (or switches a take being recorded hands-free). Settings checks every mode key
+with `hotkey::check_mode_key` (the `check_mode_key` command) before saving it: by hand, and for each
+key of Use F1 to F5, against the mode keys as they will be (its `others`), and against the action
+keys; one refused leaves them all as they were. Action keys are checked the same way
+(`check_action_key`), against every other key.
+
+An action key (`controller::action_key`) does what a voice command does, without the voice:
+- **ask**: a hands-free take (`Recording::ask`) that finishes 2 s after you stop talking, or with a
+  tap of the key or the talk keys. The selection is read when it starts. `run_ask` sends what was
+  said and the selection to the AI for longer jobs (`voice::ask_messages`), which replies in
+  `<edit>` (pasted over the selection; "scratch that" puts it back) or `<answer>` (shown in the
+  middle of the screen as `PromptState::Reply`, short until clicked, then `expand_reply` makes it
+  bigger). With nothing selected it always answers. Both go in History.
+- **rewrite** (with its own instruction, or `DEFAULT_REWRITE`), **scratch_that** and **critique**
+  claim the session as a take does, then run `run_command` on the selection or the last insertion,
+  with nothing saved to History.
+- **watch** and **notes** toggle, through `run_spoken`.
+Where the field can't be read, the rewrite, critique and ask keys copy the selection with Ctrl + C
+(Command + C) and put the clipboard back (`copied_selection`), but never in a terminal, a code
+editor (which copies the whole line when nothing is selected) or an app under "Never read these apps".
+
+Whenever the AI works on a take or a key, the bubble shows `PillState::Working` ("AI is rewriting",
+"AI is working on it", "AI is writing" for an AI mode) with a clock, and goes back to it after a
+"Still finishing" note (`Session::working`).
 
 Ramble (Space while holding the chord, with its own sound) records hands-free in the Notes mode.
 Every 12 seconds it transcribes the last 30 seconds, only for the live preview in the bubble (the

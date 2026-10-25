@@ -93,6 +93,7 @@ pub fn run() {
             commands::preview_mode,
             commands::set_active_mode,
             commands::check_mode_key,
+            commands::check_action_key,
             commands::list_words,
             commands::save_word,
             commands::delete_word,
@@ -143,6 +144,7 @@ pub fn run() {
             commands::delete_note,
             commands::prompt_state,
             commands::dismiss_meeting_prompt,
+            commands::expand_reply,
             commands::open_note,
             commands::reveal_note_file,
             commands::send_note_actions,
@@ -332,7 +334,7 @@ fn setup(handle: &AppHandle, started_hidden: bool) -> anyhow::Result<()> {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     match hotkey::HotkeyService::start(settings.hotkeys.talk.clone(), settings.hotkeys.ramble_key.clone(), settings.hotkeys.cancel_key.clone(), tx) {
         Ok(h) => {
-            h.set_extras(&mode_key_chords(&settings));
+            h.set_extras(&extra_key_chords(&settings));
             *app.hotkeys.lock() = Some(h);
             log::info!("listening for {}", hotkey::display_chord_label(&settings.hotkeys.talk));
         }
@@ -736,7 +738,7 @@ pub fn modes_changed(app: &Arc<App>) {
                 Ok(()) => {
                     *app.settings.write() = next.clone();
                     if let Some(h) = app.hotkeys.lock().as_ref() {
-                        h.set_extras(&mode_key_chords(&next));
+                        h.set_extras(&extra_key_chords(&next));
                     }
                     app.emit("settings-changed", ());
                 }
@@ -830,9 +832,11 @@ fn listen_label(vc: &types::VoiceCommandSettings) -> String {
     format!("Listen for \u{201c}{}\u{201d}", vc.wake_label())
 }
 
-/// The mode keys' chords, in settings order, for the hook.
-pub fn mode_key_chords(settings: &types::Settings) -> Vec<Vec<String>> {
-    settings.hotkeys.mode_keys.iter().map(|k| k.keys.clone()).collect()
+/// The mode keys' chords and then the action keys', in settings order, for the hook: the hook's
+/// ExtraKey(n) is mode key n, or action key n less the number of mode keys.
+pub fn extra_key_chords(settings: &types::Settings) -> Vec<Vec<String>> {
+    let modes = settings.hotkeys.mode_keys.iter().map(|k| k.keys.clone());
+    modes.chain(settings.hotkeys.action_keys.iter().map(|k| k.keys.clone())).collect()
 }
 
 pub fn set_tray_tooltip(app: &App) {
@@ -1036,6 +1040,16 @@ mod tests {
 
     fn key(mode: &str, k: &str) -> ModeKey {
         ModeKey { mode: mode.into(), keys: vec![k.into()] }
+    }
+
+    #[test]
+    fn the_hook_numbers_mode_keys_then_action_keys() {
+        let mut s = Settings::default();
+        s.hotkeys.mode_keys = vec![key("email", "F2")];
+        let action = |action: &str, keys: &[&str]| crate::types::ActionKey { action: action.into(), keys: keys.iter().map(|k| k.to_string()).collect(), instruction: String::new() };
+        s.hotkeys.action_keys = vec![action("ask", &["F8"]), action("rewrite", &[]), action("scratch_that", &["Ctrl", "F9"])];
+        let chords = extra_key_chords(&s);
+        assert_eq!(chords, vec![vec!["F2".to_string()], vec!["F8".to_string()], vec![], vec!["Ctrl".to_string(), "F9".to_string()]]);
     }
 
     #[test]

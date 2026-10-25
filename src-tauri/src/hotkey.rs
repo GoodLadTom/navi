@@ -832,7 +832,8 @@ pub struct HookMachine {
     chord: Vec<Key>,
     ramble: Option<Key>,
     cancel: Option<Key>,
-    /// Mode keys, by index (an empty chord never fires, keeping the indices of the rest).
+    /// Mode keys and then action keys, by index (an empty chord never fires, keeping the indices
+    /// of the rest).
     extras: Vec<Vec<Key>>,
     down: [bool; 256],
     /// The key's current press was injected by software rather than typed.
@@ -882,9 +883,33 @@ fn chord_needs_mask(chord: &[Key]) -> bool {
 /// every Ctrl + C), shares no key with the talk shortcut (holding that to talk would turn the mode
 /// key into "another shortcut") and is not already another mode's key.
 pub fn check_mode_key(keys: &[String], talk: &[String], others: &[Vec<String>], label: &dyn Fn(&str) -> String) -> ChordCheck {
+    let mut check = check_extra_key(keys, talk, "switch modes", label);
+    if check.error.is_none() && others.iter().any(|o| same_chord(keys, o)) {
+        check.error = Some(format!("{} already switches to another mode.", check.label));
+    }
+    check
+}
+
+/// Checks an action key before saving it: the same rules as a mode key, and that no other key of
+/// Navi's is the same. `taken`: those keys, each with what it does ("Scratch that", "switching to
+/// Email").
+pub fn check_action_key(keys: &[String], talk: &[String], taken: &[(Vec<String>, String)], label: &dyn Fn(&str) -> String) -> ChordCheck {
+    let mut check = check_extra_key(keys, talk, "go off", label);
+    if check.error.is_none() {
+        if let Some((_, what)) = taken.iter().find(|(k, _)| same_chord(keys, k)) {
+            check.error = Some(format!("{} is already your key for {what}.", check.label));
+        }
+    }
+    check
+}
+
+/// What a mode key and an action key both have to pass: `check_chord`, not only Ctrl, Shift, Alt
+/// or Win (it fires on its key-down, so Right Ctrl would `does` at every Ctrl + C), and no key of
+/// the talk shortcut (holding that to talk would turn the key into "another shortcut").
+fn check_extra_key(keys: &[String], talk: &[String], does: &str, label: &dyn Fn(&str) -> String) -> ChordCheck {
     let mut check = check_chord_with(keys, "", label);
     if mode_key_never_fires(keys) {
-        check.error = Some(format!("{} is used with other keys all the time, so it would switch modes while you work. Pick a key of its own, such as {}.", check.label, if cfg!(target_os = "macos") { "F13" } else { "F1" }));
+        check.error = Some(format!("{} is used with other keys all the time, so it would {does} while you work. Pick a key of its own, such as {}.", check.label, if cfg!(target_os = "macos") { "F13" } else { "F1" }));
         check.warning = None;
         return check;
     }
@@ -898,10 +923,16 @@ pub fn check_mode_key(keys: &[String], talk: &[String], others: &[Vec<String>], 
         let spares = if cfg!(target_os = "macos") { 0x7Cu8..=0x82 } else { 0x70u8..=0x7B };
         let spare = spares.clone().find(|vk| !talk_keys.iter().any(|t| t.matches(*vk))).map_or_else(|| vk_name(*spares.start()), vk_name);
         check.error = Some(format!("{} is part of your talk shortcut. Pick a key of its own, such as {spare}.", check.label));
-    } else if others.iter().filter_map(|o| parse_chord(o).ok()).any(|o| o.len() == mine.len() && o.iter().all(|k| mine.contains(k))) {
-        check.error = Some(format!("{} already switches to another mode.", check.label));
     }
     check
+}
+
+/// The same keys, in any order. Keys that don't parse are never the same as anything.
+fn same_chord(a: &[String], b: &[String]) -> bool {
+    match (parse_chord(a), parse_chord(b)) {
+        (Ok(a), Ok(b)) => a.len() == b.len() && b.iter().all(|k| a.contains(k)),
+        _ => false,
+    }
 }
 
 /// A mode key the hook never fires: one made only of Ctrl, Shift, Alt or Win. `check_mode_key`
@@ -972,15 +1003,15 @@ impl HookMachine {
         self.cancel = cancel;
     }
 
-    /// The mode keys, in the order of HotkeySettings::mode_keys. One made only of modifiers (saved
-    /// before `check_mode_key` refused them) never fires: it would switch mode on every Ctrl + C.
-    /// `drop_dead_mode_keys` takes such keys out of the settings; this is the backstop.
+    /// The mode keys and then the action keys (lib.rs extra_key_chords). One made only of
+    /// modifiers (saved before `check_mode_key` refused them) never fires: it would switch mode on
+    /// every Ctrl + C. `drop_dead_mode_keys` takes such keys out of the settings; this is the backstop.
     pub fn set_extras(&mut self, extras: Vec<Vec<Key>>) {
         self.extras = extras
             .into_iter()
             .map(|extra| {
                 if modifiers_only(&extra) {
-                    log::warn!("Ignoring a mode key made only of Ctrl, Shift, Alt or Win; pick another key in Settings");
+                    log::warn!("Ignoring a mode or action key made only of Ctrl, Shift, Alt or Win; pick another key in Settings");
                     Vec::new()
                 } else {
                     extra
@@ -1268,7 +1299,7 @@ impl HookMachine {
         if self.extras.iter().any(|extra| extra.iter().any(|k| k.matches(vk))) {
             self.forget_stale_keys(vk, probe);
             if let Some(n) = self.extra_completed(vk) {
-                d.event = Some(HotkeyEvent::ModeKey(n.min(u8::MAX as usize) as u8));
+                d.event = Some(HotkeyEvent::ExtraKey(n.min(u8::MAX as usize) as u8));
                 d.inject_mask = chord_needs_mask(&self.extras[n]);
                 if Modifier::of_vk(vk).is_none() {
                     self.swallowed[i] = true;
@@ -1448,8 +1479,8 @@ impl HotkeyService {
         with_machine(|m| m.set_keys(chord_keys, ramble, cancel));
     }
 
-    /// The mode keys, in the order of HotkeySettings::mode_keys. One that does not parse is kept as
-    /// a key that never fires, so the others keep their numbers.
+    /// The mode keys and then the action keys (lib.rs extra_key_chords). One that does not parse
+    /// (or has no keys yet) is kept as a key that never fires, so the others keep their numbers.
     pub fn set_extras(&self, extras: &[Vec<String>]) {
         let parsed: Vec<Vec<Key>> = extras.iter().map(|names| parse_chord(names).unwrap_or_default()).collect();
         with_machine(|m| m.set_extras(parsed));
@@ -2394,6 +2425,27 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::HashSet;
 
+    /// Dan wanted a key for rewriting the selection, and Tom a key for everything only a voice
+    /// command could do. Those keys are checked like mode keys, and against every key Navi has.
+    #[test]
+    fn action_keys_are_checked_against_the_talk_key_and_every_other_key() {
+        let label = |n: &str| key_label(n);
+        let taken = vec![(names(&["F8"]), "Ask AI".to_string()), (names(&["F2"]), "switching to Email".to_string())];
+        assert!(check_action_key(&names(&["F9"]), &names(&["RCtrl"]), &taken, &label).error.is_none());
+        let clash = check_action_key(&names(&["F8"]), &names(&["RCtrl"]), &taken, &label).error.expect("F8 is Ask AI's");
+        assert!(clash.contains("already your key for Ask AI"), "{clash}");
+        let clash = check_action_key(&names(&["F2"]), &names(&["RCtrl"]), &taken, &label).error.expect("F2 switches mode");
+        assert!(clash.contains("switching to Email"), "{clash}");
+        let lone = check_action_key(&names(&["Ctrl", "Shift"]), &names(&["F9"]), &[], &label).error.expect("modifiers only");
+        assert!(lone.contains("go off while you work"), "{lone}");
+        let talk = check_action_key(&names(&["RAlt", "F7"]), &names(&["RAlt"]), &[], &label).error.expect("shares the talk key");
+        assert!(talk.contains("talk shortcut"), "{talk}");
+        // The same keys in another order are the same key.
+        let taken = vec![(names(&["Ctrl", "Shift", "F7"]), "Rewrite with AI".to_string())];
+        assert!(check_action_key(&names(&["Shift", "Ctrl", "F7"]), &names(&["F9"]), &taken, &label).error.is_some_and(|e| e.contains("Rewrite with AI")));
+        assert!(check_action_key(&names(&["Ctrl", "Shift", "F8"]), &names(&["F9"]), &taken, &label).error.is_none());
+    }
+
     fn names(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
     }
@@ -2643,7 +2695,7 @@ mod tests {
         let mut r = Rig::new(&["RCtrl"]);
         r.m.set_extras(vec![chord(&["F1"]), Vec::new(), chord(&["Ctrl", "Alt", "3"])]);
         let d = r.down(0x70);
-        assert_eq!(d.event, Some(HotkeyEvent::ModeKey(0)));
+        assert_eq!(d.event, Some(HotkeyEvent::ExtraKey(0)));
         assert!(d.swallow, "F1 never opens Help underneath");
         assert_eq!(r.down(0x70), Decision { swallow: true, ..Decision::default() }, "a repeat fires nothing");
         assert!(r.up(0x70).swallow);
@@ -2651,7 +2703,7 @@ mod tests {
         r.down(VK_LCONTROL);
         r.down(VK_LMENU);
         let d = r.down(b'3');
-        assert_eq!(d.event, Some(HotkeyEvent::ModeKey(2)));
+        assert_eq!(d.event, Some(HotkeyEvent::ExtraKey(2)));
         assert!(d.swallow && d.inject_mask);
         assert!(r.up(b'3').swallow);
         r.up(VK_LMENU);
@@ -2663,7 +2715,7 @@ mod tests {
         r.up(VK_RCONTROL);
         // Mid hands-free (keys released, still recording) a mode key works.
         r.m.set_recording(true);
-        assert_eq!(r.down(0x70).event, Some(HotkeyEvent::ModeKey(0)));
+        assert_eq!(r.down(0x70).event, Some(HotkeyEvent::ExtraKey(0)));
     }
 
     #[test]
@@ -3244,7 +3296,7 @@ mod tests {
         assert_eq!(r.down(b'C').event, None);
         r.up(b'C');
         r.up(VK_RCONTROL);
-        assert_eq!(r.down(0x70).event, Some(HotkeyEvent::ModeKey(1)), "the others keep their numbers");
+        assert_eq!(r.down(0x70).event, Some(HotkeyEvent::ExtraKey(1)), "the others keep their numbers");
     }
 
     // Windows key names; a Mac shows its own (see mac_labels_use_mac_words).

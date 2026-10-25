@@ -572,6 +572,7 @@ mod tests {
             ocr: None,
             from_wake,
             preroll_ms: 1_000,
+            ask: false,
         }
     }
 

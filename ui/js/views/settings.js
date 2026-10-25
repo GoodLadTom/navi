@@ -126,6 +126,9 @@ export async function render(root, { store, arg }) {
   const allModes = (await invoke('list_modes').catch(() => [])).filter((m) => m.kind !== 'notes');
   const modeKeysBlock = h('div', { class: 'set-row', style: { display: 'block' } });
   let capturingMode = null;
+  // The action key whose key is being picked (see Action keys below): an action id, or
+  // 'rewrite:<index>' / 'rewrite:new'.
+  let capturingAction = null;
   const keyEntry = (mode) => (S().hotkeys.modeKeys || []).find((k) => k.mode === mode);
   const saveModeKey = (mode, keys) => save((n) => {
     const list = (n.hotkeys.modeKeys || []).filter((k) => k.mode !== mode);
@@ -133,7 +136,7 @@ export async function render(root, { store, arg }) {
     n.hotkeys.modeKeys = list;
   });
   async function setModeKey(mode) {
-    if (capturingMode) return;
+    if (capturingMode || capturingAction) return;
     capturingMode = mode; drawModeKeys();
     try {
       const keys = await invoke('capture_shortcut');
@@ -178,12 +181,104 @@ export async function render(root, { store, arg }) {
           h('div', {}, h('span', { class: 'nm' }, r.name), r.note ? h('span', { class: 'small faint' }, ` · ${r.note}`) : null),
           h('div', { class: 'row', style: { gap: '6px' } },
             busy ? h('span', { class: 'chip accent' }, 'Press a key…') : entry ? keycaps(entry.keys) : h('span', { class: 'small faint' }, 'No key'),
-            btn(entry ? 'Change' : 'Set', { size: 'sm', variant: 'ghost', disabled: !!capturingMode, onClick: () => setModeKey(r.id) }),
+            btn(entry ? 'Change' : 'Set', { size: 'sm', variant: 'ghost', disabled: !!capturingMode || !!capturingAction, onClick: () => setModeKey(r.id) }),
             entry && !busy ? btn('', { size: 'sm', variant: 'ghost', icon: 'x', title: 'Remove', onClick: async () => { await saveModeKey(r.id, null); drawModeKeys(); } }) : null));
       })));
   }
   drawModeKeys();
   cleanups.push(() => { if (capturingMode) invoke('cancel_shortcut_capture').catch(() => {}); });
+
+  // Action keys: what a voice command does, with one key and no talking (types.rs ActionKey).
+  // Ask AI listens for what to do with the selection; the rest act at once. A rewrite can be
+  // added more than once, each with its own instruction and key.
+  // Keep in step with types.rs DEFAULT_REWRITE.
+  const DEFAULT_REWRITE = 'Rewrite this so it reads clearly and naturally. Fix spelling, grammar and punctuation and smooth any awkward phrasing, but keep the meaning, the tone and roughly the length.';
+  const ACTIONS = [
+    { id: 'ask', name: 'Ask AI', note: 'Select some text, press the key and say what you want: “shorten this”, “word this better”, or ask a question about it. A change replaces the selection; an answer opens in the middle of the screen. With nothing selected, ask it anything.' },
+    { id: 'rewrite', name: 'Rewrite with AI', note: 'One press rewrites the selection, or what Navi just typed, the way you describe here.' },
+    { id: 'scratch_that', name: 'Scratch that', note: 'Removes what Navi just typed, or deletes the text you’ve selected.' },
+    { id: 'critique', name: 'What’s wrong with this', note: 'A blunt list of the selected text’s problems, in the card in the corner.' },
+    { id: 'watch', name: 'Watch my screen', note: 'Press once to start watching, and again to stop and get the write-up.' },
+    { id: 'notes', name: 'Call notes', note: 'Press once to start taking notes on a call, and again to finish them.' },
+  ];
+  const actionKeysBlock = h('div', { class: 'set-row', style: { display: 'block' } });
+  const actionList = () => S().hotkeys.actionKeys || [];
+  const saveActions = async (change) => {
+    await save((n) => {
+      const list = (n.hotkeys.actionKeys || []).map((k) => ({ ...k }));
+      change(list);
+      n.hotkeys.actionKeys = list;
+    });
+    drawActionKeys();
+  };
+  async function setActionKey(row, action, index) {
+    if (capturingAction || capturingMode) return;
+    capturingAction = row; drawActionKeys(); drawModeKeys();
+    try {
+      const keys = await invoke('capture_shortcut');
+      const check = await invoke('check_action_key', { keys, index: index ?? null });
+      if (check?.error) toast(check.error, { error: true });
+      else {
+        await saveActions((list) => {
+          if (index != null && list[index]) list[index].keys = keys;
+          else list.push({ action, keys, instruction: '' });
+        });
+        if (check?.warning) toast(check.warning);
+      }
+    } catch (e) { const t = errText(e); if (t !== 'Cancelled.') toast(t, { error: true }); }
+    capturingAction = null; drawActionKeys(); drawModeKeys();
+  }
+  // Takes the key off. A rewrite keeps its instruction, so the key can be set again.
+  const removeActionKey = (index) => saveActions((list) => {
+    const k = list[index];
+    if (!k) return;
+    if (k.action === 'rewrite' && (k.instruction || '').trim()) k.keys = [];
+    else list.splice(index, 1);
+  });
+  function drawActionKeys() {
+    const list = actionList();
+    const keyControls = (row, action, entry, index) => {
+      const busy = capturingAction === row;
+      const has = (entry?.keys || []).length > 0;
+      return h('div', { class: 'row', style: { gap: '6px' } },
+        busy ? h('span', { class: 'chip accent' }, 'Press a key…') : has ? keycaps(entry.keys) : h('span', { class: 'small faint' }, 'No key'),
+        btn(has ? 'Change' : 'Set', { size: 'sm', variant: 'ghost', disabled: !!capturingAction || !!capturingMode, onClick: () => setActionKey(row, action, index) }),
+        has && !busy ? btn('', { size: 'sm', variant: 'ghost', icon: 'x', title: 'Remove the key', onClick: () => removeActionKey(index) }) : null);
+    };
+    const row = (a, entry, index, rowId, extra) => h('div', { class: 'action-key' },
+      h('div', { class: 'mode-key-row' },
+        h('div', { class: 'ak-text' }, h('span', { class: 'nm' }, a.name), h('p', { class: 'small faint' }, a.note)),
+        keyControls(rowId, a.id, entry, index)),
+      extra);
+    const rewrites = list.map((k, i) => [k, i]).filter(([k]) => k.action === 'rewrite');
+    const rewriteRows = (rewrites.length ? rewrites : [[null, null]]).map(([entry, index], n) => {
+      const instr = h('textarea', { class: 'textarea ak-instr', rows: '2', placeholder: DEFAULT_REWRITE, 'aria-label': 'How to rewrite' }, entry?.instruction || '');
+      instr.addEventListener('change', () => saveActions((l) => {
+        const v = instr.value.trim();
+        if (index != null && l[index]) l[index].instruction = v;
+        else if (v) l.push({ action: 'rewrite', keys: [], instruction: v });
+      }));
+      const a = ACTIONS[1];
+      return row(n === 0 ? a : { ...a, name: 'Another rewrite', note: 'Its own key and instruction: “make it shorter”, “turn it into bullet points”, “translate it into Spanish”.' }, entry, index, index == null ? 'rewrite:new' : `rewrite:${index}`,
+        h('div', { class: 'ak-extra' }, instr,
+          n > 0 ? btn('Remove', { size: 'sm', variant: 'ghost', icon: 'trash', title: 'Remove this rewrite', onClick: () => saveActions((l) => { l.splice(index, 1); }) }) : null));
+    });
+    const single = (id) => {
+      const a = ACTIONS.find((x) => x.id === id);
+      const index = list.findIndex((k) => k.action === id);
+      return row(a, index >= 0 ? list[index] : null, index >= 0 ? index : null, id);
+    };
+    actionKeysBlock.replaceChildren(
+      h('div', {}, h('div', { class: 'h3' }, 'Action keys'),
+        h('p', { class: 'small quiet', style: { marginTop: '3px', maxWidth: '560px' } }, os('Do what a voice command does with one key and no talking. The bubble says when your AI is working, which can take a few seconds. While Navi runs, a key you pick here stops doing its usual job.', 'Do what a voice command does with one key and no talking. The bubble says when your AI is working, which can take a few seconds. While Navi runs, a key you pick here stops doing its usual job. On most Mac keyboards the top row changes brightness and volume unless you hold fn, so hold fn with an F key, or pick F13 to F19 if your keyboard has them.'))),
+      h('div', { class: 'mode-keys' },
+        single('ask'),
+        rewriteRows,
+        rewrites.length ? h('div', { class: 'ak-add' }, btn('Add another rewrite', { size: 'sm', variant: 'ghost', icon: 'plus', onClick: () => saveActions((l) => { l.push({ action: 'rewrite', keys: [], instruction: '' }); }) })) : null,
+        ['scratch_that', 'critique', 'watch', 'notes'].map(single)));
+  }
+  drawActionKeys();
+  cleanups.push(() => { if (capturingAction) invoke('cancel_shortcut_capture').catch(() => {}); });
   section('shortcuts', 'Shortcuts', os('Hold to talk, let go to finish. Works in almost every app: one running as administrator gets your words on the clipboard to paste instead.', 'Hold to talk, let go to finish. Works in almost every app: in a password field macOS hides typing, so your words go on the clipboard to paste instead.'),
     h('div', { class: 'set-row', style: { display: 'block' } }, h('div', { class: 'h3', style: { marginBottom: '12px' } }, 'Talk'), picker.el),
     setRow('Hands-free', 'Double-tap the talk keys to keep listening without holding. Tap them once more to finish.', toggle(S().hotkeys.doubleTapHandsFree, (v) => save((n) => { n.hotkeys.doubleTapHandsFree = v; }))),
@@ -191,7 +286,8 @@ export async function render(root, { store, arg }) {
     setRow('Ramble', `While holding the talk keys, tap this to switch to notes mode. A different sound plays and Navi keeps listening until you tap the talk keys again, then saves it to Notes.`, select(['Space', { value: 'Enter', label: os('Enter', 'Return') }, 'Tab', 'N', 'R'], S().hotkeys.rambleKey, (v) => save((n) => { n.hotkeys.rambleKey = v; }))),
     setRow('Cancel', 'Throws the take away while it is recording.', keycaps([S().hotkeys.cancelKey])),
     modeKeysBlock,
-    setRow('Voice edits', 'Start with “Navi”: “Navi, scratch that”, “Navi, make that shorter”, “Navi, change Tuesday to Wednesday”. Select text first and say “Navi, turn this into bullet points”, or “Navi, what’s wrong with this?” for a blunt list of its problems. “Scratch that” works without an AI, and so does “change Tuesday to Wednesday” when Navi finds the word. Shorter, bullet points and “what’s wrong” need an AI (set one up under AI).' + (scratchThatOn(S()) ? '' : ' “Scratch that” is off: give it a phrase under Voice commands to use it.'), chip('Always on', 'accent', true)),
+    actionKeysBlock,
+    setRow('Voice edits', 'Start with “Navi”: “Navi, scratch that”, “Navi, make that shorter”, “Navi, change Tuesday to Wednesday”. Select text first and say “Navi, turn this into bullet points”, or “Navi, what’s wrong with this?” for a blunt list of its problems. “Scratch that” works without an AI, and so does “change Tuesday to Wednesday” when Navi finds the word. Shorter, bullet points and “what’s wrong” need an AI (set one up under AI). To skip the talking, give them keys under Action keys.' + (scratchThatOn(S()) ? '' : ' “Scratch that” is off: give it a phrase under Voice commands to use it.'), chip('Always on', 'accent', true)),
   );
 
   // ---------------------------------------------------------------- voice commands

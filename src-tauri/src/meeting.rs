@@ -1808,6 +1808,10 @@ pub enum PromptState {
     /// The AI's answer, in Markdown, to read and copy. Never typed anywhere.
     #[serde(rename_all = "camelCase")]
     Answer { title: String, body: String },
+    /// The answer to a question asked with the Ask AI key (controller.rs), in the middle of the
+    /// screen rather than the corner: the start of it until clicked (`expanded`), then all of it.
+    #[serde(rename_all = "camelCase")]
+    Reply { question: String, body: String, expanded: bool },
 }
 
 impl PromptState {
@@ -1821,7 +1825,30 @@ impl PromptState {
             PromptState::Done { detail, .. } if !detail.is_empty() => (380.0, 112.0),
             PromptState::Done { .. } | PromptState::Hidden => (372.0, 76.0),
             PromptState::Answer { .. } => (420.0, 400.0),
+            PromptState::Reply { expanded: false, .. } => (560.0, 228.0),
+            PromptState::Reply { expanded: true, question, body } => (680.0, reply_height(question, body)),
         }
+    }
+
+    /// Shown in the middle of the screen; everything else sits in the corner.
+    fn centred(&self) -> bool {
+        matches!(self, PromptState::Reply { .. })
+    }
+}
+
+/// The expanded answer card's height: room for `body` at about 88 characters a line (and a
+/// second line for a long question), between 300 and 600 pixels. A longer answer scrolls.
+fn reply_height(question: &str, body: &str) -> f64 {
+    let paragraphs: Vec<usize> = body.lines().map(|l| l.trim().chars().count()).filter(|n| *n > 0).collect();
+    let lines: usize = paragraphs.iter().map(|n| n.div_ceil(88)).sum();
+    let question = if question.chars().count() > 70 { 20.0 } else { 0.0 };
+    (150.0 + question + lines as f64 * 21.0 + paragraphs.len() as f64 * 7.0).clamp(300.0, 600.0)
+}
+
+/// The answer in the middle of the screen was clicked: shows the whole of it, in a bigger card.
+pub fn expand_reply(app: &App) {
+    if let PromptState::Reply { question, body, expanded: false } = prompt_state() {
+        show_prompt(app, PromptState::Reply { question, body, expanded: true });
     }
 }
 
@@ -1899,6 +1926,7 @@ pub fn show_prompt(app: &App, state: PromptState) {
     *PROMPT.lock() = Some(state.clone());
     let Some(w) = app.handle.get_webview_window("prompt") else { return };
     let size = state.size();
+    let centred = state.centred();
     let hidden = matches!(state, PromptState::Hidden);
     let _ = app.handle.emit_to("prompt", "prompt", state);
     // Shown and hidden with Win32 directly, never through tao: tao gives every window a title bar
@@ -1909,15 +1937,21 @@ pub fn show_prompt(app: &App, state: PromptState) {
         if hidden {
             win::hide(hwnd.0 as isize);
         } else {
-            // Without taking the focus from the call.
-            win::show_in_corner(hwnd.0 as isize, size);
+            // Without taking the focus from the call (or the app the question was about).
+            win::show_placed(hwnd.0 as isize, size, centred);
         }
         return;
     }
     // A Mac: floated above every app and Space and brought forward without taking the focus.
     #[cfg(target_os = "macos")]
     {
-        let result = if hidden { crate::overlay::mac::order_out(&w) } else { crate::overlay::mac::show_in_corner(&w, size.0 as f64, size.1 as f64) };
+        let result = if hidden {
+            crate::overlay::mac::order_out(&w)
+        } else if centred {
+            crate::overlay::mac::show_centred(&w, size.0 as f64, size.1 as f64)
+        } else {
+            crate::overlay::mac::show_in_corner(&w, size.0 as f64, size.1 as f64)
+        };
         if let Err(e) = result {
             log::warn!("could not show the card: {e:#}");
         }
@@ -2160,7 +2194,8 @@ mod win {
 
     /// Shows the card in the bottom right of the screen the mouse is on, above the taskbar, on top
     /// of other windows and without taking the focus. `size` is in logical pixels.
-    pub fn show_in_corner(raw: isize, size: (f64, f64)) {
+    /// In the bottom right corner of the screen with the mouse, or in its middle (`centred`).
+    pub fn show_placed(raw: isize, size: (f64, f64), centred: bool) {
         unsafe {
             let mut cursor = POINT::default();
             let _ = GetCursorPos(&mut cursor);
@@ -2174,7 +2209,13 @@ mod win {
             let scale = dpi_x.max(96) as f64 / 96.0;
             let (w, h, margin) = ((size.0 * scale).round() as i32, (size.1 * scale).round() as i32, (14.0 * scale).round() as i32);
             let work = info.rcWork;
-            show_at(raw, work.right - w - margin, work.bottom - h - margin, w, h);
+            // Never taller or wider than the screen (a small laptop screen at 150%).
+            let (w, h) = (w.min(work.right - work.left - 2 * margin), h.min(work.bottom - work.top - 2 * margin));
+            if centred {
+                show_at(raw, work.left + (work.right - work.left - w) / 2, work.top + (work.bottom - work.top - h) / 2, w, h);
+            } else {
+                show_at(raw, work.right - w - margin, work.bottom - h - margin, w, h);
+            }
         }
     }
 
@@ -2507,6 +2548,19 @@ mod tests {
     }
 
     #[test]
+    fn the_ask_ai_answer_sits_in_the_middle_and_grows_to_fit() {
+        let reply = |body: &str, expanded: bool| PromptState::Reply { question: "What does this mean?".into(), body: body.into(), expanded };
+        assert!(reply("Two things.", false).centred());
+        assert!(!PromptState::Answer { title: "What's wrong with it".into(), body: "- Typo".into() }.centred(), "\"what's wrong\" stays in the corner");
+        let short = reply("Two things.", true).size().1;
+        let long = reply(&"A sentence that runs on for a while. ".repeat(25), true).size().1;
+        let huge = reply(&"A paragraph.\n".repeat(200), true).size().1;
+        assert_eq!(short, 300.0, "never smaller than this");
+        assert!(long > short && long < 600.0, "{long}");
+        assert_eq!(huge, 600.0, "a longer answer scrolls");
+    }
+
+    #[test]
     fn cards_navi_raises_itself_wait_their_turn() {
         assert!(card_is_free(&PromptState::Hidden));
         assert!(card_is_free(&PromptState::Writing));
@@ -2515,6 +2569,7 @@ mod tests {
         assert!(!card_is_free(&PromptState::Recording { app: String::new(), system_audio: true, elapsed_ms: 0, warning: String::new(), warning_detail: String::new() }));
         assert!(!card_is_free(&PromptState::Ask { app: "Zoom".into() }));
         assert!(!card_is_free(&PromptState::Thinking { title: "Looking for problems".into() }));
+        assert!(!card_is_free(&PromptState::Reply { question: "What does this mean?".into(), body: "It means two things.".into(), expanded: false }), "an answer being read matters more");
         assert!(!card_is_free(&PromptState::Answer { title: "What's wrong with it".into(), body: "- Typo".into() }));
     }
 

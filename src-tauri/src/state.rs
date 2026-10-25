@@ -96,6 +96,9 @@ pub struct Recording {
     /// up (`preroll_ms` of it), it finishes when you stop talking, and only real commands count.
     pub from_wake: bool,
     pub preroll_ms: u32,
+    /// The Ask AI key started this take: what is said is a request to the AI about the selection
+    /// (or a question with nothing selected), never dictation. It finishes when you stop talking.
+    pub ask: bool,
 }
 
 pub enum Phase {
@@ -117,11 +120,14 @@ pub struct Session {
     /// When the talk keys went down while the last take was still processing. Cleared when they
     /// are let go or another key joins them (another shortcut), so only a real hold gets a note.
     pub busy_press: Option<Instant>,
+    /// What the bubble says while the AI works on the last take or key ("AI is rewriting"), so it
+    /// can go back to that after a note rather than to `processing_mode`.
+    pub working: Option<String>,
 }
 
 impl Default for Session {
     fn default() -> Self {
-        Self { phase: Phase::Idle, tap_seq: 0, take_seq: 0, starting: false, processing_mode: String::new(), busy_press: None }
+        Self { phase: Phase::Idle, tap_seq: 0, take_seq: 0, starting: false, processing_mode: String::new(), busy_press: None, working: None }
     }
 }
 

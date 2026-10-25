@@ -1,7 +1,8 @@
 // The card in the corner of the screen: offers to take notes when a call starts, shows the time
 // while Navi listens (with any jobs it is working on), says when the notes are saved,
-// and shows the answer to "Navi, what's wrong with this?". meeting.rs decides what it shows and
-// sizes the window to fit.
+// and shows the answer to "Navi, what's wrong with this?". The answer to a question asked with
+// the Ask AI key shows in the middle of the screen instead, short until clicked. meeting.rs
+// decides what it shows and where, and sizes the window to fit.
 import { invoke, listen, isTauri, copyText } from './bridge.js';
 import { h } from './ui.js';
 import { icon } from './icons.js';
@@ -30,6 +31,8 @@ function render(s) {
   clearInterval(tick);
   clearTimeout(autoHide);
   card.className = `card ${s?.state || 'hidden'}`;
+  card.onclick = null;
+  card.removeAttribute('title');
   switch (s?.state) {
     case 'ask': {
       const sub = h('span', {}, `${s.app} is using your mic.`);
@@ -100,10 +103,39 @@ function render(s) {
         h('div', { class: 'a-foot' }, copy, h('button', { class: 'btn ghost', onClick: dismiss }, 'Done')));
       break;
     }
+    case 'reply': {
+      // The Ask AI key's answer. Short at first: a click anywhere on it asks for all of it, and
+      // meeting.rs shows it again, bigger.
+      const copy = h('button', { class: 'btn' }, ic('copy', 14), 'Copy');
+      copy.onclick = async (e) => { e.stopPropagation(); await copyText(s.body || ''); copy.lastChild.textContent = 'Copied'; setTimeout(() => { copy.lastChild.textContent = 'Copy'; }, 1600); };
+      const body = h('div', { class: 'a-body selectable' }, answerBody(s.body || ''));
+      const more = h('span', { class: 'r-more' }, 'Click to read it all');
+      const close = closeBtn('Close');
+      close.addEventListener('click', (e) => e.stopPropagation());
+      card.replaceChildren(
+        h('div', { class: 'a-head' }, h('span', { class: 'ic small' }, ic('spark', 15)),
+          h('div', { class: 'r-q' }, h('span', {}, 'You asked'), h('b', { title: s.question || '' }, s.question || 'Your question')),
+          close),
+        body,
+        h('div', { class: 'a-foot' }, s.expanded ? null : more, copy, s.expanded ? h('button', { class: 'btn ghost', onClick: dismiss }, 'Done') : null));
+      card.classList.toggle('short', !s.expanded);
+      if (!s.expanded) {
+        card.onclick = () => invoke('expand_reply').catch(() => {});
+        card.title = 'Click to read it all';
+        // All of it already shows: nothing more to read, but a click still makes room for it.
+        requestAnimationFrame(() => { if (body.scrollHeight <= body.clientHeight + 2) more.textContent = 'Click to make it bigger'; });
+      }
+      break;
+    }
     default:
       card.replaceChildren();
   }
 }
+
+// Esc closes an answer once you have clicked into it.
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && (card.classList.contains('reply') || card.classList.contains('answer'))) dismiss();
+});
 
 // Bullets and short paragraphs, with **bold** and `code`. Built from elements, never HTML.
 function answerBody(md) {
@@ -173,7 +205,7 @@ listen('meeting', (m) => {
 if (isTauri) {
   invoke('prompt_state').then(render).catch(() => {});
 } else {
-  // Browser preview: prompt.html?state=ask|recording|warning|writing|done|thinking|answer
+  // Browser preview: prompt.html?state=ask|recording|warning|writing|done|thinking|answer|reply|replyfull
   document.body.classList.add('preview');
   const which = new URLSearchParams(location.search).get('state') || 'ask';
   render({
@@ -183,6 +215,8 @@ if (isTauri) {
     writing: { state: 'writing' },
     done: { state: 'done', id: 'n1', title: 'Weekly marketing plan', detail: '4 actions to ClickUp' },
     thinking: { state: 'thinking', title: 'Looking for problems' },
+    reply: { state: 'reply', question: 'What does the second paragraph actually commit us to?', expanded: false, body: 'It commits you to **two things**: delivering the first draft by 14 November, and one round of changes at no extra cost.\n\n- Anything after that first round is billed at the day rate in clause 4.\n- It does **not** commit you to a launch date: that stays with the client.\n- The 14 November date moves if their feedback is late, but only "by agreement", so get any new date in writing.' },
+    replyfull: { state: 'reply', question: 'What does the second paragraph actually commit us to?', expanded: true, body: 'It commits you to **two things**: delivering the first draft by 14 November, and one round of changes at no extra cost.\n\n- Anything after that first round is billed at the day rate in clause 4.\n- It does **not** commit you to a launch date: that stays with the client.\n- The 14 November date moves if their feedback is late, but only "by agreement", so get any new date in writing.' },
     answer: { state: 'answer', title: 'What\u2019s wrong with it', body: '- **The opening buries the point.** "I wanted to reach out" says nothing; lead with the 15% saving.\n- **"Best in class" is unsupported.** Name the result or cut it.\n- **No ask.** It ends without saying what you want Sam to do next.\n- **Two typos:** "recieve" and "it\u2019s" for "its" in the last line.' },
   }[which]);
   if (which === 'recording') liveSub.textContent = liveLine({ jobs: [{ status: 'working' }] });

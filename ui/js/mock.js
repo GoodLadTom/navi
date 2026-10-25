@@ -327,7 +327,7 @@ const state = {
   cli: { 'claude-code': { found: true, signedIn: true }, codex: { found: false, signedIn: false } },
   settings: {
     onboarded: true, userName: 'Alex',
-    hotkeys: { talk: ['Ctrl', 'Win'], rambleKey: 'Space', doubleTapHandsFree: true, cancelKey: 'Escape', modeKeys: [{ mode: 'email', keys: ['F4'] }] },
+    hotkeys: { talk: ['Ctrl', 'Win'], rambleKey: 'Space', doubleTapHandsFree: true, cancelKey: 'Escape', modeKeys: [{ mode: 'email', keys: ['F4'] }], actionKeys: [{ action: 'ask', keys: ['F8'], instruction: '' }] },
     sounds: { enabled: true, set: 'bubble', volume: 0.7, custom: {}, whileTalking: 'pause' },
     mic: { device: null, trimCue: true },
     engine: { model: 'large-v3-turbo', language: 'en', useGpu: true, serverPath: null, modelPath: null, vad: true },
@@ -514,6 +514,8 @@ const handlers = {
     emit('settings-changed', null);
   },
   check_mode_key: ({ keys }) => ({ label: keys.join(' + '), labels: keys, error: null, warning: null }),
+  check_action_key: ({ keys }) => ({ label: keys.join(' + '), labels: keys, error: null, warning: null }),
+  expand_reply: () => {},
   list_words: () => state.words,
   save_word: ({ word }) => { if (!word.id) { word.id = 'w' + Math.random().toString(36).slice(2, 7); word.createdAt = new Date().toISOString(); word.uses = 0; state.words.unshift(word); } else { const i = state.words.findIndex((w) => w.id === word.id); state.words[i] = word; } return word; },
   delete_word: ({ id }) => { state.words = state.words.filter((w) => w.id !== id); },

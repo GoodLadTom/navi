@@ -64,3 +64,16 @@ button { font: inherit; cursor: pointer; }
 .a-body::-webkit-scrollbar { width: 8px; }
 .a-body::-webkit-scrollbar-thumb { background: color-mix(in oklab, var(--ink) 16%, transparent); border-radius: 8px; border: 2px solid var(--paper); }
 .a-foot { display: flex; gap: 6px; justify-content: flex-end; padding-top: 8px; border-top: 1px solid color-mix(in oklab, var(--ink) 8%, transparent); }
+
+/* The Ask AI key's answer, in the middle of the screen: the question, then the answer. Short until
+   clicked (.short), when the start of it fades out; then bigger, and it scrolls. */
+.card.reply { flex-direction: column; align-items: stretch; gap: 0; padding: 14px 14px 10px 16px; border-radius: 18px; box-shadow: 0 1px 2px rgba(36, 31, 51, .06), 0 10px 30px rgba(36, 31, 51, .16); }
+.card.reply.short { cursor: pointer; }
+.card.reply.short:hover { border-color: color-mix(in oklab, var(--accent) 40%, transparent); }
+.r-q { flex: 1; min-width: 0; }
+.r-q span { display: block; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-faint); }
+.r-q b { display: block; font-size: 14px; font-weight: 600; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card.reply:not(.short) .r-q b { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.card.reply .a-body { font-size: 13.5px; line-height: 1.55; margin-top: 12px; }
+.card.reply.short .a-body { overflow: hidden; -webkit-mask-image: linear-gradient(#000 60%, transparent); mask-image: linear-gradient(#000 60%, transparent); }
+.r-more { margin-right: auto; align-self: center; font-size: 12px; font-weight: 500; color: var(--accent-ink); }
