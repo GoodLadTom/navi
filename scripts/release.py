@@ -32,6 +32,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 REPO = "GoodLadTom/navi"
 KEY = pathlib.Path(os.environ.get("NAVI_UPDATER_KEY") or pathlib.Path.home() / ".tauri" / "navi-updater.key")
 RELEASE_CONFIG = ROOT / "src-tauri" / "tauri.release.conf.json"
+PATCH_NOTES = ROOT / "ui" / "js" / "patch-notes.js"
 
 
 def read(path):
@@ -73,6 +74,13 @@ def set_versions(version):
     write_like(package, json.dumps(data, indent=2) + "\n", original)
 
 
+def check_patch_notes(version):
+    # Settings > What's new lists every version; a release missing from it would show nothing new.
+    if f"version: '{version}'" not in read(PATCH_NOTES):
+        sys.exit(f"{PATCH_NOTES} has no entry for {version}. Add what changed there first: "
+                 "it's the list people see at the bottom of Settings.")
+
+
 def check_key():
     if not KEY.is_file():
         sys.exit(f"There is no updater key at {KEY}, so the update can't be signed. "
@@ -109,7 +117,8 @@ def main():
     was = current_version()
     if as_tuple(args.version) <= as_tuple(was):
         sys.exit(f"{args.version} isn't newer than {was}; installed copies would never offer it.")
-    # Before anything is changed, so a missing key never leaves the version files bumped.
+    # Before anything is changed, so a missing key or patch note never leaves the version files bumped.
+    check_patch_notes(args.version)
     check_key()
 
     set_versions(args.version)

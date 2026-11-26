@@ -1042,6 +1042,14 @@ mod tests {
         ModeKey { mode: mode.into(), keys: vec![k.into()] }
     }
 
+    /// Settings > What's new lists every version; this one must be there.
+    #[test]
+    fn whats_new_lists_this_version() {
+        let notes = include_str!("../../ui/js/patch-notes.js");
+        let version = env!("CARGO_PKG_VERSION");
+        assert!(notes.contains(&format!("version: '{version}'")), "ui/js/patch-notes.js has no entry for {version}");
+    }
+
     #[test]
     fn the_hook_numbers_mode_keys_then_action_keys() {
         let mut s = Settings::default();

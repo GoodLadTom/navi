@@ -2059,9 +2059,15 @@ async fn process_take(app: &Arc<App>, mut rec: Recording, mut samples: Vec<f32>,
         }
         _ => {
             app.sounds.play(Cue::Done, &settings.sounds);
+            // On a Mac, another program left Secure Input on: Navi typed, but says so once, as
+            // macOS may have dropped the keys (the words are on the clipboard too).
+            if let Some(note) = insert::take_note() {
+                let hold = read_ms(&note, 5000);
+                let gen = app.pill(PillState::Notice { message: note });
+                app.hide_pill_later(gen, hold);
             // The mode wanted the AI but its answer didn't come or wasn't usable: say so, or the
             // text looks like Clean's and the mode seems to do nothing.
-            if let Some(why) = out.warnings.first().filter(|_| !out.used_ai) {
+            } else if let Some(why) = out.warnings.first().filter(|_| !out.used_ai) {
                 let message = ai_fallback_note(why);
                 let hold = read_ms(&message, 3500);
                 let gen = app.pill(PillState::Notice { message });

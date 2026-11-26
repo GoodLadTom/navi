@@ -1,0 +1,28 @@
+# Builds and tests Navi on a Mac. The Mac-only code (hotkey.rs mod mac, insert.rs mod mac, the
+# mac/ folder) can't be compiled on Windows, and Mac copies update by pulling main and building
+# from source, so a change that breaks the Mac build must be caught here first.
+name: Mac check
+
+on:
+  push:
+    branches: [main, "mac-*"]
+    paths: ["src-tauri/**", "ui/**", ".github/workflows/mac-check.yml"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  mac:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Build (all targets)
+        run: cargo check --all-targets
+      - name: Tests
+        run: cargo test --lib

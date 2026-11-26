@@ -5,10 +5,12 @@ import { prettyModel } from '../app.js';
 import { shortcutPicker } from '../shortcut.js';
 import { soundPicker, playCue } from '../soundpicker.js';
 import { COLOURS, colourId } from '../theme.js';
+import { PATCH_NOTES } from '../patch-notes.js';
 
 const SECTIONS = [
   ['general', 'General'], ['shortcuts', 'Shortcuts'], ['commands', 'Voice commands'], ['sound', 'Sound'], ['mic', 'Microphone'], ['engine', 'Speech engine'],
   ['ai', 'AI'], ['voice', 'Voice'], ['writing', 'Writing'], ['privacy', 'Context and privacy'], ['meetings', 'Meeting notes'], ['integrations', 'Notes and tasks'], ['about', 'About'],
+  ['changes', 'What’s new'],
 ];
 
 const MODEL_HINTS = {
@@ -1021,6 +1023,17 @@ export async function render(root, { store, arg }) {
       h('a', { href: 'https://www.gnu.org/licenses/gpl-3.0.html', onClick: (e) => { e.preventDefault(); openPath('https://www.gnu.org/licenses/gpl-3.0.html'); } }, 'GNU General Public License, version 3'),
       ', and comes with no warranty. Speech recognition by whisper.cpp (MIT). Typeface Poppins (SIL Open Font Licence). Copyright © 2026 GoodLad. Made by ',
       h('a', { href: 'https://github.com/GoodLadTom', onClick: (e) => { e.preventDefault(); openPath('https://github.com/GoodLadTom'); } }, 'GoodLad'), '.'),
+  );
+
+  // ---------------------------------------------------------------- what's new
+  // Every version's changes (patch-notes.js), newest first, with the one running marked.
+  section('changes', 'What’s new', 'What changed in each update of Navi, newest first.',
+    h('div', { class: 'patch-notes' }, PATCH_NOTES.map((n) => h('div', { class: 'pn-version' },
+      h('div', { class: 'pn-head' },
+        h('b', {}, `Navi ${n.version}`),
+        h('span', { class: 'small faint' }, n.date),
+        n.version === info.version ? chip('This version', 'accent', true) : null),
+      h('ul', {}, n.changes.map((c) => h('li', {}, c)))))),
   );
 
   // ---------------------------------------------------------------- subnav with scroll spy

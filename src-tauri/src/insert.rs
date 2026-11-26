@@ -103,6 +103,35 @@ const TYPING_STOPPED_REASON: &str = "Windows stopped the typing part way. The fu
 #[cfg(not(any(windows, target_os = "macos")))]
 const NOT_SUPPORTED: &str = "Inserting text only works on Windows and macOS for now.";
 
+/// A note about the last insertion for the bubble, once (see `take_note`).
+static NOTE: parking_lot::Mutex<Option<String>> = parking_lot::const_mutex(None);
+
+/// What Navi should say after text went in, if anything: on a Mac, that macOS's Secure Input is
+/// stuck on (see `mac::clipboard_only_if_blocked`). Taken once.
+pub fn take_note() -> Option<String> {
+    NOTE.lock().take()
+}
+
+/// macOS's Secure Input is on (a password field, Terminal's Secure Keyboard Entry, or a program
+/// that left it on). Always false on Windows.
+pub fn secure_input_on() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        mac::secure_input()
+    }
+    #[cfg(not(target_os = "macos"))]
+    false
+}
+
+/// macOS's Secure Input is on for some other program, not the field in front: `holder`, the
+/// process that turned it on, is known and isn't the app in front (`front`), and the focused
+/// field isn't a password field. loginwindow can leave it on after login, and a password manager
+/// in the background can too. Typing still goes to the app in front then, so Navi types.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn secure_input_held_elsewhere(holder: Option<i32>, front: Option<i32>, password_field: bool) -> bool {
+    !password_field && matches!((holder, front), (Some(h), Some(f)) if h > 0 && h != f)
+}
+
 /// method: "paste" | "type".
 pub fn insert_text(text: &str, method: &str, restore: bool) -> Result<InsertOutcome> {
     let typed = method.trim().eq_ignore_ascii_case("type");
@@ -118,7 +147,8 @@ pub fn insert_text(text: &str, method: &str, restore: bool) -> Result<InsertOutc
     }
     #[cfg(target_os = "macos")]
     {
-        if let Some(outcome) = mac::clipboard_only_if_blocked(text)? {
+        let mut restore = restore;
+        if let Some(outcome) = mac::clipboard_only_if_blocked(text, &mut restore, true)? {
             return Ok(outcome);
         }
         put_in(text, typed, restore)
@@ -197,7 +227,8 @@ pub fn select_back_and_replace_with(chars_utf16: usize, text: &str, method: &str
         if text.is_empty() && mac::blocked() {
             return Err(anyhow!("macOS isn't letting Navi type there, so it can't change the text."));
         }
-        if let Some(outcome) = mac::clipboard_only_if_blocked(text)? {
+        let mut restore = restore;
+        if let Some(outcome) = mac::clipboard_only_if_blocked(text, &mut restore, false)? {
             return Ok(outcome);
         }
         if crate::context::foreground_category() == "terminal" {
@@ -1058,6 +1089,7 @@ mod mac {
     use objc2_core_foundation::{CFRange, CFRetained};
     use objc2_core_graphics::{CGEvent, CGEventField, CGEventFlags, CGEventSource, CGEventSourceStateID, CGEventTapLocation};
     use objc2_foundation::{NSArray, NSData, NSString};
+    use std::ffi::c_void;
     use std::thread::sleep;
     use std::time::Instant;
 
@@ -1073,11 +1105,70 @@ mod mac {
     // Each fits the two-line bubble (80 characters at most).
     const SECURE_REASON: &str = "macOS hides typing in password fields. Your text is on the clipboard: press ⌘V.";
     const NO_PERMISSION_REASON: &str = "Navi needs the Accessibility permission to type. Your text is on the clipboard.";
+    const STUCK_NOTE: &str = "Secure Input is stuck on. If nothing went in, press ⌘V. Logging out fixes it.";
 
     #[link(name = "Carbon", kind = "framework")]
     extern "C" {
         fn IsSecureEventInputEnabled() -> u8;
     }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFStringCreateWithCString(alloc: *const c_void, c_str: *const std::ffi::c_char, encoding: u32) -> *const c_void;
+        fn CFDictionaryGetValue(dict: *const c_void, key: *const c_void) -> *const c_void;
+        fn CFNumberGetValue(number: *const c_void, number_type: isize, value: *mut c_void) -> u8;
+        fn CFGetTypeID(cf: *const c_void) -> usize;
+        fn CFNumberGetTypeID() -> usize;
+        fn CFRelease(cf: *const c_void);
+    }
+
+    /// The process that turned Secure Input on, as macOS's session records it. Apple calls this
+    /// "best effort": it can be missing, or name a process that has gone.
+    fn secure_input_holder() -> Option<i32> {
+        const UTF8: u32 = 0x0800_0100; // kCFStringEncodingUTF8
+        const SINT32: isize = 3; // kCFNumberSInt32Type
+        let dict = objc2_core_graphics::CGSessionCopyCurrentDictionary()?;
+        unsafe {
+            let key = CFStringCreateWithCString(std::ptr::null(), c"kCGSSessionSecureInputPID".as_ptr(), UTF8);
+            if key.is_null() {
+                return None;
+            }
+            let value = CFDictionaryGetValue(CFRetained::as_ptr(&dict).as_ptr() as *const c_void, key);
+            CFRelease(key);
+            if value.is_null() || CFGetTypeID(value) != CFNumberGetTypeID() {
+                return None;
+            }
+            let mut pid: i32 = 0;
+            (CFNumberGetValue(value, SINT32, &mut pid as *mut i32 as *mut c_void) != 0 && pid > 0).then_some(pid)
+        }
+    }
+
+    /// What Secure Input means for typing into the app in front.
+    enum Secure {
+        Off,
+        /// A password field, Terminal's Secure Keyboard Entry, or a holder Navi can't name: the
+        /// words go on the clipboard.
+        Here,
+        /// Left on by another program (loginwindow after login, a password manager in the
+        /// background): Navi types, and keeps the words on the clipboard in case macOS drops them.
+        Elsewhere(i32),
+    }
+
+    fn secure_state() -> Secure {
+        if !secure_input() {
+            return Secure::Off;
+        }
+        let holder = secure_input_holder();
+        let password_field = crate::mac::ax::focused_element().is_some_and(|e| e.is_secure());
+        if super::secure_input_held_elsewhere(holder, crate::mac::front::front_pid(), password_field) {
+            Secure::Elsewhere(holder.unwrap_or_default())
+        } else {
+            Secure::Here
+        }
+    }
+
+    /// The holder Navi last said was stuck, so the bubble says it once per holder, not every take.
+    static STUCK_SAID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
     // ----- the clipboard -----
 
@@ -1219,26 +1310,42 @@ mod mac {
         }
     }
 
-    fn secure_input() -> bool {
+    /// Secure Input is on, for whatever program turned it on. System-wide: it says nothing about
+    /// the field in front (see `secure_state`).
+    pub(super) fn secure_input() -> bool {
         unsafe { IsSecureEventInputEnabled() != 0 }
     }
 
     /// Leaves `text` on the clipboard when macOS would drop Navi's keys: a password field (Secure
-    /// Event Input) or no Accessibility permission.
-    pub(super) fn clipboard_only_if_blocked(text: &str) -> Result<Option<InsertOutcome>> {
+    /// Event Input) or no Accessibility permission. When another program left Secure Input on,
+    /// Navi types anyway, but with `restore` turned off so the words stay on the clipboard too, and
+    /// (when `say` is true, once per holder) a note for the bubble.
+    pub(super) fn clipboard_only_if_blocked(text: &str, restore: &mut bool, say: bool) -> Result<Option<InsertOutcome>> {
         let reason = if !crate::mac::ax::trusted() {
             NO_PERMISSION_REASON
-        } else if secure_input() {
-            SECURE_REASON
         } else {
-            return Ok(None);
+            match secure_state() {
+                Secure::Off => return Ok(None),
+                Secure::Here => SECURE_REASON,
+                Secure::Elsewhere(holder) => {
+                    *restore = false;
+                    if STUCK_SAID.swap(holder, std::sync::atomic::Ordering::Relaxed) != holder {
+                        log::warn!("Secure Input is on, held by process {holder}, not the app in front: typing anyway, with the words left on the clipboard");
+                        if say {
+                            *super::NOTE.lock() = Some(STUCK_NOTE.to_string());
+                        }
+                    }
+                    return Ok(None);
+                }
+            }
         };
         set_text(text, false)?;
         Ok(Some(InsertOutcome::ClipboardOnly(reason.to_string())))
     }
 
+    /// macOS would drop Navi's keys in the field in front (see `clipboard_only_if_blocked`).
     pub(super) fn blocked() -> bool {
-        !crate::mac::ax::trusted() || secure_input()
+        !crate::mac::ax::trusted() || matches!(secure_state(), Secure::Here)
     }
 
     // ----- the operations -----
@@ -1389,6 +1496,26 @@ mod mac {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Fred's Mac (26 Nov 2026): loginwindow left Secure Input on after login, and Navi treated
+    /// every field as a password field. Now only the program in front, or a password field, does.
+    #[test]
+    fn secure_input_left_on_by_another_program_does_not_stop_typing() {
+        let (loginwindow, notes) = (Some(412), Some(1880));
+        assert!(secure_input_held_elsewhere(loginwindow, notes, false), "loginwindow holds it, Notes is in front");
+        assert!(!secure_input_held_elsewhere(loginwindow, notes, true), "but a password field in front is still one");
+        assert!(!secure_input_held_elsewhere(notes, notes, false), "the app in front holds it (Terminal's Secure Keyboard Entry)");
+        assert!(!secure_input_held_elsewhere(None, notes, false), "holder unknown: stay careful");
+        assert!(!secure_input_held_elsewhere(loginwindow, None, false), "app in front unknown: stay careful");
+        assert!(!secure_input_held_elsewhere(Some(0), notes, false), "no real holder");
+    }
+
+    #[test]
+    fn the_stuck_note_fits_the_bubble() {
+        let note = "Secure Input is stuck on. If nothing went in, press ⌘V. Logging out fixes it.";
+        assert!(note.chars().count() <= 80, "{} characters", note.chars().count());
+        assert!(include_str!("insert.rs").contains(&format!("const STUCK_NOTE: &str = \"{note}\";")));
+    }
 
     #[test]
     fn outcome_status_strings() {

@@ -43,7 +43,9 @@ and let go.
   Esc cancels. (Settings > Shortcuts can let Enter, or Return on a Mac, finish it too.) Windows won't let Navi type into an app running as
   administrator, so there the text is left on your clipboard instead. A Mac does the same in
   password fields and while Terminal's Secure Keyboard Entry is on: macOS hides typing there, so
-  your words go on the clipboard to paste.
+  your words go on the clipboard to paste. If another program leaves Secure Input switched on
+  (macOS can leave it on after you log in), Navi still types, keeps your words on the clipboard
+  too and says so once; logging out and back in switches it off.
 - **Voice commands.** Turn them on and talk to Navi without touching the keyboard. Say "Navi"
   (or "Hey Navi") and keep talking, and Navi types what you say; it finishes after six seconds of
   quiet, when you say "that's all", or when you tap the shortcut. Say the wake word and a command and it
@@ -94,6 +96,7 @@ and let go.
   under "Never read these apps"). Fix the same word twice and Navi adds it to your dictionary. A
   fix to an everyday word waits on the Dictionary page as a suggestion instead, so it can't change
   that word in everything you say.
+- **What's new.** The bottom of Settings lists what changed in every update.
 - **Edit by voice.** "Navi, scratch that." "Navi, make that shorter." "Navi, change Tuesday to
   Wednesday." These work on what Navi typed into the same window in the last ten minutes, once
   Navi has read the text before your cursor and found its words still there. Where it can't read
@@ -293,6 +296,9 @@ A few things work differently on a Mac:
 - In a password field, or with Terminal's Secure Keyboard Entry on, macOS hides ordinary keys from
   every app. Space, Esc, Return and F-key mode keys don't reach Navi there, and your words go on
   the clipboard. A shortcut made only of modifier keys, such as Right Option, still works.
+- Because macOS can hide a key being let go, Navi asks macOS whether ordinary keys are still held,
+  and if its shortcut listener stops hearing keys while macOS sees them, it starts a fresh one
+  (the log says "shortcut listener rebuilt").
 - While voice commands listen, macOS shows its orange microphone dot, and a recording indicator
   appears in the menu bar while Navi records a call or the screen.
 - Reading the text near your cursor is patchier in Chrome and in Electron apps such as Slack than

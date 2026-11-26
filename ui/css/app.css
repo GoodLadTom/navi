@@ -337,6 +337,15 @@ body:has(.onb) .titlebar { background: none; }
 .ak-extra { display: flex; align-items: flex-start; gap: 6px; margin-top: 8px; }
 .ak-instr { flex: 1; min-height: 52px; resize: vertical; font: inherit; font-size: 12.5px; line-height: 1.45; padding: 8px 10px; }
 .ak-add { border-top: 1px solid var(--line-soft); padding: 8px 0; }
+/* Settings > What's new: one block per version, newest first. */
+.patch-notes { display: grid; gap: 0; }
+.pn-version { border-top: 1px solid var(--line-soft); padding: 14px 0 6px; }
+.pn-version:first-child { border-top: 0; padding-top: 2px; }
+.pn-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.pn-head b { font-size: 14px; font-weight: 600; letter-spacing: -.01em; }
+.pn-version ul { margin: 8px 0 6px; padding-left: 18px; max-width: 640px; }
+.pn-version li { font-size: 13px; line-height: 1.55; color: var(--ink-quiet); margin-bottom: 6px; }
+.pn-version li::marker { color: var(--accent); }
 .mode-now { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
 .mode-pill { display: inline-flex; align-items: center; gap: 8px; height: 38px; padding: 0 14px 0 12px; border-radius: var(--r-pill); border: 1px solid var(--line); background: var(--card-strong); font-size: 13px; font-weight: 500; color: var(--ink-quiet); transition: border-color .15s, box-shadow .15s, color .15s; }
 .mode-pill:hover { border-color: var(--rule-strong); color: var(--ink); }

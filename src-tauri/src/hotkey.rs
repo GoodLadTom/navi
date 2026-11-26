@@ -847,11 +847,15 @@ pub struct HookMachine {
     enter_finishes: bool,
     paused: bool,
     capture: Option<Capture>,
-    /// Trust the hook's own record of which keys are down when the system's says a key is up. On a
-    /// Mac the event tap sees every press and release, but macOS's key state (CGEventSourceKeyState)
-    /// can report a held key as up, which ended every hold-to-talk take a moment after it began
-    /// while double taps (which never ask) worked. On Windows the system's state is kept as the
-    /// judge, so a release the hook missed (lock screen, UAC prompt) is still caught.
+    /// Trust the hook's own record of which keys are down when the system's says a key is up, for
+    /// the shortcut's own keys, Fn and the modifiers. macOS's key state (CGEventSourceKeyState) can
+    /// report a held Right Option as up, which ended every hold-to-talk take a moment after it
+    /// began while double taps (which never ask) worked. Every other key is judged by the system,
+    /// as on Windows: macOS hides ordinary keys from the tap while Secure Input is on (a password
+    /// prompt, the lock screen), so a release can go unseen, and a key recorded as held for ever
+    /// made every press of the shortcut count as "another shortcut" (Fn went deaf until Navi
+    /// restarted). On Windows the system's state is always the judge, so a release the hook missed
+    /// (lock screen, UAC prompt) is still caught.
     trust_own_view: bool,
 }
 
@@ -978,9 +982,16 @@ impl HookMachine {
     }
 
     /// Whether `vk` counts as down for the stale-key and still-held checks: the system's view
-    /// (`probe`), or on a Mac also the hook's own (see `trust_own_view`).
+    /// (`probe`), or on a Mac also the hook's own for the keys macOS misreports (see
+    /// `trust_own_view`).
     fn held_now(&self, vk: u8, probe: &dyn Fn(u8) -> bool) -> bool {
-        probe(vk) || (self.trust_own_view && self.down[vk as usize])
+        probe(vk) || (self.trust_own_view && self.down[vk as usize] && self.misreported_by_macos(vk))
+    }
+
+    /// The shortcut's own keys, Fn and the modifiers: macOS's key state can call these up while
+    /// they are held, so on a Mac the tap's record of them is trusted instead.
+    fn misreported_by_macos(&self, vk: u8) -> bool {
+        vk == VK_FN || Modifier::of_vk(vk).is_some() || self.in_chord(vk)
     }
 
     #[cfg(test)]
@@ -1372,6 +1383,28 @@ pub fn captured_chord_names(order: &[u8]) -> Vec<String> {
     }
     out.extend(order.iter().filter(|vk| Modifier::of_vk(**vk).is_none()).map(|vk| vk_name(*vk)));
     out
+}
+
+// ---------------------------------------------------------------------------------------------
+// A deaf event tap (Mac)
+// ---------------------------------------------------------------------------------------------
+
+/// How long the Mac's tap may hear nothing, while macOS itself saw keys, before it is rebuilt.
+const DEAF_AFTER_MS: u64 = 10_000;
+/// "Just now" for macOS's own record of the last key or modifier change, in seconds.
+const SYSTEM_KEY_RECENT_S: f64 = 3.0;
+/// The least time between two rebuilds of a deaf tap.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const DEAF_REBUILD_GAP_MS: u64 = 60_000;
+
+/// Whether the Mac's event tap has gone deaf: macOS saw a key or a modifier change in the last
+/// `system_since_s` seconds (just now), but the tap has heard nothing for `heard_ms`. A tap that
+/// macOS reports as enabled can stop receiving events, and only a new tap hears again. Never while
+/// Secure Input is on (`secure`), when the tap rightly hears no ordinary keys, and never during a
+/// press of the shortcut (`holding`), whose release a rebuild could miss.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn tap_seems_deaf(system_since_s: f64, heard_ms: u64, secure: bool, holding: bool) -> bool {
+    !secure && !holding && heard_ms >= DEAF_AFTER_MS && (0.0..=SYSTEM_KEY_RECENT_S).contains(&system_since_s)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2048,7 +2081,7 @@ mod win {
 #[cfg(target_os = "macos")]
 mod mac {
     use super::*;
-    use objc2_core_foundation::{kCFRunLoopDefaultMode, CFMachPort, CFRetained, CFRunLoop};
+    use objc2_core_foundation::{kCFRunLoopDefaultMode, CFMachPort, CFRetained, CFRunLoop, CFRunLoopSource};
     use objc2_core_graphics::{
         CGEvent, CGEventField, CGEventFlags, CGEventMask, CGEventSource, CGEventSourceStateID, CGEventTapLocation,
         CGEventTapOptions, CGEventTapPlacement, CGEventTapProxy, CGEventType,
@@ -2282,15 +2315,81 @@ mod mac {
         }
     }
 
+    /// The tap and its run-loop source, so a deaf tap can be taken out and a new one put in.
+    struct LiveTap {
+        tap: CFRetained<CFMachPort>,
+        source: CFRetained<CFRunLoopSource>,
+    }
+
+    /// Makes a tap, attaches it to this thread's run loop and switches it on. None without the
+    /// Accessibility permission, or if macOS refuses.
+    fn install_tap(run_loop: &CFRunLoop) -> Option<LiveTap> {
+        let tap = make_tap()?;
+        let Some(source) = CFMachPort::new_run_loop_source(None, Some(&tap), 0) else {
+            log::warn!("could not attach the shortcut listener to its run loop");
+            tap.invalidate();
+            return None;
+        };
+        run_loop.add_source(Some(&source), unsafe { kCFRunLoopDefaultMode });
+        CGEvent::tap_enable(&tap, true);
+        *TAP.lock() = Some(TapPort(tap.clone()));
+        LAST_EVENT.store(now_ms(), Ordering::Relaxed);
+        Some(LiveTap { tap, source })
+    }
+
+    fn remove_tap(run_loop: &CFRunLoop, live: &LiveTap) {
+        *TAP.lock() = None;
+        CGEvent::tap_enable(&live.tap, false);
+        run_loop.remove_source(Some(&live.source), unsafe { kCFRunLoopDefaultMode });
+        live.tap.invalidate();
+    }
+
+    /// Drops what the machine believes is held, as Windows' repair does: a release may have come
+    /// while the tap heard nothing. With `even_mid_press` false, a press of the shortcut in
+    /// progress is left alone (its own release ends it), so a rebuild never cuts a take short.
+    fn forget_state(even_mid_press: bool) {
+        if let Some(mut guard) = SHARED.try_lock_for(LOCK_WAIT) {
+            if let Some(shared) = guard.as_mut() {
+                if !even_mid_press && shared.machine.chord_active() {
+                    return;
+                }
+                if shared.machine.forget_held() {
+                    let _ = shared.tx.send((HotkeyEvent::TalkUp, Instant::now()));
+                }
+            }
+        }
+        for flag in SWALLOWED.iter() {
+            flag.store(false, Ordering::Relaxed);
+        }
+    }
+
+    /// A press of the shortcut is in progress (its release must not be missed).
+    fn holding() -> bool {
+        SHARED.try_lock_for(LOCK_WAIT).is_none_or(|guard| guard.as_ref().is_some_and(|s| s.machine.chord_active()))
+    }
+
+    /// Whether the tap has gone deaf (`tap_seems_deaf`), asking macOS when it last saw a key.
+    fn tap_is_deaf() -> bool {
+        let heard_ms = now_ms().saturating_sub(LAST_EVENT.load(Ordering::Relaxed));
+        if heard_ms < DEAF_AFTER_MS {
+            return false;
+        }
+        let state = CGEventSourceStateID::HIDSystemState;
+        let since = CGEventSource::seconds_since_last_event_type(state, CGEventType::KeyDown)
+            .min(CGEventSource::seconds_since_last_event_type(state, CGEventType::FlagsChanged));
+        tap_seems_deaf(since, heard_ms, crate::insert::secure_input_on(), holding())
+    }
+
     fn tap_thread() {
         let _ = STARTED.get_or_init(Instant::now);
+        let Some(run_loop) = CFRunLoop::current() else { return };
         let mut logged = false;
-        let tap = loop {
+        let mut live = loop {
             if STOP.load(Ordering::SeqCst) {
                 return;
             }
-            if let Some(tap) = make_tap() {
-                break tap;
+            if let Some(live) = install_tap(&run_loop) {
+                break live;
             }
             if !logged {
                 log::warn!("macOS hasn't allowed Navi to hear its shortcut yet (Accessibility permission)");
@@ -2298,49 +2397,69 @@ mod mac {
             }
             std::thread::sleep(RETRY_EVERY);
         };
-        let Some(source) = CFMachPort::new_run_loop_source(None, Some(&tap), 0) else {
-            log::warn!("could not attach the shortcut listener to its run loop");
-            return;
-        };
-        let Some(run_loop) = CFRunLoop::current() else { return };
-        run_loop.add_source(Some(&source), unsafe { kCFRunLoopDefaultMode });
-        CGEvent::tap_enable(&tap, true);
-        *TAP.lock() = Some(TapPort(tap.clone()));
-        LAST_EVENT.store(now_ms(), Ordering::Relaxed);
         TYPING.note(Instant::now());
         log::info!("shortcut listener running");
 
+        // A tap rebuilt for deafness waits DEAF_REBUILD_GAP_MS before the next one; a rebuild that
+        // failed is tried again at every check, and said once.
+        let mut last_rebuild: Option<u64> = None;
+        let mut rebuild_failed = false;
         while !STOP.load(Ordering::SeqCst) {
             CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, CHECK_EVERY_S, false);
             let repair_now = REPAIR.swap(false, Ordering::SeqCst);
-            if repair_now {
-                if let Some(mut guard) = SHARED.try_lock_for(LOCK_WAIT) {
-                    if let Some(shared) = guard.as_mut() {
-                        if shared.machine.forget_held() {
-                            let _ = shared.tx.send((HotkeyEvent::TalkUp, Instant::now()));
+            let gap_over = last_rebuild.is_none_or(|at| now_ms().saturating_sub(at) >= DEAF_REBUILD_GAP_MS);
+            let why = if repair_now {
+                Some("asked to")
+            } else if rebuild_failed || !live.tap.is_valid() {
+                Some("its connection to macOS was closed")
+            } else if gap_over && tap_is_deaf() {
+                Some("macOS saw keys that it never passed on")
+            } else {
+                None
+            };
+            if let Some(why) = why {
+                // Repaired on request, everything goes (as on Windows); otherwise a press of the
+                // shortcut in progress is kept.
+                forget_state(repair_now);
+                remove_tap(&run_loop, &live);
+                match install_tap(&run_loop) {
+                    Some(new) => {
+                        live = new;
+                        REINSTALLS.fetch_add(1, Ordering::Relaxed);
+                        last_rebuild = Some(now_ms());
+                        rebuild_failed = false;
+                        TYPING.note(Instant::now());
+                        log::warn!("shortcut listener rebuilt: {why}");
+                    }
+                    None => {
+                        if !rebuild_failed {
+                            log::warn!("could not rebuild the shortcut listener ({why}); trying again");
                         }
+                        rebuild_failed = true;
                     }
                 }
-                for flag in SWALLOWED.iter() {
-                    flag.store(false, Ordering::Relaxed);
-                }
-                TYPING.note(Instant::now());
+                continue;
             }
-            if repair_now || !CGEvent::tap_is_enabled(&tap) {
-                CGEvent::tap_enable(&tap, true);
+            if !CGEvent::tap_is_enabled(&live.tap) {
+                CGEvent::tap_enable(&live.tap, true);
                 REINSTALLS.fetch_add(1, Ordering::Relaxed);
                 log::info!("shortcut listener switched back on");
             }
         }
-        *TAP.lock() = None;
+        remove_tap(&run_loop, &live);
     }
 
     unsafe extern "C-unwind" fn callback(_proxy: CGEventTapProxy, kind: CGEventType, event: NonNull<CGEvent>, _info: *mut c_void) -> *mut CGEvent {
         let pass = event.as_ptr();
         if kind == CGEventType::TapDisabledByTimeout || kind == CGEventType::TapDisabledByUserInput {
+            // Rare, so worth a line: the next report then shows whether macOS switched it off.
+            let why = if kind == CGEventType::TapDisabledByTimeout { "it took too long" } else { "of user input" };
             if let Some(tap) = TAP.try_lock().and_then(|t| t.as_ref().map(|p| p.0.clone())) {
                 CGEvent::tap_enable(&tap, true);
                 REINSTALLS.fetch_add(1, Ordering::Relaxed);
+                log::warn!("macOS switched the shortcut listener off because {why}; switched it back on");
+            } else {
+                log::warn!("macOS switched the shortcut listener off because {why}; the next check switches it back on");
             }
             return pass;
         }
@@ -2355,11 +2474,12 @@ mod mac {
     /// True to swallow the event.
     fn handle(kind: CGEventType, event: &CGEvent) -> bool {
         let ev = Some(event);
+        // Any event here, Navi's own included, shows the tap hears (see `tap_is_deaf`).
+        LAST_EVENT.store(now_ms(), Ordering::Relaxed);
         // Navi's own keystrokes (pasting, selecting back) are never part of a shortcut.
         if CGEvent::integer_value_field(ev, CGEventField::EventSourceUserData) == crate::insert::NAVI_INPUT_TAG as i64 {
             return false;
         }
-        LAST_EVENT.store(now_ms(), Ordering::Relaxed);
         let code = CGEvent::integer_value_field(ev, CGEventField::KeyboardEventKeycode) as u16;
         let Some(vk) = vk_of_keycode(code) else { return false };
         let up = if kind == CGEventType::FlagsChanged {
@@ -3591,6 +3711,45 @@ mod tests {
         assert!(m.chord_is_down(&never));
         assert_eq!(m.on_key(VK_LCONTROL, true, &never).event, Some(HotkeyEvent::TalkUp));
         assert!(!m.chord_is_down(&never));
+    }
+
+    /// Fred's Mac (26 Nov 2026): Fn went deaf after ordinary takes, with nothing in the log, until
+    /// Navi restarted. A key whose release the tap never saw (macOS hides ordinary keys while Secure
+    /// Input is on) stayed "held" for ever, so every press of Fn counted as another shortcut. Now
+    /// macOS judges ordinary keys, as Windows does, and the shortcut's own keys stay trusted.
+    #[test]
+    fn a_key_release_the_tap_missed_never_deafens_the_shortcut() {
+        let never = |_: u8| false;
+        for mac in [true, false] {
+            let new = || HookMachine::new(chord(&["Fn"]), None, None);
+            let mut m = if mac { new().trusting_own_view() } else { new() };
+            // Q goes down; its release is never seen.
+            assert_eq!(m.on_key(b'Q', false, &never).event, None);
+            assert_eq!(m.on_key(VK_FN, false, &never).event, Some(HotkeyEvent::TalkDown), "mac: {mac}");
+            assert_eq!(m.on_key(VK_FN, true, &never).event, Some(HotkeyEvent::TalkUp));
+            assert_eq!(m.on_key(VK_FN, false, &never).event, Some(HotkeyEvent::TalkDown), "and every press after");
+            m.on_key(VK_FN, true, &never);
+        }
+        // A Q really held (macOS says so) still makes Fn another shortcut, on both.
+        let q_held = |vk: u8| vk == b'Q';
+        let mut m = HookMachine::new(chord(&["Fn"]), None, None).trusting_own_view();
+        m.on_key(b'Q', false, &q_held);
+        assert_eq!(m.on_key(VK_FN, false, &q_held).event, None, "Fn with Q held is another shortcut");
+        // The shortcut's own key, Fn and the modifiers are still trusted on a Mac when macOS calls
+        // them up (Right Option, the Mac's default, was reported up while held).
+        let mut m = HookMachine::new(chord(&["F13"]), None, None).trusting_own_view();
+        assert_eq!(m.on_key(0x7C, false, &never).event, Some(HotkeyEvent::TalkDown));
+        assert!(m.chord_is_down(&never), "F13, the shortcut, is held whatever macOS says");
+    }
+
+    #[test]
+    fn a_deaf_mac_tap_is_rebuilt_only_when_macos_saw_keys_it_missed() {
+        assert!(tap_seems_deaf(0.5, 30_000, false, false), "keys just now, nothing heard for 30 s");
+        assert!(!tap_seems_deaf(0.5, 4_000, false, false), "heard something 4 s ago: alive");
+        assert!(!tap_seems_deaf(40.0, 60_000, false, false), "nobody has typed: quiet, not deaf");
+        assert!(!tap_seems_deaf(0.5, 30_000, true, false), "Secure Input hides keys from every tap");
+        assert!(!tap_seems_deaf(0.5, 30_000, false, true), "never in the middle of a press of the shortcut");
+        assert!(!tap_seems_deaf(-1.0, 30_000, false, false), "a nonsense answer from macOS");
     }
 
     /// Windows keeps its own key state as the judge, so a release the hook missed is still caught.
