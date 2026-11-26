@@ -22,7 +22,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-      - name: Build (all targets)
-        run: cargo check --all-targets
+      # Not --all-targets: examples/card_check.rs is a Windows-only tool.
+      - name: Build
+        run: cargo check --lib --bins --tests
       - name: Tests
         run: cargo test --lib
