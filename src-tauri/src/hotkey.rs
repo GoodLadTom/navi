@@ -3809,6 +3809,7 @@ mod tests {
         m.on_key(VK_RMENU, false, &never);
         m.forget_released_modifiers(b'A', &|vk: u8| Some(vk == VK_LSHIFT));
         assert!(m.chord_is_down(&never), "the shortcut's own key is never forgotten this way");
+        assert!(m.down[VK_LSHIFT as usize], "Shift, which the flags say is held, stays held");
         m.forget_released_modifiers(b'A', &|_| None);
         assert!(m.chord_is_down(&never), "flags that can't tell change nothing");
     }
