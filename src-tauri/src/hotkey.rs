@@ -994,6 +994,21 @@ impl HookMachine {
         vk == VK_FN || Modifier::of_vk(vk).is_some() || self.in_chord(vk)
     }
 
+    /// On a Mac, forgets modifiers (and Fn) believed held that the flags of a key event from the
+    /// keyboard say are up (`is_down`, None for a key it can't tell): their release went unseen,
+    /// and one left held made every press of the shortcut count as another shortcut. Never the
+    /// event's own key (`except`, which the event itself handles), the shortcut's keys or a key
+    /// the machine swallowed.
+    pub fn forget_released_modifiers(&mut self, except: u8, is_down: &dyn Fn(u8) -> Option<bool>) {
+        for vk in [VK_LCONTROL, VK_RCONTROL, VK_LSHIFT, VK_RSHIFT, VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN, VK_FN] {
+            let i = vk as usize;
+            if vk != except && self.down[i] && !self.swallowed[i] && !self.in_chord(vk) && is_down(vk) == Some(false) {
+                self.down[i] = false;
+                self.injected_down[i] = false;
+            }
+        }
+    }
+
     #[cfg(test)]
     fn trusting_own_view(mut self) -> Self {
         self.trust_own_view = true;
@@ -2369,7 +2384,9 @@ mod mac {
     }
 
     /// Whether the tap has gone deaf (`tap_seems_deaf`), asking macOS when it last saw a key.
-    fn tap_is_deaf() -> bool {
+    /// `secure_recently`: Secure Input was on at some check in the last DEAF_AFTER_MS, when the tap
+    /// rightly heard no ordinary keys, so its silence then proves nothing.
+    fn tap_is_deaf(secure_recently: bool) -> bool {
         let heard_ms = now_ms().saturating_sub(LAST_EVENT.load(Ordering::Relaxed));
         if heard_ms < DEAF_AFTER_MS {
             return false;
@@ -2377,7 +2394,7 @@ mod mac {
         let state = CGEventSourceStateID::HIDSystemState;
         let since = CGEventSource::seconds_since_last_event_type(state, CGEventType::KeyDown)
             .min(CGEventSource::seconds_since_last_event_type(state, CGEventType::FlagsChanged));
-        tap_seems_deaf(since, heard_ms, crate::insert::secure_input_on(), holding())
+        tap_seems_deaf(since, heard_ms, secure_recently, holding())
     }
 
     fn tap_thread() {
@@ -2400,42 +2417,65 @@ mod mac {
         TYPING.note(Instant::now());
         log::info!("shortcut listener running");
 
-        // A tap rebuilt for deafness waits DEAF_REBUILD_GAP_MS before the next one; a rebuild that
-        // failed is tried again at every check, and said once.
+        // A tap rebuilt for deafness waits DEAF_REBUILD_GAP_MS before the next one, ten times
+        // that after three rebuilds in a row that didn't help (something keeps it deaf). A rebuild
+        // that failed (no permission) is tried again every RETRY_EVERY, and said once.
         let mut last_rebuild: Option<u64> = None;
-        let mut rebuild_failed = false;
+        let mut deaf_rebuilds = 0u32;
+        // Why the tap is out, while a rebuild keeps failing (the old tap is already removed).
+        let mut out: Option<&'static str> = None;
+        let mut secure_at: Option<u64> = None;
         while !STOP.load(Ordering::SeqCst) {
-            CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, CHECK_EVERY_S, false);
+            if out.is_some() {
+                // No tap on the run loop, so it would return at once: wait here instead.
+                std::thread::sleep(RETRY_EVERY);
+            } else {
+                CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, CHECK_EVERY_S, false);
+            }
             let repair_now = REPAIR.swap(false, Ordering::SeqCst);
-            let gap_over = last_rebuild.is_none_or(|at| now_ms().saturating_sub(at) >= DEAF_REBUILD_GAP_MS);
-            let why = if repair_now {
+            if crate::insert::secure_input_on() {
+                secure_at = Some(now_ms());
+            }
+            let secure_recently = secure_at.is_some_and(|at| now_ms().saturating_sub(at) < DEAF_AFTER_MS);
+            // The tap heard something since its last rebuild: that one helped.
+            if last_rebuild.is_some_and(|at| LAST_EVENT.load(Ordering::Relaxed) > at) {
+                deaf_rebuilds = 0;
+            }
+            let gap = if deaf_rebuilds >= 3 { DEAF_REBUILD_GAP_MS * 10 } else { DEAF_REBUILD_GAP_MS };
+            let gap_over = last_rebuild.is_none_or(|at| now_ms().saturating_sub(at) >= gap);
+            let why = if let Some(why) = out {
+                Some(why)
+            } else if repair_now {
                 Some("asked to")
-            } else if rebuild_failed || !live.tap.is_valid() {
+            } else if !live.tap.is_valid() {
                 Some("its connection to macOS was closed")
-            } else if gap_over && tap_is_deaf() {
+            } else if gap_over && tap_is_deaf(secure_recently) {
+                deaf_rebuilds += 1;
                 Some("macOS saw keys that it never passed on")
             } else {
                 None
             };
             if let Some(why) = why {
-                // Repaired on request, everything goes (as on Windows); otherwise a press of the
-                // shortcut in progress is kept.
-                forget_state(repair_now);
-                remove_tap(&run_loop, &live);
+                if out.is_none() {
+                    // Repaired on request, everything goes (as on Windows); otherwise a press of
+                    // the shortcut in progress is kept.
+                    forget_state(repair_now);
+                    remove_tap(&run_loop, &live);
+                }
                 match install_tap(&run_loop) {
                     Some(new) => {
                         live = new;
                         REINSTALLS.fetch_add(1, Ordering::Relaxed);
                         last_rebuild = Some(now_ms());
-                        rebuild_failed = false;
+                        out = None;
                         TYPING.note(Instant::now());
                         log::warn!("shortcut listener rebuilt: {why}");
                     }
                     None => {
-                        if !rebuild_failed {
-                            log::warn!("could not rebuild the shortcut listener ({why}); trying again");
+                        if out.is_none() {
+                            log::warn!("could not rebuild the shortcut listener ({why}); trying again every few seconds");
                         }
-                        rebuild_failed = true;
+                        out = Some(why);
                     }
                 }
                 continue;
@@ -2446,7 +2486,9 @@ mod mac {
                 log::info!("shortcut listener switched back on");
             }
         }
-        remove_tap(&run_loop, &live);
+        if out.is_none() {
+            remove_tap(&run_loop, &live);
+        }
     }
 
     unsafe extern "C-unwind" fn callback(_proxy: CGEventTapProxy, kind: CGEventType, event: NonNull<CGEvent>, _info: *mut c_void) -> *mut CGEvent {
@@ -2514,6 +2556,12 @@ mod mac {
             let Some(shared) = guard.as_mut() else { return false };
             if let Some(monitor) = &shared.monitor {
                 let _ = monitor.send(KeySeen { vk, up, injected });
+            }
+            // A key event from the keyboard carries every modifier held right now: any modifier
+            // the machine still has down whose bit is off was let go where the tap didn't see it.
+            if !injected {
+                let flags = CGEvent::flags(ev).0;
+                shared.machine.forget_released_modifiers(vk, &|m| modifier_down(m, flags));
             }
             let mut d = shared.machine.on_event(vk, up, injected, &probe);
             SWALLOWED[vk as usize].store(shared.machine.is_swallowed(vk), Ordering::Relaxed);
@@ -3740,6 +3788,29 @@ mod tests {
         let mut m = HookMachine::new(chord(&["F13"]), None, None).trusting_own_view();
         assert_eq!(m.on_key(0x7C, false, &never).event, Some(HotkeyEvent::TalkDown));
         assert!(m.chord_is_down(&never), "F13, the shortcut, is held whatever macOS says");
+    }
+
+    /// The same for a modifier (Ctrl, Option, Command): macOS's key state can't be trusted for
+    /// those, but every key event from the keyboard says which modifiers are held.
+    #[test]
+    fn a_modifier_release_the_tap_missed_is_caught_by_the_next_key() {
+        let never = |_: u8| false;
+        let mut m = HookMachine::new(chord(&["Fn"]), None, None).trusting_own_view();
+        m.on_key(VK_LCONTROL, false, &never);
+        assert_eq!(m.on_key(VK_FN, false, &never).event, None, "Ctrl still counted as held");
+        m.on_key(VK_FN, true, &never);
+        // The next key event's flags: nothing held but Fn.
+        let flags = |vk: u8| Some(vk == VK_FN);
+        m.forget_released_modifiers(VK_FN, &flags);
+        assert_eq!(m.on_key(VK_FN, false, &never).event, Some(HotkeyEvent::TalkDown));
+        // A modifier really held stays held, and so does the shortcut's own key.
+        let mut m = HookMachine::new(chord(&["RAlt"]), None, None).trusting_own_view();
+        m.on_key(VK_LSHIFT, false, &never);
+        m.on_key(VK_RMENU, false, &never);
+        m.forget_released_modifiers(b'A', &|vk: u8| Some(vk == VK_LSHIFT));
+        assert!(m.chord_is_down(&never), "the shortcut's own key is never forgotten this way");
+        m.forget_released_modifiers(b'A', &|_| None);
+        assert!(m.chord_is_down(&never), "flags that can't tell change nothing");
     }
 
     #[test]

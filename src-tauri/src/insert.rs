@@ -103,13 +103,20 @@ const TYPING_STOPPED_REASON: &str = "Windows stopped the typing part way. The fu
 #[cfg(not(any(windows, target_os = "macos")))]
 const NOT_SUPPORTED: &str = "Inserting text only works on Windows and macOS for now.";
 
-/// A note about the last insertion for the bubble, once (see `take_note`).
-static NOTE: parking_lot::Mutex<Option<String>> = parking_lot::const_mutex(None);
+/// A note about the last `insert_text` for the bubble, with the Secure Input holder it is about
+/// (see `take_note`). Cleared by every `insert_text`, so it never outlives the insertion it's for.
+static NOTE: parking_lot::Mutex<Option<(i32, String)>> = parking_lot::const_mutex(None);
+/// The Secure Input holder whose note was shown, so it is shown once per holder.
+static NOTE_SHOWN_FOR: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
-/// What Navi should say after text went in, if anything: on a Mac, that macOS's Secure Input is
-/// stuck on (see `mac::clipboard_only_if_blocked`). Taken once.
+/// What Navi should say after the last `insert_text`, if anything: on a Mac, that another
+/// program has left Secure Input on (see `mac::clipboard_only_if_blocked`). Taken once; counts as
+/// shown only when taken, so an insertion whose caller shows no note (Ask AI) leaves it for the
+/// next one.
 pub fn take_note() -> Option<String> {
-    NOTE.lock().take()
+    let (holder, note) = NOTE.lock().take()?;
+    NOTE_SHOWN_FOR.store(holder, std::sync::atomic::Ordering::Relaxed);
+    Some(note)
 }
 
 /// macOS's Secure Input is on (a password field, Terminal's Secure Keyboard Entry, or a program
@@ -147,6 +154,7 @@ pub fn insert_text(text: &str, method: &str, restore: bool) -> Result<InsertOutc
     }
     #[cfg(target_os = "macos")]
     {
+        NOTE.lock().take();
         let mut restore = restore;
         if let Some(outcome) = mac::clipboard_only_if_blocked(text, &mut restore, true)? {
             return Ok(outcome);
@@ -1167,8 +1175,8 @@ mod mac {
         }
     }
 
-    /// The holder Navi last said was stuck, so the bubble says it once per holder, not every take.
-    static STUCK_SAID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+    /// The holder last written to the log, so the log says it once per holder.
+    static STUCK_LOGGED: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
     // ----- the clipboard -----
 
@@ -1329,11 +1337,11 @@ mod mac {
                 Secure::Here => SECURE_REASON,
                 Secure::Elsewhere(holder) => {
                     *restore = false;
-                    if STUCK_SAID.swap(holder, std::sync::atomic::Ordering::Relaxed) != holder {
+                    if STUCK_LOGGED.swap(holder, std::sync::atomic::Ordering::Relaxed) != holder {
                         log::warn!("Secure Input is on, held by process {holder}, not the app in front: typing anyway, with the words left on the clipboard");
-                        if say {
-                            *super::NOTE.lock() = Some(STUCK_NOTE.to_string());
-                        }
+                    }
+                    if say && super::NOTE_SHOWN_FOR.load(std::sync::atomic::Ordering::Relaxed) != holder {
+                        *super::NOTE.lock() = Some((holder, STUCK_NOTE.to_string()));
                     }
                     return Ok(None);
                 }
@@ -1508,6 +1516,15 @@ mod tests {
         assert!(!secure_input_held_elsewhere(None, notes, false), "holder unknown: stay careful");
         assert!(!secure_input_held_elsewhere(loginwindow, None, false), "app in front unknown: stay careful");
         assert!(!secure_input_held_elsewhere(Some(0), notes, false), "no real holder");
+    }
+
+    #[test]
+    fn the_stuck_note_is_shown_once_per_holder_and_only_when_taken() {
+        NOTE_SHOWN_FOR.store(0, std::sync::atomic::Ordering::Relaxed);
+        *NOTE.lock() = Some((412, "stuck".into()));
+        assert_eq!(take_note().as_deref(), Some("stuck"));
+        assert_eq!(take_note(), None, "taken once");
+        assert_eq!(NOTE_SHOWN_FOR.load(std::sync::atomic::Ordering::Relaxed), 412, "marked as shown only when taken");
     }
 
     #[test]
