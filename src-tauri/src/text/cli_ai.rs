@@ -908,6 +908,8 @@ mod tests {
         assert_eq!(launcher_for_path("C:\\no\\such\\claude.exe"), None);
     }
 
+    // Yarn's .cmd shims are Windows'; a Mac finds Codex through its own Node instead.
+    #[cfg(windows)]
     #[test]
     fn a_yarn_install_is_found_through_its_second_shim() {
         let root = std::env::temp_dir().join(format!("navi-yarn-shim-{}", uuid::Uuid::new_v4()));
